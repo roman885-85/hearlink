@@ -40,6 +40,7 @@ turning off, all settings).
 | ![](../photos/esp32-4848s040-label.jpg) | the marking on the module case — search for it by this name |
 | ![](../photos/esp32-s3-devkit-n16r8.jpg) | **ESP32-S3 N16R8** — the receiver board (two USB-C ports, BOOT and RST buttons, RGB LED) |
 | ![](../photos/m75-oled-encoder.jpg) | **SH1106 1.3″ display with an EC11 encoder** and BACK / CONFIRM buttons |
+| ![](../photos/max97220.jpg) | **MAX97220** (“HYT”) — headphone amplifier (optional): inputs L+, L−, R+, R−, output R, G, L, power VCC, GND, control CTRL |
 | ![](../photos/pcm1808.jpg) | **PCM1808** — external transmitter ADC (optional) |
 | ![](../photos/pcm5102.jpg) | **PCM5102** — external receiver DAC (optional) |
 

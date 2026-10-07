@@ -103,7 +103,7 @@ def small(name, title, color, chip, left, right, notes, fname):
 os.makedirs(OUT, exist_ok=True)
 tx(); devkit(); m75()
 small('max', 'MAX97220 — підсилювач навушників / headphone amplifier (за бажанням / optional)', RED, 'MAX97220',
-      ['L+ ← 17', 'L− ← 18', 'R+ ← 17', 'R− ← 18', 'GND'], ['VCC 3,3–5 В', 'GND', 'OUT L', 'OUT R', 'SHDN'],
+      ['VCC', 'GND', 'R− ← 18', 'R+ ← 17'], ['L− ← 18', 'L+ ← 17', 'CTRL', 'R · G · L → навушники'],
       ['Різницевий вхід: «+» на L+ і R+, «−» на L− і R−; у меню приймача «Виводи: протифаза».',
        'Differential input: “+” to L+ and R+, “−” to L− and R−; receiver menu “Pins: antiphase”.'], 'mod-max97220.png')
 small('pcm5102', 'PCM5102 — зовнішній ЦАП приймача / external receiver DAC (за бажанням, не перевірено / optional, untested)', PURPLE, 'PCM5102',
