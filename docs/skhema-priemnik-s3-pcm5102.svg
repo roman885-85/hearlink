@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 900" width="1240" height="900" font-family="Helvetica, Arial, sans-serif"><rect width="1240" height="900" fill="#fff"/><text x="620" y="30" font-size="18" text-anchor="middle" fill="#111" font-weight="bold">Приёмник ESP32-S3 + ЦАП PCM5102</text>
+<rect x="60" y="80" width="240" height="330" rx="8" fill="#f4f6f8" stroke="#333" stroke-width="2"/>
+<text x="180" y="104" font-size="15" text-anchor="middle" fill="#111" font-weight="bold">ESP32-S3</text>
+<text x="180" y="122" font-size="12" text-anchor="middle" fill="#555">плата DevKitC, N16R8</text>
+<rect x="520" y="80" width="250" height="330" rx="8" fill="#f4f6f8" stroke="#333" stroke-width="2"/>
+<text x="645" y="104" font-size="15" text-anchor="middle" fill="#111" font-weight="bold">PCM5102</text>
+<text x="645" y="122" font-size="12" text-anchor="middle" fill="#555">модуль ЦАП (I2S)</text>
+<circle cx="300" cy="150" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="155" font-size="13" text-anchor="end" fill="#111">5V</text>
+<circle cx="520" cy="150" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="155" font-size="13" text-anchor="start" fill="#111">VIN</text>
+<polyline points="300,150 520,150" fill="none" stroke="#c0392b" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="300" cy="194" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="199" font-size="13" text-anchor="end" fill="#111">GND</text>
+<circle cx="520" cy="194" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="199" font-size="13" text-anchor="start" fill="#111">GND</text>
+<polyline points="300,194 520,194" fill="none" stroke="#222" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="300" cy="238" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="243" font-size="13" text-anchor="end" fill="#111">11</text>
+<circle cx="520" cy="238" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="243" font-size="13" text-anchor="start" fill="#111">BCK</text>
+<polyline points="300,238 520,238" fill="none" stroke="#d2691e" stroke-width="3" stroke-linejoin="round"/>
+<circle cx="300" cy="282" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="287" font-size="13" text-anchor="end" fill="#111">12</text>
+<circle cx="520" cy="282" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="287" font-size="13" text-anchor="start" fill="#111">LCK</text>
+<polyline points="300,282 520,282" fill="none" stroke="#d2691e" stroke-width="3" stroke-linejoin="round"/>
+<circle cx="300" cy="326" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="331" font-size="13" text-anchor="end" fill="#111">13</text>
+<circle cx="520" cy="326" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="331" font-size="13" text-anchor="start" fill="#111">DIN</text>
+<polyline points="300,326 520,326" fill="none" stroke="#d2691e" stroke-width="3" stroke-linejoin="round"/>
+<text x="410" y="230" font-size="12" text-anchor="middle" fill="#d2691e">звук цифрой (I2S)</text>
+<circle cx="520" cy="370" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="375" font-size="13" text-anchor="start" fill="#111">SCK</text>
+<polyline points="520,370 470,370" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<polyline points="470,370 470,382" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<polyline points="459,382 481,382" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<polyline points="463,387 477,387" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<polyline points="467,392 473,392" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<text x="458" y="364" font-size="12" text-anchor="end" fill="#555">на «землю»</text>
+<circle cx="770" cy="150" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="760" y="155" font-size="13" text-anchor="end" fill="#111">L</text>
+<circle cx="770" cy="194" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="760" y="199" font-size="13" text-anchor="end" fill="#111">G</text>
+<circle cx="770" cy="238" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="760" y="243" font-size="13" text-anchor="end" fill="#111">R</text>
+<rect x="930" y="80" width="250" height="150" rx="8" fill="#f4f6f8" stroke="#333" stroke-width="2"/>
+<text x="1055" y="104" font-size="15" text-anchor="middle" fill="#111" font-weight="bold">Наушники</text>
+<text x="1055" y="122" font-size="12" text-anchor="middle" fill="#555">прямо в гнездо модуля</text>
+<polyline points="770,150 930,150" fill="none" stroke="#00796b" stroke-width="3" stroke-linejoin="round" stroke-dasharray="7 5"/>
+<polyline points="770,194 930,194" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round" stroke-dasharray="7 5"/>
+<polyline points="770,238 850,238 850,214 930,214" fill="none" stroke="#00796b" stroke-width="3" stroke-linejoin="round" stroke-dasharray="7 5"/>
+<text x="850" y="138" font-size="12" text-anchor="middle" fill="#555">для проверки, негромко</text>
+<rect x="930" y="260" width="250" height="150" rx="8" fill="#fbfbfb" stroke="#777" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="1055" y="284" font-size="15" text-anchor="middle" fill="#111" font-weight="bold">MAX97220 (HYT)</text>
+<text x="1055" y="302" font-size="12" text-anchor="middle" fill="#555">усилитель — для полной громкости</text>
+<text x="1055" y="330" font-size="13" text-anchor="middle" fill="#111">L → L+,  R → R+</text>
+<text x="1055" y="352" font-size="13" text-anchor="middle" fill="#111">L−, R− и G → «земля»</text>
+<text x="1055" y="378" font-size="12" text-anchor="middle" fill="#555">питание усилителя +5 В</text>
+<polyline points="770,238 850,238 850,335 930,335" fill="none" stroke="#00796b" stroke-width="3" stroke-linejoin="round" stroke-dasharray="7 5"/>
+<text x="60" y="470" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Порядок</text>
+<text x="60" y="491" font-size="13" text-anchor="start" fill="#222">1. Сначала отключить наушники от выводов 17 и 18 (прежнее прямое подключение) — в этом режиме они молчат.</text>
+<text x="60" y="512" font-size="13" text-anchor="start" fill="#222">2. Собрать пять проводов по схеме, SCK модуля — на «землю». Проверить, потом подать питание.</text>
+<text x="60" y="533" font-size="13" text-anchor="start" fill="#222">3. Напишите мне — переключу приёмник на выход «PCM5102» (в его меню это «Вихід звуку»; плата перезапустится).</text>
+<text x="60" y="554" font-size="13" text-anchor="start" fill="#222"></text>
+<text x="60" y="575" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Что проверить на самом модуле (обычная фиолетовая плата GY-PCM5102)</text>
+<text x="60" y="596" font-size="13" text-anchor="start" fill="#222">• На обороте четыре перемычки. Должно быть: 1 (FLT) — L,  2 (DEMP) — L,  3 (XSMT) — H,  4 (FMT) — L.</text>
+<text x="60" y="617" font-size="13" text-anchor="start" fill="#222">  Если перемычка 3 не запаяна на «H», модуль молчит — это самая частая причина тишины.</text>
+<text x="60" y="638" font-size="13" text-anchor="start" fill="#222">• Рядом с выводом SCK часто есть площадка для капли припоя на «землю» — тогда провод от SCK не нужен.</text>
+<text x="60" y="659" font-size="13" text-anchor="start" fill="#222">• VIN: на плате свой стабилизатор 3,3 В, поэтому питание — 5 В (вывод 5V платы приёмника).</text>
+<text x="60" y="680" font-size="13" text-anchor="start" fill="#222">  Пришлите фото вашего модуля с двух сторон до включения — сверю перемычки и питание.</text>
+<text x="60" y="701" font-size="13" text-anchor="start" fill="#222"></text>
+<text x="60" y="722" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Чего ждать</text>
+<text x="60" y="743" font-size="13" text-anchor="start" fill="#222">• Шум от питания процессора в наушники больше не попадает: звук идёт в ЦАП цифрой, у ЦАП своё питание.</text>
+<text x="60" y="764" font-size="13" text-anchor="start" fill="#222">• Выход ЦАП — линейный (до 2,1 В на нагрузке от 1 кОм). Наушники 16–32 Ом прямо от него играют тихо и</text>
+<text x="60" y="785" font-size="13" text-anchor="start" fill="#222">  на громких местах с искажениями — этого хватит, чтобы оценить чистоту звука. Полную громкость даёт усилитель.</text>
+<text x="60" y="806" font-size="13" text-anchor="start" fill="#222">• Стерео: левый и правый выходят как есть (выход приёмника — «два канали»).</text>
+<text x="60" y="827" font-size="13" text-anchor="start" fill="#222"></text>
+<text x="60" y="848" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Проверено по прошивке (выводы, формат I2S 16 бит, 32 кГц, такт от ЦАП не нужен). На модуле не проверялось.</text></svg>

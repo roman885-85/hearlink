@@ -1,0 +1,16 @@
+# результаты сборки и рабочие копии
+build/
+kit/
+tools/sim/out/
+tools/simrx/out/
+tools/simrx/build/
+tools/sim/build/
+__pycache__/
+.DS_Store
+# звуки (исходники мелодий и голоса) и собранный из них раздел — выкладываются только в выпусках
+assets/
+assets-src/
+docs/demo-*.mp3
+# личное: рабочий журнал, копии разметки чужих плат
+ЖУРНАЛ.md
+backup/
