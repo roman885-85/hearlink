@@ -100,7 +100,9 @@ to `?` on the port.
 
 ## Updating a kit that is already working
 
-No cable is needed — see [User guide → Firmware update](user-guide.md#firmware-update).
+No cable is needed. Put the file `hearlink-<version>.bin` on a memory card (FAT32) into the `UPDATE` folder in the
+card root: `UPDATE/hearlink-2.34.bin` (any name, the `.bin` extension is required), insert the card into the
+transmitter and press «Оновити» (Update) — see [User guide → Firmware update](user-guide.md#firmware-update).
 
 ## Building from source
 

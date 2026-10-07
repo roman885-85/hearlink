@@ -78,6 +78,28 @@ comparing a four-digit code.
 3. Wire everything according to the [schematics](docs/en/hardware.md).
 4. On the transmitter: “Приймачі / Receivers” → “+ Add”, compare the code on both screens, “Allow”.
 
+## Updating from a memory card: where to put the file and how to name it
+
+```
+microSD card (FAT32)
+└── UPDATE/                  ← a folder in the card root, upper-case name
+    └── hearlink-2.34.bin    ← the firmware file from a release
+```
+
+- **Folder** — `UPDATE` in the root of the card. The transmitter creates it by itself as soon as it sees a card;
+  you can also create it on a computer.
+- **File** — `hearlink-<version>.bin` from the [releases](../../releases/latest) page (in the flashing kit it is in
+  `на карту/UPDATE/`). The same file is used for the receivers and for the transmitter.
+- **The file name can be anything**; only the `.bin` extension is required (upper or lower case). The transmitter
+  reads the version from inside the file, not from its name. Files whose names start with a dot are skipped.
+- If the folder holds several files, the one with the newest version is taken. It is better to delete old files.
+- `bootloader.bin`, `partitions.bin`, `boot_app0.bin` and `assets.bin` from the flashing kit **do not belong here** —
+  they are parts for cable flashing; the transmitter will report that the file is not suitable.
+- The card must be FAT32. Insert it into the transmitter: it finds the file and opens the «Оновлення» (Update)
+  window → **«Оновити» (Update)**.
+
+Details: [User guide → Firmware update](docs/en/user-guide.md#firmware-update).
+
 ## Project status
 
 The working version is **2.34**. Bench-tested: one transmitter and two receivers, hours of continuous operation,

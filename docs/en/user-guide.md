@@ -86,8 +86,11 @@ itself (to those that were switched off — when they are switched on). A lost r
 ![Update](../img/tx-17e-onovlennya-nadsylayu.png) ![Warning](../img/tx-17i0-onovlennya-poperedzhennya.png)
 
 **Via the memory card (no cable needed):**
-1. Put the file `hearlink-<version>.bin` on the card into the **UPDATE** folder (the transmitter creates it by
-   itself).
+1. Put the file `hearlink-<version>.bin` from the [releases](../../../releases/latest) on the card (FAT32) into the
+   **`UPDATE`** folder in the card root: `UPDATE/hearlink-2.34.bin`. The transmitter creates the folder by itself.
+   The file name can be anything, only the `.bin` extension is required: the transmitter reads the version from
+   inside the file and takes the newest of several files. Do not put the cable-flashing parts here
+   (`bootloader.bin`, `partitions.bin`, `boot_app0.bin`, `assets.bin`).
 2. Insert the card — the transmitter finds the file and opens the «Оновлення» (Update) window.
 3. **«Оновити» (Update)**: first the receivers over the radio (about 15 s of sending, the sound on air is stopped
    for this time; writing in the receivers takes another 15–30 s), then the transmitter writes itself (about a
