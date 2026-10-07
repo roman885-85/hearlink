@@ -14,6 +14,12 @@ in the board itself.
 
 ![Receiver screens](docs/img/rx-screens.gif)
 
+<p>
+<img src="docs/photos/esp32-4848s040-front.jpg" height="220" alt="Transmitter module"> 
+<img src="docs/photos/esp32-s3-devkit-n16r8.jpg" height="220" alt="Receiver board"> 
+<img src="docs/photos/m75-oled-encoder.jpg" height="220" alt="Display with knob">
+</p>
+
 ## Features
 
 **Transmitter** (ESP32-4848S040 module with a 4″ touch screen)
@@ -85,7 +91,8 @@ Source comments are in Russian; on-screen texts are in Ukrainian and English.
 The whole product — firmware, tools, schematics, documentation and media — is our own work and is distributed
 freely under the [MIT License](LICENSE): use it, change it, build it, sell devices based on it; just keep the
 copyright notice. All media content (test music, voice announcements, illustrations) was generated with AI and is
-covered by the same license.
+covered by the same license. The only exception is the module photos in `docs/photos/`: they belong to the
+modules' manufacturers and sellers.
 
 ## Third-party components
 

@@ -10,5 +10,8 @@
 | esptool by Espressif — included only in the release flashing kit | `kit/tools/esptool` | GPL-2.0-or-later |
 | Test music and voice announcements — AI-generated, part of this project | `assets-src/`, release file `assets.bin` | MIT (this project) |
 
+Photos in `docs/photos/` show third-party modules and belong to their manufacturers and sellers; they are not covered
+by the MIT license of this project.
+
 The church emblem in `hearlink/logo.h` and `hearlink/logo_oled.h` belongs to the «Відродження» church.
 Replace it with your own (`tools/gen_logo.py`) if you build the kit for another organization.
