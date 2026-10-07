@@ -80,6 +80,13 @@ been measured yet — see [How it works](docs/en/technical.md#not-verified).
 
 Source comments are in Russian; on-screen texts are in Ukrainian and English.
 
+## License
+
+The whole product — firmware, tools, schematics, documentation and media — is our own work and is distributed
+freely under the [MIT License](LICENSE): use it, change it, build it, sell devices based on it; just keep the
+copyright notice. All media content (test music, voice announcements, illustrations) was generated with AI and is
+covered by the same license.
+
 ## Third-party components
 
 Roboto (Apache 2.0) and Montserrat (SIL OFL 1.1) fonts as bitmap tables; the U8g2 library (BSD-2); the

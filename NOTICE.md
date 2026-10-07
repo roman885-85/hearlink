@@ -8,7 +8,7 @@
 | Arduino-ESP32 core 3.3.x / ESP-IDF 5.5 (not included) | build | Apache 2.0, LGPL 2.1 |
 | Helix MP3 decoder shipped with the Arduino-ESP32 core (not included) | `hearlink/txmp3.h` uses it | RPSL / RCSL |
 | esptool by Espressif — included only in the release flashing kit | `kit/tools/esptool` | GPL-2.0-or-later |
-| Voice announcements were synthesized with Microsoft Edge neural voices | release file `assets.bin` | — |
+| Test music and voice announcements — AI-generated, part of this project | `assets-src/`, release file `assets.bin` | MIT (this project) |
 
 The church emblem in `hearlink/logo.h` and `hearlink/logo_oled.h` belongs to the «Відродження» church.
 Replace it with your own (`tools/gen_logo.py`) if you build the kit for another organization.
