@@ -1,5 +1,22 @@
 # Changelog / Історія версій
 
+## 2.44 — 2026-10-08
+- EN: receiver: the playback-rate adjustment now uses a windowed-sinc interpolator (24 taps × 128 phases) instead of
+  the cubic one, whose error in the treble was modulated 50 times a second with the PCM5102 DAC (a background buzz).
+- UK: приймач: підгонка темпу тепер через таблицю sinc (24 відліки × 128 фаз) замість кубічної, похибка якої на
+  верхах із ЦАП PCM5102 «тремтіла» 50 разів на секунду (фонове дзижчання).
+
+## 2.43 — 2026-10-08
+- EN: “highest” quality in stereo: the packet also carries a spare copy of the channel difference of the previous
+  frame (16 kHz ADPCM, 19 bytes; packet 239 bytes), so a frame restored from the copy stays stereo and the
+  transmitter no longer folds stereo into mono for half a second after every short jam. Sent only when all receivers
+  on the air understand it (2.43+); every 64th packet has the old length so that an older receiver is still heard
+  and updated.
+- UK: «найвища» в стерео: у пакеті йде ще й запасна копія різниці каналів попереднього кадру (ADPCM 16 кГц, 19 байт;
+  пакет 239 байт) — кадр, відновлений із копії, лишається стерео, і передавач більше не зводить стерео в моно на
+  пів секунди після кожного короткого затору. Надсилається, лише коли всі приймачі на зв'язку її розуміють (2.43+);
+  кожен 64-й пакет — старої довжини, щоб старіший приймач було чути й оновлено.
+
 ## 2.42 — 2026-10-08
 - EN: automatic update: when a receiver with firmware older than the transmitter's comes on the air, the transmitter
   starts the over-the-air distribution by itself (after ~10 s; at most two attempts per receiver per power-on;

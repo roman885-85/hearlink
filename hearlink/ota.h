@@ -836,6 +836,17 @@ static void otaAutoTick() {
   uint32_t now = millis();
   if (!cfg.isTx || now - lastTick < 1000) return;
   lastTick = now;
+  {   // копию разности каналов (с 2.43, см. proto.h) слать, только когда её понимают все приёмники на связи
+    bool any = false, all = true;
+    portENTER_CRITICAL(&peerMux);
+    for (auto &p : peers)
+      if (p.used && p.seenMs && msSince(p.seenMs, now) < 6000) {
+        any = true;
+        if (!(p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 43))) all = false;
+      }
+    portEXIT_CRITICAL(&peerMux);
+    txSideCopyOn = any && all;
+  }
   if (!cfg.autoUpd || now < 20000 || otaTxActive() || txPause || (lastStart && now - lastStart < 120000)) return;
   uint8_t maj, mn;
   fwParts(maj, mn);

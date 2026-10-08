@@ -168,10 +168,12 @@ static void radioOnRecv2(const esp_now_recv_info_t *info, const uint8_t *data, i
   }
   uint8_t aq = len >= (int)sizeof(Hdr) ? h->q & Q_MASK : 255;
   bool ast = len >= (int)sizeof(Hdr) && (h->q & Q_STEREO);
-  if (aq >= Q_COUNT || h->magic != MAGIC || h->ver != PROTO_VER || (h->q & ~(Q_MASK | Q_STEREO | Q_LANG_EN)) || (ast && !qStereoOk(aq)) || len != qPktLen(aq, ast)) {
+  if (aq >= Q_COUNT || h->magic != MAGIC || h->ver != PROTO_VER || (h->q & ~(Q_MASK | Q_STEREO | Q_LANG_EN)) || (ast && !qStereoOk(aq)) ||
+      (len != qPktLen(aq, ast) && !(aq == Q_HI && ast && len == qPktLen(aq, ast) + SC_LEN))) {
     rForeign = rForeign + 1;
     return;
   }
+  rPktSc = len != qPktLen(aq, ast);   // «найвища» стерео с копией разности каналов (с 2.43)
   if (!rOnAudio) return;   // передатчику чужой звук не нужен
   rLastAnyMs = millis();
   rAnyCh = h->flags >> 4;

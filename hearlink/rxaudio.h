@@ -161,6 +161,7 @@ static void rxEmit(int16_t *x, int16_t *sd, const QDef &d, bool fadeIn) {
   }
 }
 
+static volatile uint32_t rxScCount, rxMonoRec;   // кадров из копий: со стерео (копия разности) и в моно — для n8=8
 // Вызывается из задачи Wi-Fi на каждый свой пакет.
 static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
   static int16_t tmp[Q_MAX_N], tmpS[Q_MAX_N];
@@ -237,7 +238,12 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
     }
     for (int k = rec; k >= 1; k--) {   // от давнего кадра к недавнему; копии несут только середину — кадр выйдет в моно
       adpcmDecodeBlock(cp + (k - 1) * qBlock(q), d.n, tmp);
-      rxEmit(tmp, NULL, d, fadeIn);
+      bool sc = st && rPktSc && k == 1 && q == Q_HI;   // у прошлого кадра есть и копия разности — он выйдет в стерео
+      if (sc) {
+        scDecode(cp + copies * qBlock(q), tmpS);
+        rxScCount = rxScCount + 1;
+      } else if (st) rxMonoRec = rxMonoRec + 1;
+      rxEmit(tmp, sc ? tmpS : NULL, d, fadeIn);
       fadeIn = false;
       if (h->flags & FLAG_THIN) sThinned = sThinned + 1;
       else sRecovered = sRecovered + 1;
@@ -472,8 +478,41 @@ static inline float rxVolumeScaled(int step) {
   return step * mx / 20.0f;
 }
 
+// Подгонка темпа (с 2.44): таблица sinc с окном Кайзера, 24 отсчёта × 128 фаз, между фазами — по прямой.
+// Прежняя (кубическая, по 4 отсчётам) ошибалась на верхах: в полосе 4–8 кГц −30 дБ к звуку, 8–14 кГц −14 дБ. С ЦАП
+// темп держится +1560 ppm, и эта ошибка «дрожала» 50 раз в секунду — владелец 08.10: «цифровая грязь в виде фонового
+// жужжания в некоторых гармониках». Новая: −92 дБ до 8 кГц, −41 дБ в 8–14 кГц (счёт на проверочной мелодии).
+enum { RXRS_TAPS = 24, RXRS_PH = 128 };
+static float *rxRsTab;   // [RXRS_PH + 1][RXRS_TAPS], во внутренней памяти (12 КБ) — только у приёмника
+static float rsI0(float x) {
+  float s = 1, t = 1;
+  for (int k = 1; k < 30; k++) {
+    t *= (x / (2 * k)) * (x / (2 * k));
+    s += t;
+  }
+  return s;
+}
+static bool rsBegin() {
+  rxRsTab = (float *)heap_caps_malloc((RXRS_PH + 1) * RXRS_TAPS * sizeof(float), MALLOC_CAP_INTERNAL);
+  if (!rxRsTab) return false;
+  const float beta = 8.5f, i0b = rsI0(beta);
+  const int h = RXRS_TAPS / 2;
+  for (int p = 0; p <= RXRS_PH; p++) {
+    float sum = 0, *c = rxRsTab + p * RXRS_TAPS;
+    for (int j = 0; j < RXRS_TAPS; j++) {
+      float d = (j - (h - 1)) - p / (float)RXRS_PH, u = d / h, w = fabsf(u) < 1 ? rsI0(beta * sqrtf(1 - u * u)) / i0b : 0;
+      float x = PI * d;
+      c[j] = (fabsf(x) < 1e-6f ? 1.0f : sinf(x) / x) * w;
+      sum += c[j];
+    }
+    for (int j = 0; j < RXRS_TAPS; j++) c[j] /= sum;
+  }
+  return true;
+}
+
 static void rxTask(void *) {
   static int16_t out[OUT_BLOCK * 2];
+  bool rsOk = rsBegin();   // памяти не нашлось — останется прежняя, кубическая
   if (!rxOutBegin()) {
     Serial.println("вихід звуку не запустився");
     vTaskDelete(NULL);
@@ -701,11 +740,38 @@ static void rxTask(void *) {
     for (int i = 0; i < OUT_BLOCK; i++) {
       float y, ys = 0;   // середина и разность каналов
       uint32_t tail = rxTail;
-      if (priming || (int32_t)(rxHead - tail) < 4) {
+      if (priming || (int32_t)(rxHead - tail) < (rsOk ? RXRS_TAPS / 2 + 2 : 4)) {
         last *= 0.9f;    // запас пуст — плавно к тишине
         y = last;
         if (!priming) under++;
         fade = 0;
+      } else if (rsOk) {
+        float ph = frac * (RXRS_PH / 4294967296.0f);
+        int pi = (int)ph;
+        float a = ph - pi, accM = 0, accS = 0;
+        const float *c0 = rxRsTab + pi * RXRS_TAPS, *c1 = c0 + RXRS_TAPS;
+        uint32_t base = tail - (RXRS_TAPS / 2 - 1);
+        for (int j = 0; j < RXRS_TAPS; j++) {
+          float c = c0[j] + (c1[j] - c0[j]) * a;
+          accM += c * rxRing[(base + j) & (RING - 1)];
+          if (stOut) accS += c * rxRingS[(base + j) & (RING - 1)];
+        }
+        y = accM;
+        ys = accS;
+        uint64_t acc = (uint64_t)frac + step;
+        rxTail = tail + (uint32_t)(acc >> 32);
+        frac = (uint32_t)acc;
+        if (fade < 1) {
+          fade += fadeStep;
+          if (fade >= 1) {
+            fade = 1;
+            fadeStep = FADE_FAST;
+          }
+          float k = fadeStep == FADE_SLOW ? fade * fade : fade;
+          y *= k;
+          ys *= k;
+        }
+        last = y;
       } else {
         float xm = rxRing[(tail - 1) & (RING - 1)], x0 = rxRing[tail & (RING - 1)];
         float x1 = rxRing[(tail + 1) & (RING - 1)], x2 = rxRing[(tail + 2) & (RING - 1)];

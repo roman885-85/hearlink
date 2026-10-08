@@ -378,6 +378,7 @@ static volatile bool txMute;               // тишина в эфире: пак
 #define TX_HARD_US 20000
 static volatile bool txThinOn = true;
 static volatile uint32_t txThinned, txSkipped;   // за секунду: пакетов пропущено с заменой копиями и кадров потеряно совсем
+static volatile bool txSideCopyOn;            // слать копию разности каналов: её понимают все приёмники на связи (см. proto.h)
 static volatile uint32_t txThinMs;               // когда последний раз шёл затор (несколько пропусков подряд), а не одиночный пропуск
 // Переход на другой канал без паузы (см. txscan.h): главный цикл выбирает канал и ставит txHopCh; задача передачи
 // назначает номер пакета, с которого передатчик будет на новом канале, объявляет его приёмникам и в нужный миг
@@ -396,12 +397,13 @@ static void txTask(void *) {
   static uint8_t hist[Q_MAX_COPIES][3 + Q_MAX_N / 2];   // сжатые кадры N−1 и N−2
   static uint8_t blk[3 + Q_MAX_N / 2];
   static uint8_t blkS[3 + Q_MAX_N / 2];
+  static uint8_t scNow[SC_LEN], scHist[SC_LEN];   // копия разности: этого кадра и прошлого
   static int16_t pcm[FRAME], side[FRAME];     // середина (Л+П)/2 и разность (Л−П)/2
   static int16_t acc[FRAME * 6], accS[FRAME * 6];   // набор на пакет, 32 кГц
   static int16_t frm[Q_MAX_N], frmS[Q_MAX_N];       // он же после перехода на 16 кГц
   static Decim2 dec, decS;
   Hdr *h = (Hdr *)pkt;
-  int idxCarry = 0, idxCarryS = 0, q = -1, accN = 0;
+  int idxCarry = 0, idxCarryS = 0, idxCarrySc = 0, q = -1, accN = 0;
   bool st = false;
   uint8_t accFlags = 0;
   uint32_t seq = 0, boot = secEpoch;   // эпоха: номер этого включения (к запуску задачи уже увеличен и записан)
@@ -516,7 +518,8 @@ static void txTask(void *) {
     const QDef &d = QDEF[q];
     if (st) {   // при заторе стерео плавно сводится в моно: кадры из копий несут только середину, и разность «через раз» дребезжала бы
       static float sg = 1;
-      float goal = txThinMs && msSince(txThinMs) < 500 ? 0 : 1;
+      // (с 2.43 на «найвищій» копии несут и разность — сводить незачем; осталось для прочих качеств и старых приёмников)
+      float goal = !(txSideCopyOn && q == Q_HI) && txThinMs && msSince(txThinMs) < 500 ? 0 : 1;
       if (sg != goal || goal == 0)
         for (int i = 0; i < FRAME; i++) {
           sg += goal > sg ? 1.0f / 6400 : goal < sg ? -1.0f / 640 : 0;   // уходит за 20 мс, возвращается за 200
@@ -543,6 +546,8 @@ static void txTask(void *) {
     if (d.pcm) adpcmEncodeBlock(src, d.n, blk, idxCarry);
     else adpcmEncodeBlockBest(src, d.n, blk, idxCarry);
     if (st) adpcmEncodeBlockBest(srcS, d.n, blkS, idxCarryS);
+    if (st && q == Q_HI) scEncode(srcS, scNow, idxCarrySc);
+    else memset(scNow, 0, SC_LEN);
 
     {   // переход на другой канал вместе с приёмниками
       static bool armed;
@@ -591,6 +596,10 @@ static void txTask(void *) {
       w += bl;
     }
     for (int k = 0; k < qCopies(q, st); k++, w += bl) memcpy(w, hist[k], bl);
+    if (st && q == Q_HI && txSideCopyOn && (seq & 63)) {   // копия разности прошлого кадра; каждый 64-й пакет — прежней длины
+      memcpy(w, scHist, SC_LEN);
+      w += SC_LEN;
+    }
     txPaused = txPause;
     if (!txPause) {
       static uint8_t run;   // сколько пакетов подряд пропущено
@@ -642,6 +651,7 @@ static void txTask(void *) {
     } else rLastDoneMs = millis();   // сторож радио во время поиска канала молчит
     memcpy(hist[1], hist[0], bl);     // копии сдвигаются: N−1 становится N−2
     memcpy(hist[0], blk, bl);
+    memcpy(scHist, scNow, SC_LEN);
     txFrames = txFrames + 1;
   }
 }

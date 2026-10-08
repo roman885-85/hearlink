@@ -895,6 +895,9 @@ static void command(String s) {
                 float low = rxLimLow;
                 Serial.printf("обмежувач: працював %.1f %% часу, найбільше −%.1f дБ; гучність %u, чіткість %u\n", (out - out0) ? 100.0 * rxLimBusy / (out - out0) : 0.0,
                               low < 1 ? -20 * log10f(low) : 0.0f, cfg.volume, cfg.rxClarity);
+                Serial.printf("кадрів із запасних копій: зі стерео %u, у моно %u\n", (unsigned)rxScCount, (unsigned)rxMonoRec);
+                rxScCount = 0;
+                rxMonoRec = 0;
               }
               rxLimBusy = 0;
               rxLimLow = 1;
