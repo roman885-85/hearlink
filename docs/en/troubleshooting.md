@@ -42,7 +42,7 @@
 | the sound "drifts" in pitch | very uneven air | increase "Buffer" manually (15–25 ms) |
 | quiet even at 100 % | directly connected headphones have low output; «Межа гучн.» (Volume limit) is turned on | check "Volume limit"; a headphone amplifier; headphones with a higher sensitivity |
 | sound in one ear only / "inside out" | «Виводи» (Pins) does not match the wiring; balance | headphones directly — «2 канали» (2 channels); «Баланс» (Balance) — «рівно» (center); «Навушники → тест» (Headphones → test) shows which is left and which is right |
-| PCM5102 is silent | **the solder jumpers on the back of the module are open (H3L must be bridged to “H”)**; the PCM5102 output is not selected; SCK is floating; BCK/LCK/DIN are swapped | menu «Вихід звуку: PCM5102»; SCK to pin 10 or to ground; jumper 3 to “H”; `n8=7` shows whether the clocks are running — see [Hardware](hardware.md#external-pcm5102-dac-on-the-receiver) |
+| PCM5102 is silent | **the module's XSMT is floating** (the H3L jumper is open): a wire from XSMT to receiver pin 14 or to 3V3; the PCM5102 output is not selected; SCK is floating; BCK/LCK/DIN are swapped | menu «Вихід звуку: PCM5102»; SCK to pin 10 or to ground; jumper 3 to “H”; `n8=7` shows whether the clocks are running — see [Hardware](hardware.md#external-pcm5102-dac-on-the-receiver) |
 | noise in silence | a one-bit output without a filter; power | an RC filter as in the schematic; another supply/power bank; `X` from the transmitter — a check of where the noise comes from |
 | clicks at power-on / when falling asleep | no coupling capacitors | build the output as in the schematic |
 | the knob turns "the wrong way" | pins A and B are swapped | swap 5 and 6 |

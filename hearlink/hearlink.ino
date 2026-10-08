@@ -807,6 +807,21 @@ static void command(String s) {
           if (p == 9) rxEarStart(val != 0);
           else if (p == 7) rxUiAsk = (uint8_t)val;   // n7=1 меню, n7=2 «Зв'язок», n7=3 главный экран — для замеров
           else if (p == 8) {   // n8=1 — как настроен вывод кнопки ручки; n8=<мс> — «нажать» её программно на столько миллисекунд
+            if (val == 8) {   // n8=8 — настоящие частоты за время с прошлого такого вызова: звук из эфира (часы передатчика) и выход (свои часы)
+              static int64_t t0;
+              static uint32_t in0, out0;
+              int64_t t = esp_timer_get_time();
+              uint32_t in = rxInSamples, out = rxOutSamples;
+              if (t0) {
+                double sec = (t - t0) / 1e6, fin = (in - in0) / sec, fout = (out - out0) / sec;
+                Serial.printf("за %.1f с: з ефіру %.2f відліків/с (%+.0f ppm від 32000), на вихід %.2f відліків/с (%+.0f ppm), вихід відносно ефіру %+.0f ppm; темп %+.0f ppm\n",
+                              sec, fin, (fin / 32000 - 1) * 1e6, fout, (fout / 32000 - 1) * 1e6, (fout / fin - 1) * 1e6, (double)rxRatioPpm);
+              }
+              t0 = t;
+              in0 = in;
+              out0 = out;
+              return;
+            }
             if (val == 7) {   // n8=7 — что на выводах выхода звука: доля единиц и число перепадов за 20 мс (BCK, LRCK, данные; PDM «+», «−»)
               for (int pin : { PIN_I2S_MCLK, PIN_I2S_BCK, PIN_I2S_WS, PIN_I2S_DOUT, PIN_OUT_P, PIN_OUT_N }) {
                 gpio_input_enable((gpio_num_t)pin);
@@ -822,7 +837,8 @@ static void command(String s) {
                 Serial.printf("вивід %d: одиниць %u %%, перепадів за 20 мс %u (≈%u Гц), опитувань %u\n", pin, (unsigned)(n ? ones * 100 / n : 0), (unsigned)edges,
                               (unsigned)(edges * 25), (unsigned)n);
               }
-              Serial.printf("вихід: %s, %s\n", cfg.output == OUT_I2S ? "PCM5102 (I2S): SCK 10, BCK 11, LRCK 12, DIN 13" : "PDM: 17, 18", rxOutLive() ? "живий" : "СТОЇТЬ");
+              Serial.printf("вихід: %s, %s; XSMT (вивід %d): %d\n", cfg.output == OUT_I2S ? "PCM5102 (I2S): SCK 10, BCK 11, LRCK 12, DIN 13" : "PDM: 17, 18",
+                            rxOutLive() ? "живий" : "СТОЇТЬ", PIN_DAC_XSMT, gpio_get_level((gpio_num_t)PIN_DAC_XSMT));
               return;
             }
             if (val == 2) gpio_wakeup_enable((gpio_num_t)PIN_ENC_SW, GPIO_INTR_LOW_LEVEL);   // n8=2 — оставить вывод таким, каким его оставлял сон до 2.32

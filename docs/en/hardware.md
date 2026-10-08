@@ -73,7 +73,7 @@ easy to find by name: “ESP32-4848S040”, “SH1106 1.3 OLED EC11”, “MAX97
 | Knob: A (TRA), B (TRB), button (PSH) | 5, 6, 7 |
 | Module buttons CON, BAK (not used, pulled up) | 15, 16 |
 | Audio output "+", "−" (one-bit PDM) | 17, 18 |
-| PCM5102: SCK (master clock 8.192 MHz), BCK, LCK, DIN | 10, 11, 12, 13 |
+| PCM5102: SCK (master clock 8.192 MHz), BCK, LCK, DIN, XSMT | 10, 11, 12, 13, 14 |
 | On-board RGB LED (WS2812) | 48 (38 on newer boards) |
 
 ### Transmitter on the ESP32-4848S040 module
@@ -124,19 +124,23 @@ The schematics are drawn by `tools/gen_schema.py`; they are also available as SV
 |---|---|
 | VIN | 5V |
 | GND | GND |
-| SCK | **10** — master clock 8.192 MHz (since version 2.35) |
+| SCK | **GND** (as in most circuits with this module) or pin **10** — master clock 8.192 MHz (since version 2.35) |
+| XSMT | **14** — “sound on” (since version 2.36) or 3V3 |
 | BCK | 11 |
 | LCK (LRCK) | 12 |
 | DIN | 13 |
 
 - In the receiver menu: «Вихід звуку» (Audio out) → **PCM5102** (the board restarts); from the serial port — `o1`.
   Headphones on pins 17/18 are silent in this mode.
-- **SCK**: either to pin 10, or to ground (then the DAC recovers the clock from BCK by itself). If SCK on your
-  module is already shorted to ground with a solder blob, do **not** connect pin 10 to it. SCK must never be left
-  floating: the DAC stays silent.
-- **The solder jumpers on the back of the module must be closed.** Some GY-PCM5102 modules ship with them open —
-  then the DAC is silent although every signal is present (verified on 2026-10-08: sound appeared as soon as the
-  middle pad of H3L was bridged to “H”). Each jumper has three pads: the middle one and “L” / “H”.
+- **SCK**: to ground (the DAC recovers the clock from BCK and cleans it by itself — this is the proven option) or
+  to pin 10. If SCK on your module is already shorted to ground with a solder blob, do **not** connect pin 10 to
+  it. SCK must never be left floating: the DAC stays silent.
+- **XSMT (“sound on”).** Some GY-PCM5102 modules ship with the solder jumpers on the back open — then XSMT floats
+  and the DAC is silent although every signal is present (verified on 2026-10-08). Soldering is not required:
+  since version 2.36 the receiver itself keeps pin **14** high while the output is running and drops it before
+  sleep — a wire from the module's XSMT pin to pin 14 (or to 3V3) is enough. If the H3L jumper is already bridged
+  to “H”, do **not** connect pin 14 to XSMT.
+- The other jumpers (each has three pads: the middle one and “L” / “H”) are worth closing too, for reliability:
 
   | Jumper | DAC pin | Sets | Bridge to | Notes |
   |---|---|---|---|---|

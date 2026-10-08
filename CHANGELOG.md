@@ -1,5 +1,15 @@
 # Changelog / Історія версій
 
+## 2.36 — 2026-10-08
+- EN: PCM5102: the receiver drives the DAC's XSMT (“sound on”) from pin 14, so modules with open solder jumpers
+  work without soldering; the DAC is muted before the clocks stop (no click on sleep). Wider margin of the playback
+  rate adjustment (the transmitter's audio clock runs +0.16 % fast; the I2S output is exact). `n8=8` measures the
+  true rates.
+- UK: PCM5102: приймач сам подає на XSMT ЦАП («звук увімкнено») рівень із виводу 14 — модулі з незапаяними
+  перемичками працюють без паяння; перед зупинкою тактів ЦАП приглушується (без клацання). Більший запас
+  підстроювання темпу (звук передавача йде на 0,16 % швидше номіналу; вихід I2S — точний). `n8=8` міряє справжні
+  частоти.
+
 ## 2.35 — 2026-10-08
 - EN: receiver with an external PCM5102 DAC: the master clock (SCK, 8.192 MHz) is now output on pin 10; the
   “output alive” status and the `n8=7` pin check work for the I2S output too.

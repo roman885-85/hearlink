@@ -70,6 +70,7 @@ static void rxEarStart(bool on) {
   rxEarTest = on;
 }
 static volatile uint16_t rxVuL, rxVuR;     // наибольший отсчёт левого и правого канала с прошлого чтения экраном (стрелки)
+static volatile uint32_t rxInSamples, rxOutSamples;   // сколько отсчётов принято из эфира и отдано на выход (замер настоящих частот, n8=8)
 static volatile uint8_t rxUiAsk;           // проверка с порта (n7=…): открыть экран — 1 меню, 2 «Зв'язок», 3 главный
 // проверка пробного тона
 static volatile uint32_t tZero, tBreaks;
@@ -243,8 +244,27 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
   else adpcmDecodeBlock(payload, d.n, tmp);
   if (st) adpcmDecodeBlock(sideBlk, d.n, tmpS);
   rxEmit(tmp, st ? tmpS : NULL, d, fadeIn);
+  rxInSamples = rxInSamples + (uint32_t)gap * outN;   // вместе с пропавшими: счёт идёт по номерам пакетов, то есть по часам передатчика
   rxLastSeq = h->seq;
   sFrames = sFrames + 1;
+}
+
+// Вывод XSMT модуля PCM5102 («звук включён»). У модулей GY-PCM5102 он заводится перемычкой H3L на обороте, и у части
+// модулей перемычки не запаяны — ЦАП молчит при исправных тактах и данных (владелец 08.10: «если замкнуть H3L так,
+// чтобы соединить центральный контакт с контактом H — звук появляется»; «сделай, чтобы звук был без замыкания h3»).
+// Приёмник сам держит XSMT высоким, пока выход работает: провод от вывода XSMT модуля — на вывод 14. Перед остановкой
+// тактов (сон) сначала глушим ЦАП — без щелчка. Если перемычка H3L запаяна на «H», вывод 14 к XSMT НЕ подключать.
+static void rxDacUnmute(bool on) {
+  if (cfg.output != OUT_I2S) return;
+  static bool ready;
+  if (!ready) {
+    pinMode(PIN_DAC_XSMT, OUTPUT);
+    gpio_input_enable((gpio_num_t)PIN_DAC_XSMT);   // чтобы уровень вывода можно было прочесть проверкой n8=7
+    ready = true;
+  }
+  if (on) vTaskDelay(pdMS_TO_TICKS(30));   // такты уже идут — дать ЦАП их поймать, потом открыть звук
+  digitalWrite(PIN_DAC_XSMT, on ? HIGH : LOW);
+  if (!on) vTaskDelay(pdMS_TO_TICKS(30));  // ЦАП плавно глушит звук сам — подождать, потом можно снимать такты
 }
 
 static bool rxOutBegin() {
@@ -289,7 +309,9 @@ static bool rxOutBegin() {
     gpio_set_drive_capability((gpio_num_t)PIN_OUT_P, GPIO_DRIVE_CAP_3);
     gpio_set_drive_capability((gpio_num_t)PIN_OUT_N, GPIO_DRIVE_CAP_3);
   }
-  return i2s_channel_enable(rxI2s) == ESP_OK;
+  if (i2s_channel_enable(rxI2s) != ESP_OK) return false;
+  rxDacUnmute(true);
+  return true;
 }
 
 // ---- Проверка выхода на слух: откуда шум в тишине (06.10: при нулях на входе преобразователя шум остаётся).
@@ -476,6 +498,7 @@ static void rxTask(void *) {
         rxPinsStatic(0);
         rxOutProbe();
       } else {
+        rxDacUnmute(false);
         i2s_channel_disable(rxI2s);   // у PCM5102 без тактов выход глушится сам
         rxOutProbe();                 // такты встали — передатчик увидит «вихід СТОЇТЬ»
       }
@@ -486,7 +509,10 @@ static void rxTask(void *) {
       rxAudioStopped = true;
       while (!rxAudioOn) vTaskDelay(pdMS_TO_TICKS(20));
       if (cfg.output == OUT_PDM) rxPinsPdm();
-      else i2s_channel_enable(rxI2s);
+      else {
+        i2s_channel_enable(rxI2s);
+        rxDacUnmute(true);
+      }
       rxAudioStopped = false;
       rxDacTestAsk = false;
       dcStart = -32768.0f;   // и так же плавно поднять
@@ -555,11 +581,14 @@ static void rxTask(void *) {
       fillSm += (fill - fillSm) * 0.004f;
       float err = fillSm - (float)target;
       integ += err * 3e-10f;
-      if (integ > 0.002f) integ = 0.002f;
-      if (integ < -0.002f) integ = -0.002f;
+      // Пределы: замер 08.10 — звук из эфира идёт 32 050 отсчётов/с (+1560 ppm: АЦП передатчика даёт 64 100 в секунду
+      // вместо 64 000), а выход I2S на внешний ЦАП — ровно 32 000. Однобитный выход (PDM) «спешит» так же, как
+      // передатчик, поэтому там подстройка была около нуля, а с ЦАП держалась у прежнего края ±2000 ppm.
+      if (integ > 0.0035f) integ = 0.0035f;
+      if (integ < -0.0035f) integ = -0.0035f;
       float adj = err * 5e-6f + integ;
-      if (adj > 0.003f) adj = 0.003f;
-      if (adj < -0.003f) adj = -0.003f;
+      if (adj > 0.0045f) adj = 0.0045f;
+      if (adj < -0.0045f) adj = -0.0045f;
       step = (uint64_t)((1.0 + (double)adj) * 4294967296.0);
       rxRatioPpm = adj * 1e6f;
       rxFillSm = fillSm;
@@ -747,5 +776,6 @@ static void rxTask(void *) {
     if ((++probeN & 255) == 0) rxOutProbe();   // четыре раза в секунду
     size_t w;
     i2s_channel_write(rxI2s, out, sizeof(out), &w, portMAX_DELAY);
+    rxOutSamples = rxOutSamples + OUT_BLOCK;
   }
 }
