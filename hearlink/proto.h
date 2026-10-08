@@ -226,10 +226,16 @@ struct __attribute__((packed)) RxInfo {
   // ---- отсюда зашифровано
   uint8_t p[RXP_COUNT];   // значения настроек в том же виде, что и в команде CMD_SET
   uint8_t earTest;        // идёт проверка наушников
-  uint8_t spare[5];
+  uint8_t spare[5];       // с 2.42: [0], [1] — точная версия прошивки (2 и 42); у прежних версий здесь нули
+                          // (в RxStatus версия идёт числом ×10: 2.40 и 2.41 там неразличимы)
   uint8_t tag[SEC_TAG];
 };
 #define INFO_BODY (offsetof(RxInfo, tag) - offsetof(RxInfo, p))
+static inline void fwParts(uint8_t &maj, uint8_t &mn) {   // «2.42» → 2 и 42
+  const char *d = strchr(FW_VERSION, '.');
+  maj = (uint8_t)atoi(FW_VERSION);
+  mn = d ? (uint8_t)atoi(d + 1) : 0;
+}
 
 static const int8_t IMA_IDX[8] = { -1, -1, -1, -1, 2, 4, 6, 8 };
 static const int16_t IMA_STEP[89] = {

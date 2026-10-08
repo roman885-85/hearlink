@@ -97,6 +97,11 @@ itself (to those that were switched off — when they are switched on). A lost r
    minute, the screen blinks — it shows in large letters «ОНОВЛЕННЯ ПРОШИВКИ — НЕ ВИМИКАЙТЕ ЖИВЛЕННЯ!!!»
    (UPDATING FIRMWARE — DO NOT SWITCH POWER OFF!!!)) and restarts.
 
+**Automatically** (since 2.42): when a receiver with firmware older than the transmitter's comes on the air (it was
+switched off or asleep during the update, or it is a new one), the transmitter starts the distribution by itself
+after about 10 s. The sound on air stops for ~20 s for everyone; at most two attempts per receiver per power-on of
+the transmitter. Switch off / on: port commands `M7` / `M6`.
+
 **Receivers only** (the transmitter already has the new version): "Receivers" → "Update" → **«Почати» (Start)**.
 **«Пробне» (Trial)** — shows what it looks like: the receivers receive and verify everything but write nothing.
 

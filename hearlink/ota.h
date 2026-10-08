@@ -821,3 +821,51 @@ static void otaTxPrint() {
       Serial.printf("  приймач %02X%02X%02X: %s, %u %%, блоків %u, чутно %u мс тому\n", p.id[0], p.id[1], p.id[2], otaPhaseName(p.phase, p.err), p.percent, p.got,
                     (unsigned)msSince(p.seenMs));
 }
+
+// ---- Автообновление (с 2.42). Владелец 08.10: «приемники, которые будут в дальнейшем подключаться, если имеют версию
+// прошивки более старую чем есть, должны автоматически выполнять обновление с передатчика».
+// Раз в секунду передатчик смотрит список приёмников: кто на связи, не спит, не выключен и с прошивкой старее его
+// собственной — и если такой держится 10 с, сам начинает раздачу своей прошивки (то же, что «Оновити» / M1).
+// Версию приёмник сообщает точно с 2.42 (RxInfo.spare); прежние точной не сообщают — их считаем старыми.
+// Раздача на ~20 с останавливает звук всем, поэтому: не чаще раза в две минуты и не больше двух попыток на приёмник
+// за одно включение передатчика (не обновился дважды — значит, дело не в случайной помехе, нужен человек).
+// Выключатель — настройка autoUpd (порт: M6 — включить, M7 — выключить).
+static volatile uint32_t otaAutoRuns;
+static void otaAutoTick() {
+  static uint32_t lastTick, lastStart;
+  uint32_t now = millis();
+  if (!cfg.isTx || now - lastTick < 1000) return;
+  lastTick = now;
+  if (!cfg.autoUpd || now < 20000 || otaTxActive() || txPause || (lastStart && now - lastStart < 120000)) return;
+  uint8_t maj, mn;
+  fwParts(maj, mn);
+  bool go = false;
+  uint8_t who[3] = {};
+  portENTER_CRITICAL(&peerMux);
+  for (auto &p : peers) {
+    bool live = p.used && p.seenMs && msSince(p.seenMs, now) < 3000 && !(p.flags & (ST_SLEEP | ST_OFF)) && !p.wantOff;
+    bool older = p.hasInfo && p.fwMaj ? (p.fwMaj < maj || (p.fwMaj == maj && p.fwMin < mn)) : (p.hasInfo || p.fw < maj * 10 + mn / 10);
+    if (!live || !older || p.autoTries >= 2) {
+      p.autoNeedMs = 0;
+      continue;
+    }
+    if (!p.autoNeedMs) p.autoNeedMs = now ? now : 1;
+    if (now - p.autoNeedMs >= 10000 && !go) {
+      go = true;
+      memcpy(who, p.id, 3);
+    }
+  }
+  if (go)   // раздача обновит всех, кому она нужна, — попытку засчитать каждому
+    for (auto &p : peers)
+      if (p.autoNeedMs) {
+        p.autoTries++;
+        p.autoNeedMs = 0;
+      }
+  portEXIT_CRITICAL(&peerMux);
+  if (!go) return;
+  lastStart = now ? now : 1;
+  bool ok = otaTxStart();
+  otaAutoRuns = otaAutoRuns + (ok ? 1 : 0);
+  Serial.printf("автооновлення: у приймача %02X%02X%02X прошивка старіша за %s — %s\n", who[0], who[1], who[2], FW_VERSION,
+                ok ? "починаю роздачу" : "зараз неможливо");
+}

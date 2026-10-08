@@ -533,5 +533,6 @@ static void rxLinkTick() {
   in.echoSeq = st.echoSeq;
   for (uint8_t p = 0; p < RXP_COUNT; p++) in.p[p] = rxParamWire(p);
   in.earTest = rxEarTest ? 1 : 0;
+  fwParts(in.spare[0], in.spare[1]);
   if (secSeal(SEC_RXINFO, in.echoEpoch, in.echoSeq, in.id, (const uint8_t *)&in, ST_CLEAR, in.p, INFO_BODY, in.tag)) esp_now_send(BCAST, (const uint8_t *)&in, sizeof(in));
 }

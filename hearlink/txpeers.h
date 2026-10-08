@@ -28,6 +28,9 @@ struct Peer {
   bool hasInfo;               // сообщал — значит, понимает и команды CMD_SET / CMD_EARTEST
   uint8_t par[RXP_COUNT];     // значения в том виде, как идут по радио (баланс — со сдвигом на 5)
   uint8_t earTest;            // у него идёт проверка наушников
+  uint8_t fwMaj, fwMin;       // точная версия прошивки (приёмники с 2.42; у прежних — нули)
+  uint8_t autoTries;          // сколько раз в это включение передатчик сам пытался его обновить
+  uint32_t autoNeedMs;        // с какого времени он на связи, не спит и с прошивкой старее, чем у передатчика
   uint32_t parSetMs;          // когда настройку сменили с передатчика: 2,5 с после этого сообщения приёмника её не затирают
 };
 static Peer peers[PEERS_MAX];
@@ -371,6 +374,8 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
         peers[k].earTest = body[RXP_COUNT];
         peers[k].parSetMs = 0;
       }
+      peers[k].fwMaj = body[RXP_COUNT + 1];
+      peers[k].fwMin = body[RXP_COUNT + 2];
       peers[k].hasInfo = true;
     }
     portEXIT_CRITICAL(&peerMux);

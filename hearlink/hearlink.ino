@@ -155,6 +155,7 @@ static void settingsLoad() {
   if (cfg.rxView > 2) cfg.rxView = 0;
   if (cfg.rxLed > 3) cfg.rxLed = 2;
   if (cfg.rxLang > 2) cfg.rxLang = 0;
+  if (cfg.autoUpd > 1) cfg.autoUpd = 1;
   // До 2.40 «звук как есть» был шаг 12 (60 %), с 2.40 — шаг 20 (100 %). Чтобы после обновления приёмник звучал как до
   // него, шаг и предел сдвигаются на 8; всё, что стояло выше 60 % (там было усиление с ограничителем), становится 100 %.
   if (oldVolScale) {
@@ -979,8 +980,8 @@ static void command(String s) {
           }
           else if (rxParamSet((uint8_t)p, val)) settingsSave();
         }
-        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s\n",
-                      cfg.rxClarity, cfg.rxBalance, cfg.rxVolMax, cfg.volume, cfg.rxView, cfg.rxLed, cfg.rxLang, uiLang ? "English" : "українська",
+        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s\n",
+                      cfg.rxClarity, cfg.rxBalance, cfg.rxVolMax, cfg.volume, cfg.volume ? 20 * log10f(rxVolumeGain(rxVolumeScaled(cfg.volume))) : -99.0f, cfg.rxView, cfg.rxLed, cfg.rxLang, uiLang ? "English" : "українська",
                       rxEarTest ? "; ІДЕ ПЕРЕВІРКА НАВУШНИКІВ" : "");
       }
       return;
@@ -1042,9 +1043,14 @@ static void command(String s) {
         } else if (arg.length() && (v == 2 || v == 5))   // M5 — то же, но и когда прошивка в файле старше работающей (возврат на прежнюю)
           Serial.println((upd.state == UPD_READY || (v == 5 && upd.state == UPD_OLDER)) && otaTxStart(false, false, upd.img, upd.len, upd.version, upd.sha) ? "оновлення з картки розпочато" : "на картці немає придатної нової прошивки");
         else if (arg.length() && v == 3) upd.scanAsk = true;
+        else if (arg.length() && (v == 6 || v == 7)) {   // M6 / M7 — автообновление приёмников включить / выключить
+          cfg.autoUpd = v == 6;
+          settingsSave();
+        }
         else if (arg.length() && v == 0) otaTx.cancel = true;
         Serial.printf("картка: стан %u, файл «%s», версія «%s», причина %u; мітка цієї прошивки %s\n", upd.state, upd.file, upd.version, upd.why, FW_TAG);
         otaTxPrint();
+        Serial.printf("автооновлення приймачів: %s (M6 — увімкнути, M7 — вимкнути); запусків у це ввімкнення %u\n", cfg.autoUpd ? "увімкнено" : "вимкнено", (unsigned)otaAutoRuns);
       } else Serial.printf("оновлення: стан %u, %u %%, блоків %u з %u, причина %u\n", otaRx.phase, otaRx.percent, (unsigned)otaRx.got, (unsigned)otaRx.blocks, otaRx.err);
       return;
     case 'Q':   // передатчик: «чёрный ящик» радио. Q — показать; Q0…Q3 — до какой ступени оживлять радио (обычно 3);
@@ -1380,6 +1386,7 @@ void loop() {
     if (c.length() && c[0] != '@') command(c);
   }
   if (!cfg.isTx) dbgPumpRx();
+  otaAutoTick();            // передатчик: приёмник со старой прошивкой на связи — обновить его самому
   if (!cfg.isTx) {   // обновление прошивки по радио: приём, сверка, запись (см. ota.h)
     otaRxTick();
     bool busy = otaRxBusy();

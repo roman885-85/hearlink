@@ -1,5 +1,14 @@
 # Changelog / Історія версій
 
+## 2.42 — 2026-10-08
+- EN: automatic update: when a receiver with firmware older than the transmitter's comes on the air, the transmitter
+  starts the over-the-air distribution by itself (after ~10 s; at most two attempts per receiver per power-on;
+  `M7` / `M6` switch it off / on). Receivers now report their exact version. `n7=3` also prints the effective volume
+  in dB.
+- UK: автооновлення: коли на зв'язок виходить приймач із прошивкою, старішою за прошивку передавача, передавач сам
+  починає роздачу по радіо (приблизно за 10 с; не більше двох спроб на приймач за одне ввімкнення; `M7` / `M6` —
+  вимкнути / увімкнути). Приймачі тепер повідомляють точну версію. `n7=3` показує також дійсну гучність у дБ.
+
 ## 2.41 — 2026-10-08
 - EN: receiver: “Volume limit” is now a ceiling of the scale — the knob (and the transmitter) still go 0…100 %, but
   100 % sounds like the chosen limit (with a 50 % limit, 100 % on the knob is as loud as 50 % used to be).

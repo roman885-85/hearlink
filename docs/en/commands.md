@@ -66,6 +66,7 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `j<no.>` | allow access to a receiver from the list of requests |
 | `R<number>` | remove a receiver from the kit (`R4C3B10`) |
 | `M` / `M1` / `M0` | over-the-air update of receivers: status / start / cancel |
+| `M6` / `M7` | automatic update of receivers with older firmware: on (the default) / off |
 | `M2` / `M3` / `M4` / `M5` / `M9` | update everything from the card / look through the `UPDATE` folder / trial / allow an older version / forced pass |
 
 ### Transmitter screen hands-free
