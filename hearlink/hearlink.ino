@@ -807,6 +807,66 @@ static void command(String s) {
           if (p == 9) rxEarStart(val != 0);
           else if (p == 7) rxUiAsk = (uint8_t)val;   // n7=1 меню, n7=2 «Зв'язок», n7=3 главный экран — для замеров
           else if (p == 8) {   // n8=1 — как настроен вывод кнопки ручки; n8=<мс> — «нажать» её программно на столько миллисекунд
+            if (val == 9) {   // n8=9 — «логический анализатор»: что на самом деле идёт на ЦАП по выводам BCK, LRCK и данных
+              if (cfg.output != OUT_I2S) {
+                Serial.println("вихід не PCM5102 — знімати нічого");
+                return;
+              }
+              const int N = 16384;
+              uint8_t *b = (uint8_t *)malloc(N);
+              if (!b) return;
+              for (int pin : { PIN_I2S_MCLK, PIN_I2S_BCK, PIN_I2S_WS, PIN_I2S_DOUT }) gpio_input_enable((gpio_num_t)pin);
+              digitalWrite(PIN_DAC_XSMT, LOW);   // ЦАП заглушить: в наушники постоянные числа не пойдут
+              delay(40);
+              rxPattern = true;
+              delay(30);
+              portDISABLE_INTERRUPTS();
+              for (int i = 0; i < N; i++) b[i] = (uint8_t)(REG_READ(GPIO_IN_REG) >> 10);   // бит 0 — вывод 10, 1 — BCK, 2 — LRCK, 3 — данные
+              portENABLE_INTERRUPTS();
+              rxPattern = false;
+              delay(30);
+              digitalWrite(PIN_DAC_XSMT, HIGH);
+              static int idx[420];
+              int n = 0;
+              for (int i = 1; i < N - 4 && n < 420; i++)
+                if (!((b[i - 1] >> 1) & 1) && ((b[i] >> 1) & 1)) idx[n++] = i;   // подъёмы BCK
+              if (n < 80) {
+                Serial.printf("BCK не видно (підйомів %d)\n", n);
+                free(b);
+                return;
+              }
+              float per = (float)(idx[n - 1] - idx[0]) / (n - 1);
+              Serial.printf("знято %d відліків; на один такт BCK %.1f відліку; вивід 10 (SCK): %d\n", N, per, b[N / 2] & 1);
+              int k0 = -1;   // первый подъём BCK, на котором LRCK уже 0, а на предыдущем был 1
+              for (int k = 3; k < n - 40; k++)
+                if (((b[idx[k - 1]] >> 2) & 1) && !((b[idx[k]] >> 2) & 1)) {
+                  k0 = k;
+                  break;
+                }
+              if (k0 < 0) {
+                Serial.println("LRCK не змінюється");
+                free(b);
+                return;
+              }
+              char ws[40], d0[40], d1[40];
+              int m = 0;
+              for (; m < 36 && k0 + m < n; m++) {
+                int i = idx[k0 + m];
+                ws[m] = '0' + ((b[i] >> 2) & 1);
+                d0[m] = '0' + ((b[i - 3 < 0 ? 0 : i - 3] >> 3) & 1);   // данные чуть раньше подъёма BCK
+                d1[m] = '0' + ((b[i + 3] >> 3) & 1);                   // и чуть позже: должны совпадать
+              }
+              ws[m] = d0[m] = d1[m] = 0;
+              // когда меняется LRCK: при каком уровне BCK и за сколько отсчётов до ближайшего подъёма
+              int j = idx[k0 - 1];
+              while (j < idx[k0] && ((b[j] >> 2) & 1)) j++;
+              Serial.printf("LRCK:   %s\n", ws);
+              Serial.printf("DATA до: %s\n", d0);
+              Serial.printf("DATA по: %s\n", d1);
+              Serial.printf("LRCK упав при BCK=%d, за %d відліків до підйому BCK (такт — %.0f відліків)\n", (b[j] >> 1) & 1, idx[k0] - j, per);
+              free(b);
+              return;
+            }
             if (val == 8) {   // n8=8 — настоящие частоты за время с прошлого такого вызова: звук из эфира (часы передатчика) и выход (свои часы)
               static int64_t t0;
               static uint32_t in0, out0, st0, sn0;
@@ -847,7 +907,7 @@ static void command(String s) {
                 Serial.printf("вивід %d: одиниць %u %%, перепадів за 20 мс %u (≈%u Гц), опитувань %u\n", pin, (unsigned)(n ? ones * 100 / n : 0), (unsigned)edges,
                               (unsigned)(edges * 25), (unsigned)n);
               }
-              Serial.printf("вихід: %s, %s; XSMT (вивід %d): %d\n", cfg.output == OUT_I2S ? "PCM5102 (I2S): SCK 10, BCK 11, LRCK 12, DIN 13" : "PDM: 17, 18",
+              Serial.printf("вихід: %s, %s; XSMT (вивід %d): %d\n", cfg.output == OUT_I2S ? "PCM5102 (I2S): BCK 11, LRCK 12, DIN 13; вивід 10 — нуль для SCK" : "PDM: 17, 18",
                             rxOutLive() ? "живий" : "СТОЇТЬ", PIN_DAC_XSMT, gpio_get_level((gpio_num_t)PIN_DAC_XSMT));
               return;
             }

@@ -107,9 +107,9 @@ small('max', 'MAX97220 — підсилювач навушників / headphone
       ['Різницевий вхід: «+» на L+ і R+, «−» на L− і R−; у меню приймача «Виводи: протифаза».',
        'Differential input: “+” to L+ and R+, “−” to L− and R−; receiver menu “Pins: antiphase”.'], 'mod-max97220.png')
 small('pcm5102', 'PCM5102 — зовнішній ЦАП приймача / external receiver DAC (за бажанням / optional)', PURPLE, 'PCM5102',
-      ['VIN ← 5V', 'GND', 'LCK ← 12', 'DIN ← 13', 'BCK ← 11', 'SCK ← GND / 10'], ['XSMT ← 14', 'OUT L', 'GND', 'OUT R'],
+      ['VIN ← 5V', 'GND', 'LCK ← 12', 'DIN ← 13', 'BCK ← 11', 'SCK ← GND'], ['FLT, DEMP, FMT ← GND', 'XSMT ← 14', 'OUT L', 'GND', 'OUT R'],
       ['У меню приймача «Вихід звуку: PCM5102» (команда порту o1) / receiver menu “Audio out: PCM5102” (serial o1).',
-       'SCK — на «землю» або на вивід 10; XSMT — на вивід 14 або 3V3 / SCK to ground or pin 10; XSMT to pin 14 or 3V3.'], 'mod-pcm5102.png')
+       'Жоден керівний вивід не лишати «в повітрі» / no control pin may float: SCK, FLT, DEMP, FMT → GND; XSMT → 14.'], 'mod-pcm5102.png')
 small('pcm1808', 'PCM1808 — зовнішній АЦП передавача / external transmitter ADC (за бажанням, не перевірено / optional, untested)', PURPLE, 'PCM1808',
       ['LIN', 'GND', 'RIN'], ['5V / 3V3', 'GND', 'SCK ← IO43', 'BCK ← IO1', 'LRC ← IO2', 'OUT → IO40', 'FMT, MD → GND'],
       ['На передавачі: «Звук» → «Вхід: PCM1808» (команда порту a1). Поки він працює, передавач не друкує в порт.',

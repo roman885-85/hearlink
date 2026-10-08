@@ -73,7 +73,7 @@ easy to find by name: “ESP32-4848S040”, “SH1106 1.3 OLED EC11”, “MAX97
 | Knob: A (TRA), B (TRB), button (PSH) | 5, 6, 7 |
 | Module buttons CON, BAK (not used, pulled up) | 15, 16 |
 | Audio output "+", "−" (one-bit PDM) | 17, 18 |
-| PCM5102: SCK (master clock 8.192 MHz), BCK, LCK, DIN, XSMT | 10, 11, 12, 13, 14 |
+| PCM5102: BCK, LCK, DIN, XSMT; SCK — to GND (or to pin 10, held low) | 11, 12, 13, 14 |
 | On-board RGB LED (WS2812) | 48 (38 on newer boards) |
 
 ### Transmitter on the ESP32-4848S040 module
@@ -120,39 +120,47 @@ The schematics are drawn by `tools/gen_schema.py`; they are also available as SV
 
 ## External PCM5102 DAC on the receiver
 
-| PCM5102 module | Receiver board |
-|---|---|
-| VIN | 5V |
-| GND | GND |
-| SCK | **GND** (as in most circuits with this module) or pin **10** — master clock 8.192 MHz (since version 2.35) |
-| XSMT | **14** — “sound on” (since version 2.36) or 3V3 |
-| BCK | 11 |
-| LCK (LRCK) | 12 |
-| DIN | 13 |
+The module is the purple GY-PCM5102 board (PCM5102A, two 3.3 V regulators, a 3.5 mm jack; 470 Ω in series with each
+output — which is why headphones can be plugged straight into the jack).
+
+| Module pin | Goes to | Purpose |
+|---|---|---|
+| VIN | receiver 5V | power (the module has its own 3.3 V regulators) |
+| GND | GND | |
+| BCK | **11** | bit clock, 1.024 MHz |
+| LCK (LRCK) | **12** | word clock, 32 kHz |
+| DIN | **13** | I2S data, 16 bit |
+| SCK | **GND** (or pin 10 — the receiver holds it low) | no master clock is supplied: the DAC recovers it from BCK |
+| XSMT | **14** (or 3V3) | “sound on”: the receiver keeps it high while the output is running |
+| FLT | **GND** | normal digital filter |
+| DEMP | **GND** | de-emphasis off |
+| FMT | **GND** | I2S format |
 
 ![Receiver with PCM5102](../skhema-priemnik-s3-pcm5102.png)
 
+**The key point: no control pin of the chip may be left floating.** According to the module schematic, four pins
+(FLT, DEMP, XSMT, FMT) are set by the solder jumpers H1L–H4L on the back, and the module normally ships with them
+closed: H1L → L, H2L → L, H3L → H, H4L → L; SCK is shorted to ground with a solder blob next to the pin. **Some
+modules ship with the jumpers open** — then these inputs are undefined (the chip has no internal pull resistors) and
+the DAC is either silent (XSMT) or crackles and rasps (FMT, FLT, DEMP pick up noise from the neighbouring lines).
+The cure without soldering is jumper wires on the module header: FLT, DEMP and FMT to the adjacent AGND (G) pin of
+the same header, XSMT to receiver pin 14. Or close the jumpers as in the table.
+
+| Jumper | DAC pin | Sets | Must be | Otherwise |
+|---|---|---|---|---|
+| H1L | FLT | digital filter | **L** | H — low-latency filter; floating — clicks |
+| H2L | DEMP | 44.1 kHz de-emphasis | **L** | H — treble is cut |
+| H3L | XSMT | soft mute | **H** | L or floating — silence |
+| H4L | FMT | data format | **L** (I2S) | H — another format: loud noise instead of sound; floating — rasping |
+
+- If the H3L jumper is bridged to “H”, do **not** connect pin 14 to XSMT; if SCK is already shorted to ground on the
+  module, do not wire it anywhere else.
 - In the receiver menu: «Вихід звуку» (Audio out) → **PCM5102** (the board restarts); from the serial port — `o1`.
   Headphones on pins 17/18 are silent in this mode.
-- **SCK**: to ground (the DAC recovers the clock from BCK and cleans it by itself — this is the proven option) or
-  to pin 10. If SCK on your module is already shorted to ground with a solder blob, do **not** connect pin 10 to
-  it. SCK must never be left floating: the DAC stays silent.
-- **XSMT (“sound on”).** Some GY-PCM5102 modules ship with the solder jumpers on the back open — then XSMT floats
-  and the DAC is silent although every signal is present (verified on 2026-10-08). Soldering is not required:
-  since version 2.36 the receiver itself keeps pin **14** high while the output is running and drops it before
-  sleep — a wire from the module's XSMT pin to pin 14 (or to 3V3) is enough. If the H3L jumper is already bridged
-  to “H”, do **not** connect pin 14 to XSMT.
-- The other jumpers (each has three pads: the middle one and “L” / “H”) are worth closing too, for reliability:
-
-  | Jumper | DAC pin | Sets | Bridge to | Notes |
-  |---|---|---|---|---|
-  | H1L | FLT | digital filter | **L** | normal linear-phase filter; H — low-latency filter |
-  | H2L | DEMP | de-emphasis | **L** | off; H — only for old 44.1 kHz recordings |
-  | H3L | XSMT | soft mute | **H** | sound on; at L or floating — silence |
-  | H4L | FMT | data format | **L** | I2S (what the receiver sends); H — another format, the sound will be distorted |
-- A check without instruments: the serial command `n8=7` prints whether pins 10–13 are toggling (share of ones
-  about 50 %). On the transmitter the receiver list shows “вихід живий” (output alive).
-- Headphones can be plugged straight into the module's jack; a MAX97220 amplifier after the DAC gives more volume headroom.
+- The receiver shows what actually goes to the DAC: `n8=7` — whether BCK, LRCK and data are toggling, the SCK and
+  XSMT levels; `n8=9` — samples the pins and prints the bits of one word (a format check).
+- Documentation: [PCM5102A, Texas Instruments](https://www.ti.com/lit/ds/symlink/pcm5102a.pdf) — operation without
+  a master clock (section 9.3.5.3, table 11: 32 kHz with BCK 1.024 or 2.048 MHz), the XSMT input (9.3.3).
 
 ## Two ways to connect headphones
 

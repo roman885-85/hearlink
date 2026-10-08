@@ -2,7 +2,7 @@
 #pragma once
 #include <Arduino.h>
 
-#define FW_VERSION "2.37"
+#define FW_VERSION "2.39"
 #define SRATE 32000        // отсчётов звука в секунду
 #define FRAME 64        // отсчётов в одном куске звука (2 мс); пакет набирается из 1–6 кусков — см. качество
 #define MAGIC 0x4C48    // «HL» — по этим байтам свои пакеты отличаются от чужих

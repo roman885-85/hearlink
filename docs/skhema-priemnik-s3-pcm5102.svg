@@ -37,14 +37,14 @@
 <polyline points="300,340 520,340" fill="none" stroke="#2e8b57" stroke-width="2.5" stroke-linejoin="round"/>
 <text x="410" y="212" font-size="12" text-anchor="middle" fill="#d2691e">звук цифрой (I2S)</text>
 <text x="410" y="332" font-size="12" text-anchor="middle" fill="#2e8b57">«звук включён»</text>
-<circle cx="520" cy="385" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
-<text x="530" y="390" font-size="13" text-anchor="start" fill="#111">SCK</text>
-<polyline points="520,385 470,385" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
-<polyline points="470,385 470,397" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
-<polyline points="459,397 481,397" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
-<polyline points="463,402 477,402" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
-<polyline points="467,407 473,407" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
-<text x="458" y="379" font-size="12" text-anchor="end" fill="#555">на «землю»</text>
+<circle cx="520" cy="380" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="385" font-size="13" text-anchor="start" fill="#111">SCK, FLT, DEMP, FMT</text>
+<polyline points="520,380 470,380" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<polyline points="470,380 470,392" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<polyline points="459,392 481,392" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<polyline points="463,397 477,397" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<polyline points="467,402 473,402" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+<text x="458" y="374" font-size="12" text-anchor="end" fill="#555">все четыре — на «землю»</text>
 <circle cx="770" cy="150" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
 <text x="760" y="155" font-size="13" text-anchor="end" fill="#111">L</text>
 <circle cx="770" cy="194" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
@@ -67,7 +67,7 @@
 <polyline points="770,238 850,238 850,335 930,335" fill="none" stroke="#00796b" stroke-width="3" stroke-linejoin="round" stroke-dasharray="7 5"/>
 <text x="60" y="470" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Порядок</text>
 <text x="60" y="491" font-size="13" text-anchor="start" fill="#222">1. Наушники с выводов 17 и 18 (прежнее прямое подключение) снять — в этом режиме они молчат.</text>
-<text x="60" y="512" font-size="13" text-anchor="start" fill="#222">2. Собрать шесть проводов по схеме, SCK модуля — на «землю». Проверить, потом подать питание.</text>
+<text x="60" y="512" font-size="13" text-anchor="start" fill="#222">2. Собрать по схеме. SCK, FLT, DEMP, FMT модуля — на «землю» (GND или вывод G на гребёнке модуля). Проверить, подать питание.</text>
 <text x="60" y="533" font-size="13" text-anchor="start" fill="#222">3. В меню приёмника: «Вихід звуку» → PCM5102 (плата перезапустится). С порта — команда o1.</text>
 <text x="60" y="554" font-size="13" text-anchor="start" fill="#222"></text>
 <text x="60" y="575" font-size="13" text-anchor="start" fill="#222" font-weight="bold">XSMT — «звук включён»</text>
@@ -76,9 +76,9 @@
 <text x="60" y="638" font-size="13" text-anchor="start" fill="#222">• Если перемычка H3L на обороте модуля уже запаяна на «H» — провод от XSMT к выводу 14 НЕ ставить.</text>
 <text x="60" y="659" font-size="13" text-anchor="start" fill="#222">• Можно и без вывода 14: XSMT на 3V3 — звук включён всегда.</text>
 <text x="60" y="680" font-size="13" text-anchor="start" fill="#222"></text>
-<text x="60" y="701" font-size="13" text-anchor="start" fill="#222" font-weight="bold">SCK и питание</text>
-<text x="60" y="722" font-size="13" text-anchor="start" fill="#222">• SCK — на «землю»: ЦАП сам восстанавливает такт из BCK. Вместо «земли» можно на вывод 10 (такт 8,192 МГц, версия 2.35+).</text>
-<text x="60" y="743" font-size="13" text-anchor="start" fill="#222">  «В воздухе» SCK оставлять нельзя. Если на модуле SCK уже замкнут на «землю» каплей припоя — вывод 10 к нему не подключать.</text>
+<text x="60" y="701" font-size="13" text-anchor="start" fill="#222" font-weight="bold">SCK, FLT, DEMP, FMT и питание</text>
+<text x="60" y="722" font-size="13" text-anchor="start" fill="#222">• SCK — на «землю»: ЦАП сам восстанавливает главный такт из BCK. Вместо GND годится вывод 10 приёмника — на нём ноль.</text>
+<text x="60" y="743" font-size="13" text-anchor="start" fill="#222">• FLT, DEMP, FMT — на «землю», если перемычки H1L, H2L, H4L на обороте модуля не запаяны: иначе ЦАП хрипит и трещит.</text>
 <text x="60" y="764" font-size="13" text-anchor="start" fill="#222">• VIN: на плате модуля свой стабилизатор 3,3 В, поэтому питание — 5 В (вывод 5V платы приёмника).</text>
 <text x="60" y="785" font-size="13" text-anchor="start" fill="#222"></text>
 <text x="60" y="806" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Выход</text>

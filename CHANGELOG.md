@@ -1,5 +1,15 @@
 # Changelog / Історія версій
 
+## 2.39 — 2026-10-08
+- EN: PCM5102 output is now exactly the classic 3-wire connection: 16-bit I2S, BCK 1.024 MHz, no master clock (pin 10
+  is held low and can serve as ground for SCK). 2.38 had a bug — only one channel played (32-bit slots with a 16-bit
+  word-clock width) — fixed. New check `n8=9`: the receiver samples its own I2S pins and prints the bits.
+  Docs: the module's control pins FLT, DEMP, FMT must not float.
+- UK: вихід на PCM5102 тепер точно класичне трипровідне під'єднання: I2S 16 біт, BCK 1,024 МГц, без головного такту
+  (вивід 10 тримається в нулі й може бути «землею» для SCK). У 2.38 була помилка — грав один канал — виправлено.
+  Нова перевірка `n8=9`: приймач сам знімає свої сигнали I2S і друкує біти. Опис: керівні виводи модуля FLT, DEMP,
+  FMT не можна лишати «в повітрі».
+
 ## 2.37 — 2026-10-08
 - EN: receiver: a look-ahead limiter (1.5 ms) replaces the instant one — no more clipped peaks and “overloaded”
   bass at higher volume or with “Clarity” on (clearly audible with the PCM5102 DAC). `n8=8` also reports how

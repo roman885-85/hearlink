@@ -102,6 +102,7 @@ The pin shorts itself to ground — exactly what the button or the encoder conta
 | `n8=5` | press for a second without holding up the main loop |
 | `n8=6` | the same after 30 s — a check of waking from sleep (in sleep the port is not listened to) |
 | `n8=7` | what is on the audio output pins: share of ones and edges on 10 (SCK), 11 (BCK), 12 (LRCK), 13 (data), 17, 18 (PDM); the XSMT level (pin 14) |
+| `n8=9` | “logic analyzer”: samples BCK, LRCK and data on the pins (the DAC is muted meanwhile, known numbers 0x5A01 / 0xA5F3 go to the output) and prints the bits of one word — the format and bit shift become visible |
 | `n8=8` | true rates since the previous such call: audio from the air (transmitter clock) and the output (own clock), in samples per second and ppm |
 | `n8=2` | leave the pin "dirty", as after sleep in old versions (a check of the cleanup at startup) |
 
