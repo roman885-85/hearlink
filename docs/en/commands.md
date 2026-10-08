@@ -101,6 +101,7 @@ The pin shorts itself to ground — exactly what the button or the encoder conta
 | `n8=3` / `n8=4` | turn by one click in one direction and in the other |
 | `n8=5` | press for a second without holding up the main loop |
 | `n8=6` | the same after 30 s — a check of waking from sleep (in sleep the port is not listened to) |
+| `n8=7` | what is on the audio output pins: share of ones and edges on 10 (SCK), 11 (BCK), 12 (LRCK), 13 (data), 17, 18 (PDM) |
 | `n8=2` | leave the pin "dirty", as after sleep in old versions (a check of the cleanup at startup) |
 
 ## Debugging over the radio

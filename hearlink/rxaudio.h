@@ -254,13 +254,17 @@ static bool rxOutBegin() {
   cc.auto_clear = true;
   if (i2s_new_channel(&cc, &rxI2s, NULL) != ESP_OK) return false;
   if (cfg.output == OUT_I2S) {
-    // внешний ЦАП PCM5102; на модуле не проверено
+    // внешний ЦАП PCM5102
     i2s_std_config_t sc = {};
     sc.clk_cfg.sample_rate_hz = SRATE;
     sc.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
     sc.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
     sc.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
-    sc.gpio_cfg.mclk = I2S_GPIO_UNUSED;
+    // Главный такт (SCK микросхемы) — на выводе 10: 256 × 32 кГц = 8,192 МГц. Владелец 08.10: «может сигнал sck не
+    // подключать на землю, а использовать полноценно?» — да: с настоящим тактом ЦАП не зависит от своего умножителя,
+    // которому при SCK «на земле» приходится восстанавливать такт из BCK (1,024 МГц — у самого нижнего края того, что
+    // он умеет). Если на модуле SCK уже замкнут на «землю» перемычкой, вывод 10 к нему НЕ подключать (замыкание выхода).
+    sc.gpio_cfg.mclk = (gpio_num_t)PIN_I2S_MCLK;
     sc.gpio_cfg.bclk = (gpio_num_t)PIN_I2S_BCK;
     sc.gpio_cfg.ws = (gpio_num_t)PIN_I2S_WS;
     sc.gpio_cfg.dout = (gpio_num_t)PIN_I2S_DOUT;
@@ -329,9 +333,11 @@ static void rxPdmSlot(bool hp, int dither, int dither2) {
 // заработал, а в ожидании — что он остановлен (с передатчика это видно в списке приёмников: «вихід живий / стоїть»).
 static volatile uint8_t rxOutDuty[2];
 static void rxOutProbe() {
-  if (cfg.output != OUT_PDM) return;
+  // У внешнего ЦАП (PCM5102) смотрим такты: BCK и LRCK должны «дрожать». До 2.35 выход I2S не проверялся вовсе, и
+  // передатчик показывал у такого приёмника «вихід СТОЇТЬ», хотя такты шли.
   int k = 0;
-  for (int pin : { PIN_OUT_P, PIN_OUT_N }) {
+  const int pa = cfg.output == OUT_PDM ? PIN_OUT_P : PIN_I2S_BCK, pb = cfg.output == OUT_PDM ? PIN_OUT_N : PIN_I2S_WS;
+  for (int pin : { pa, pb }) {
     gpio_input_enable((gpio_num_t)pin);   // только чтение уровня; выход остаётся за однобитным преобразователем
     int ones = 0;
     for (int i = 0; i < 200; i++) {
@@ -342,7 +348,7 @@ static void rxOutProbe() {
   }
 }
 static inline bool rxOutLive() {
-  return cfg.output == OUT_PDM && rxOutDuty[0] > 1 && rxOutDuty[0] < 99 && rxOutDuty[1] > 1 && rxOutDuty[1] < 99;
+  return rxOutDuty[0] > 1 && rxOutDuty[0] < 99 && rxOutDuty[1] > 1 && rxOutDuty[1] < 99;
 }
 
 static void rxPinsStatic(int level) {   // остановить выход и поставить оба вывода на «землю» или на питание
@@ -469,7 +475,10 @@ static void rxTask(void *) {
         }
         rxPinsStatic(0);
         rxOutProbe();
-      } else i2s_channel_disable(rxI2s);   // у PCM5102 без тактов выход глушится сам
+      } else {
+        i2s_channel_disable(rxI2s);   // у PCM5102 без тактов выход глушится сам
+        rxOutProbe();                 // такты встали — передатчик увидит «вихід СТОЇТЬ»
+      }
       rxPlaying = false;
       rxPeak = 0;
       rxPeakL = 0;

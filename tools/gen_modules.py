@@ -106,9 +106,10 @@ small('max', 'MAX97220 — підсилювач навушників / headphone
       ['VCC', 'GND', 'R− ← 18', 'R+ ← 17'], ['L− ← 18', 'L+ ← 17', 'CTRL', 'R · G · L → навушники'],
       ['Різницевий вхід: «+» на L+ і R+, «−» на L− і R−; у меню приймача «Виводи: протифаза».',
        'Differential input: “+” to L+ and R+, “−” to L− and R−; receiver menu “Pins: antiphase”.'], 'mod-max97220.png')
-small('pcm5102', 'PCM5102 — зовнішній ЦАП приймача / external receiver DAC (за бажанням, не перевірено / optional, untested)', PURPLE, 'PCM5102',
-      ['VIN', 'GND', 'LCK ← 12', 'DIN ← 13', 'BCK ← 11', 'SCK → GND'], ['OUT L', 'GND', 'OUT R'],
-      ['У меню приймача «Вихід звуку: PCM5102» (команда порту o1) / receiver menu “Audio out: PCM5102” (serial o1).'], 'mod-pcm5102.png')
+small('pcm5102', 'PCM5102 — зовнішній ЦАП приймача / external receiver DAC (за бажанням / optional)', PURPLE, 'PCM5102',
+      ['VIN ← 5V', 'GND', 'LCK ← 12', 'DIN ← 13', 'BCK ← 11', 'SCK ← 10'], ['OUT L', 'GND', 'OUT R'],
+      ['У меню приймача «Вихід звуку: PCM5102» (команда порту o1) / receiver menu “Audio out: PCM5102” (serial o1).',
+       'SCK — на вивід 10 або на «землю», але не «в повітрі» / SCK to pin 10 or to ground, never floating.'], 'mod-pcm5102.png')
 small('pcm1808', 'PCM1808 — зовнішній АЦП передавача / external transmitter ADC (за бажанням, не перевірено / optional, untested)', PURPLE, 'PCM1808',
       ['LIN', 'GND', 'RIN'], ['5V / 3V3', 'GND', 'SCK ← IO43', 'BCK ← IO1', 'LRC ← IO2', 'OUT → IO40', 'FMT, MD → GND'],
       ['На передавачі: «Звук» → «Вхід: PCM1808» (команда порту a1). Поки він працює, передавач не друкує в порт.',

@@ -23,7 +23,7 @@
 | Board | **ESP32-S3-DevKitC-1 N16R8** (or a compatible one with 16 MB flash and 8 MB PSRAM) | PSRAM is needed for the over-the-air update: the 2.2 MB image is received into memory as a whole |
 | Display with knob | "M75" module: OLED **SH1106 1.3″ 128×64 I2C** + **EC11** encoder with a button | power it **from 3.3 V only**: the I2C pull-ups on the module go to VCC |
 | Audio output | headphones directly: 1 kΩ + 10 nF on each leg and a 1 µF coupling capacitor | or a headphone amplifier with a differential input (MAX97220) |
-| External DAC (optional) | **PCM5102** module | supported in the firmware, not verified on the boards |
+| External DAC (optional) | **PCM5102** module | cleaner sound: CPU supply noise does not reach the headphones; see the section below |
 | Power | power bank or a battery with a 5 V output | the display is optional: without it the receiver simply plays |
 
 The receiver board can also have no display and no knob — it is then controlled from the transmitter (volume,
@@ -73,7 +73,7 @@ easy to find by name: “ESP32-4848S040”, “SH1106 1.3 OLED EC11”, “MAX97
 | Knob: A (TRA), B (TRB), button (PSH) | 5, 6, 7 |
 | Module buttons CON, BAK (not used, pulled up) | 15, 16 |
 | Audio output "+", "−" (one-bit PDM) | 17, 18 |
-| PCM5102: BCK, LCK, DIN | 11, 12, 13 |
+| PCM5102: SCK (master clock 8.192 MHz), BCK, LCK, DIN | 10, 11, 12, 13 |
 | On-board RGB LED (WS2812) | 48 (38 on newer boards) |
 
 ### Transmitter on the ESP32-4848S040 module
@@ -117,6 +117,36 @@ Variants with external converters (not verified on the boards):
 [receiver + PCM5102](../skhema-priemnik-s3-pcm5102.png).
 
 The schematics are drawn by `tools/gen_schema.py`; they are also available as SVG.
+
+## External PCM5102 DAC on the receiver
+
+| PCM5102 module | Receiver board |
+|---|---|
+| VIN | 5V |
+| GND | GND |
+| SCK | **10** — master clock 8.192 MHz (since version 2.35) |
+| BCK | 11 |
+| LCK (LRCK) | 12 |
+| DIN | 13 |
+
+- In the receiver menu: «Вихід звуку» (Audio out) → **PCM5102** (the board restarts); from the serial port — `o1`.
+  Headphones on pins 17/18 are silent in this mode.
+- **SCK**: either to pin 10, or to ground (then the DAC recovers the clock from BCK by itself). If SCK on your
+  module is already shorted to ground with a solder blob, do **not** connect pin 10 to it. SCK must never be left
+  floating: the DAC stays silent.
+- **The solder jumpers on the back of the module must be closed.** Some GY-PCM5102 modules ship with them open —
+  then the DAC is silent although every signal is present (verified on 2026-10-08: sound appeared as soon as the
+  middle pad of H3L was bridged to “H”). Each jumper has three pads: the middle one and “L” / “H”.
+
+  | Jumper | DAC pin | Sets | Bridge to | Notes |
+  |---|---|---|---|---|
+  | H1L | FLT | digital filter | **L** | normal linear-phase filter; H — low-latency filter |
+  | H2L | DEMP | de-emphasis | **L** | off; H — only for old 44.1 kHz recordings |
+  | H3L | XSMT | soft mute | **H** | sound on; at L or floating — silence |
+  | H4L | FMT | data format | **L** | I2S (what the receiver sends); H — another format, the sound will be distorted |
+- A check without instruments: the serial command `n8=7` prints whether pins 10–13 are toggling (share of ones
+  about 50 %). On the transmitter the receiver list shows “вихід живий” (output alive).
+- The DAC output is line level: 16–32 Ω headphones driven directly are quiet; an amplifier gives full volume.
 
 ## Two ways to connect headphones
 

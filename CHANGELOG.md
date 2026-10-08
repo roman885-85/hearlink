@@ -1,5 +1,11 @@
 # Changelog / Історія версій
 
+## 2.35 — 2026-10-08
+- EN: receiver with an external PCM5102 DAC: the master clock (SCK, 8.192 MHz) is now output on pin 10; the
+  “output alive” status and the `n8=7` pin check work for the I2S output too.
+- UK: приймач із зовнішнім ЦАП PCM5102: головний такт (SCK, 8,192 МГц) тепер виходить на вивід 10; стан «вихід
+  живий» і перевірка виводів `n8=7` працюють і для виходу I2S.
+
 ## 2.34 — 2026-10-07
 **EN**
 - Receiver menu: main-screen views (spectrum / needle meters / large volume), LED brightness, language, speech

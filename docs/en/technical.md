@@ -308,7 +308,7 @@ Things that have already been stepped on — so as not to step on them again.
 - The "input to headphones" delay acoustically: the estimate is 12–15 ms for "highest", ~20, 30–35 and 40–50 ms for
   the others.
 - Receiver power consumption in operation and in sleep, battery run time.
-- PCM1808 on the transmitter module and PCM5102 on the receiver.
+- PCM1808 on the transmitter module. (PCM5102 on the receiver does produce sound — verified on 2026-10-08; its sound quality is still being evaluated.)
 - More than two receivers at the same time.
 - The cause of the rare stall of the transmitter's Wi-Fi driver (it revives itself; the details are written by the
   "black box").

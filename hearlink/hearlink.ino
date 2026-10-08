@@ -807,6 +807,24 @@ static void command(String s) {
           if (p == 9) rxEarStart(val != 0);
           else if (p == 7) rxUiAsk = (uint8_t)val;   // n7=1 меню, n7=2 «Зв'язок», n7=3 главный экран — для замеров
           else if (p == 8) {   // n8=1 — как настроен вывод кнопки ручки; n8=<мс> — «нажать» её программно на столько миллисекунд
+            if (val == 7) {   // n8=7 — что на выводах выхода звука: доля единиц и число перепадов за 20 мс (BCK, LRCK, данные; PDM «+», «−»)
+              for (int pin : { PIN_I2S_MCLK, PIN_I2S_BCK, PIN_I2S_WS, PIN_I2S_DOUT, PIN_OUT_P, PIN_OUT_N }) {
+                gpio_input_enable((gpio_num_t)pin);
+                uint32_t ones = 0, n = 0, edges = 0, t0 = micros();
+                int prev = gpio_get_level((gpio_num_t)pin);
+                while (micros() - t0 < 20000) {
+                  int v = gpio_get_level((gpio_num_t)pin);
+                  ones += v;
+                  edges += v != prev;
+                  prev = v;
+                  n++;
+                }
+                Serial.printf("вивід %d: одиниць %u %%, перепадів за 20 мс %u (≈%u Гц), опитувань %u\n", pin, (unsigned)(n ? ones * 100 / n : 0), (unsigned)edges,
+                              (unsigned)(edges * 25), (unsigned)n);
+              }
+              Serial.printf("вихід: %s, %s\n", cfg.output == OUT_I2S ? "PCM5102 (I2S): SCK 10, BCK 11, LRCK 12, DIN 13" : "PDM: 17, 18", rxOutLive() ? "живий" : "СТОЇТЬ");
+              return;
+            }
             if (val == 2) gpio_wakeup_enable((gpio_num_t)PIN_ENC_SW, GPIO_INTR_LOW_LEVEL);   // n8=2 — оставить вывод таким, каким его оставлял сон до 2.32
             if (val == 5 || val == 6) {   // n8=5 — «нажать» ручку на секунду, не задерживая главный цикл; n8=6 — то же через 30 с
               // (во сне порт не слушает, поэтому пробуждение кнопкой проверяется нажатием, назначенным заранее)
