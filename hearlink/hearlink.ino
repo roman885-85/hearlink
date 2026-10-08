@@ -115,6 +115,7 @@ void settingsFactory() {   // всё стереть и начать с нача�
 static void settingsLoad() {
   prefs.begin("hearlink", false);
   size_t len = prefs.getBytesLength("cfg");   // запись от старой версии короче — новые поля остаются по умолчанию
+  bool oldVolScale = len && len <= offsetof(Settings, volScale);   // записана до 2.40: шкала громкости была другой
   if (len && len <= sizeof(cfg)) prefs.getBytes("cfg", &cfg, len);
   else if (len && len <= 1024) {   // запись длиннее — её оставила более новая прошивка (вернулись на прежнюю): взять своё начало.
     uint8_t *tmp = (uint8_t *)malloc(len);   // До 2.32 такая запись не читалась вовсе, и возврат стирал все настройки
@@ -132,7 +133,7 @@ static void settingsLoad() {
   utf8Clean(cfg.srcName);
   if (cfg.rateIdx >= N_RATES) cfg.rateIdx = 2;
   if ((cfg.depthMs && cfg.depthMs < 4) || cfg.depthMs > 40) cfg.depthMs = 0;
-  if (cfg.volume > 20) cfg.volume = 12;
+  if (cfg.volume > 20) cfg.volume = 16;
   if (cfg.tone >= TEST_COUNT) cfg.tone = 0;
   if (cfg.gainDb < -12 || cfg.gainDb > 24) cfg.gainDb = 0;
   if (cfg.brightness < 10 || cfg.brightness > 100) cfg.brightness = 80;
@@ -154,7 +155,14 @@ static void settingsLoad() {
   if (cfg.rxView > 2) cfg.rxView = 0;
   if (cfg.rxLed > 3) cfg.rxLed = 2;
   if (cfg.rxLang > 2) cfg.rxLang = 0;
-  if (!cfg.isTx && cfg.volume > cfg.rxVolMax) cfg.volume = cfg.rxVolMax;
+  // До 2.40 «звук как есть» был шаг 12 (60 %), с 2.40 — шаг 20 (100 %). Чтобы после обновления приёмник звучал как до
+  // него, шаг и предел сдвигаются на 8; всё, что стояло выше 60 % (там было усиление с ограничителем), становится 100 %.
+  if (oldVolScale) {
+    if (cfg.volume) cfg.volume = cfg.volume + 8 > 20 ? 20 : cfg.volume + 8;
+    cfg.rxVolMax = cfg.rxVolMax + 8 > 20 ? 20 : cfg.rxVolMax + 8;
+    cfg.volScale = 1;
+    prefs.putBytes("cfg", &cfg, sizeof(cfg));
+  }
 }
 
 // Почему плата запустилась в этот раз: важно отличать включение питания от провала напряжения и сбоя программы.
@@ -261,6 +269,10 @@ static void help() {
   else Serial.printf("ім'я: «%s»%s; вихід: %s, %s, запас %s, гучність %u з 20\n", rxName(), cfg.off ? " (ВИМКНЕНИЙ з передавача)" : "", cfg.output == OUT_I2S ? "PCM5102 (I2S)" : "PDM",
                      cfg.rxStereo ? "ДВА КАНАЛИ (навушники напряму або стерео)" : cfg.output == OUT_I2S ? "моно" : "ПРОТИФАЗА (підсилювач з різницевим входом)",
                      cfg.depthMs ? (String(cfg.depthMs) + " мс").c_str() : "підбирається сам", cfg.volume);
+  if (!cfg.isTx) {   // чем громкость оборачивается на деле: шкала 0…100 % растянута на 0…«межа гучності»
+    float g = rxVolumeGain(rxVolumeScaled(cfg.volume));
+    Serial.printf("гучність %u %% при межі %u %% — звук %s%.1f дБ від повної шкали\n", cfg.volume * 5, cfg.rxVolMax * 5, g > 0 ? "" : "вимкнено, ", g > 0 ? 20 * log10f(g) : 0.0f);
+  }
 }
 
 // Свободное время ядер: на каждом ядре секунду крутится пустой счётчик с самым низким приоритетом. Чем меньше насчитал,

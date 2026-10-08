@@ -1,5 +1,24 @@
 # Changelog / Історія версій
 
+## 2.41 — 2026-10-08
+- EN: receiver: “Volume limit” is now a ceiling of the scale — the knob (and the transmitter) still go 0…100 %, but
+  100 % sounds like the chosen limit (with a 50 % limit, 100 % on the knob is as loud as 50 % used to be).
+- UK: приймач: «Межа гучності» тепер стеля шкали — ручка (і передавач) так само ходять 0…100 %, але 100 % звучить
+  як вибрана межа (з межею 50 % на 100 % ручки гучність така, як раніше на 50 %).
+
+## 2.40 — 2026-10-08
+- EN: receiver: 100 % volume is now the audio as it is, with no gain above full scale — as in an ordinary player.
+  Before, “as it is” was 60 % and everything above was amplified by up to +16 dB and squeezed by the limiter: on
+  music mastered to full scale the sound “sagged” and rasped on every bass note above 50–60 % (very audible with
+  the PCM5102 DAC). The limiter threshold is now full scale, so without “Clarity” it does nothing. A stored volume
+  and volume limit are converted once on update (+8 steps). For a quiet source use «Підсилення входу» (Input gain)
+  on the transmitter.
+- UK: приймач: 100 % гучності — тепер звук як є, без підсилення понад повну шкалу, як у звичайному програвачі.
+  Раніше «як є» було 60 %, а все вище підсилювалося до +16 дБ і стискалося обмежувачем: на музиці, записаній на
+  всю шкалу, вище 50–60 % звук «завалювався» й хрипів на кожному басі (особливо чути з ЦАП PCM5102). Поріг
+  обмежувача тепер — повна шкала, без «Чіткості» він не працює. Збережена гучність і її межа один раз
+  перераховуються при оновленні (+8 кроків). Для тихого джерела — «Підсилення входу» на передавачі.
+
 ## 2.39 — 2026-10-08
 - EN: PCM5102 output is now exactly the classic 3-wire connection: 16-bit I2S, BCK 1.024 MHz, no master clock (pin 10
   is held low and can serve as ground for SCK). 2.38 had a bug — only one channel played (32-bit slots with a 16-bit

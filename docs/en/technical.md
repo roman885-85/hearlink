@@ -103,11 +103,18 @@ encoder, on-board WS2812 RGB LED. The audio output is one-bit (PDM) on two pins 
 6. **Speech clarity**: a "shelf" filter (+12 dB above 2 kHz) and a mix of "the sound + its boosted copy" in a
    proportion of 0.196 / 0.507 / 1 — that is +4 / +8 / +12 dB. "Strong": 1 kHz +0.9 dB, 2 kHz +6.0, 3 kHz +9.8,
    4 kHz +11.2, 8 kHz +12.0.
-7. **Volume**: 21 steps of 2 dB; step 12 — unchanged, above it — gain up to +16 dB. It changes smoothly.
+7. **Volume**: 21 steps of 2 dB; step 20 (100 %) — the audio as it is, below it — quieter (step 1 is −38 dB).
+   There is no gain above “as it is” (since 2.40) — just like in an ordinary player or radio. Before 2.40 “as it is”
+   was step 12 (60 %), and above it came gain up to +16 dB held by the limiter: on music mastered to full scale the
+   limiter worked almost all the time above 60 % (at 85 % volume — 84 % of the time, up to −10.8 dB), and the sound
+   “sagged” on every bass note. A quiet source is amplified at the transmitter: «Звук» (Sound) → «Підсилення входу»
+   (Input gain). The volume changes smoothly. After an update from an older version the stored volume and its limit
+   are converted once (+8 steps, not above 100 %), so that it sounds as before.
 8. **Look-ahead limiter** (since 2.37) — common to both channels. The audio passes through a 1.5 ms delay
    (48 samples) and the gain is computed from the largest sample in that window: it goes down smoothly BEFORE the
    peak arrives and comes back slowly (a quarter of a second). When there is nothing to limit, the audio passes
-   unchanged. The previous limiter (instant attack, 80 ms release) clipped the top of each peak and its gain
+   unchanged. Since 2.40 the threshold is full scale, so without “Clarity” the limiter does not work at all (the
+   one-bit output still gets no more than 30 000 of 32 767). The previous limiter (instant attack, 80 ms release) clipped the top of each peak and its gain
    wandered by 1–2 dB within one bass period — with the DAC this was heard as overload in the bass, especially
    with “Clarity” switched on.
 9. **Balance** — attenuation of one channel by 3 dB per step.

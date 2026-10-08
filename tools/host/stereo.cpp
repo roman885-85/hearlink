@@ -55,7 +55,7 @@ static double run(int q, const std::vector<int16_t> &L, const std::vector<int16_
     if (d.pcm) { memcpy(w, src, d.n * 2); w += d.n * 2; } else { memcpy(w, blk, bl); w += bl; }
     memcpy(w, blkS, bl); w += bl;
     for (int k = 0; k < copies; k++, w += bl) memcpy(w, hist[k], bl);
-    if ((int)(w - pkt) + (int)sizeof(Hdr) != qPktLen(q, true)) { printf("ДЛИНА ПАКЕТА НЕ СОШЛАСЬ\n"); exit(1); }
+    if ((int)(w - pkt) + (int)sizeof(Hdr) + SEC_TAG != qPktLen(q, true)) { printf("ДЛИНА ПАКЕТА НЕ СОШЛАСЬ\n"); exit(1); }
     memcpy(hist[1], hist[0], bl);
     memcpy(hist[0], blk, bl);
     if (rand() % 100 < lossPct) continue;

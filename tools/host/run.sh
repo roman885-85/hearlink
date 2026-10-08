@@ -8,8 +8,8 @@ set -e
 cd "$(dirname "$0")/../.."
 mkdir -p build/host
 sed 's/#include "config.h"//' hearlink/proto.h > build/host/proto_host.h
-c++ -std=c++17 -O1 -Ibuild/host tools/host/codec.cpp -o build/host/codec
-c++ -std=c++17 -O1 -Ibuild/host tools/host/stereo.cpp -o build/host/stereo
+c++ -std=c++17 -O1 -Ibuild/host -Ihearlink tools/host/codec.cpp -o build/host/codec
+c++ -std=c++17 -O1 -Ibuild/host -Ihearlink tools/host/stereo.cpp -o build/host/stereo
 c++ -std=c++17 -O1 -Wall tools/host/sec_test.cpp -o build/host/sec_test
 ./build/host/sec_test
 python3 tools/host/sec_kat.py

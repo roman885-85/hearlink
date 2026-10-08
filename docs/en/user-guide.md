@@ -166,7 +166,7 @@ was changed from the transmitter) and so on.
 | **«Мова» (Language)** | as transmitter / українська / English |
 | **«Чіткість» (Clarity)** | off / light (+4 dB) / medium (+8) / strong (+12) — a boost above 2 kHz, where the consonants are |
 | **«Баланс» (Balance)** | left +1…+5 / center / right +1…+5 (3 dB each); only with the «2 канали» (2 channels) output |
-| **«Межа гучн.» (Volume limit)** | 20…100 % — neither the knob nor the transmitter can raise it higher |
+| **«Межа гучн.» (Volume limit)** | 20…100 % — the loudness ceiling: the knob scale stays 0…100 %, but 100 % sounds like this limit (since 2.41) |
 | **«Навушники → тест» (Headphones → test)** | a tone alternately in the left and the right ear |
 | **«Зв'язок» (Link)** | signal in dBm, loss, buffer, a one-minute graph |
 | «Набір» (Kit) | kit number (display only) |

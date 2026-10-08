@@ -43,8 +43,7 @@ static bool rxParamSet(uint8_t p, int v) {   // значение приводи�
     case RXP_CLARITY: cfg.rxClarity = lim(v, 0, 3); break;
     case RXP_BALANCE: cfg.rxBalance = lim(v, -5, 5); break;
     case RXP_VOLMAX:
-      cfg.rxVolMax = lim(v, 1, 20);
-      if (cfg.volume > cfg.rxVolMax) cfg.volume = cfg.rxVolMax;   // громкость выше нового предела — опустить до него
+      cfg.rxVolMax = lim(v, 1, 20);   // потолок шкалы: сама громкость (0…100 %) не меняется, меняется её «вес»
       break;
     case RXP_VIEW: cfg.rxView = lim(v, 0, 2); break;
     case RXP_LED: cfg.rxLed = lim(v, 0, 3); break;
@@ -129,7 +128,7 @@ static void rxOnCommand(const uint8_t *data, int len) {
       rxSaveAsked = true;
       break;
     case CMD_VOLUME:
-      cfg.volume = c->arg > cfg.rxVolMax ? cfg.rxVolMax : c->arg;   // выше предела громкости и передатчик не поднимет
+      cfg.volume = c->arg > 20 ? 20 : c->arg;   // шкала всегда 0…100 %; предел громкости — её потолок (rxVolumeScaled)
       rxMute = false;
       rxSaveAsked = true;
       break;

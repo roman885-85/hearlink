@@ -444,11 +444,11 @@ static void uiTask(void *) {
       case S_MAIN:
         if (turn) {
           int v = cfg.volume + turn;
-          if (v > cfg.rxVolMax && cfg.rxVolMax < 20 && now - limitSaidAt > 2500) {   // упёрлись в предел — сказать, почему дальше не идёт
+          if (v > 20 && cfg.rxVolMax < 20 && now - limitSaidAt > 2500) {   // шкала кончилась, а звук тише полного — сказать почему
             limitSaidAt = now;
             say(tr("Межа гучності"));
           }
-          cfg.volume = v < 0 ? 0 : v > cfg.rxVolMax ? cfg.rxVolMax : v;
+          cfg.volume = v < 0 ? 0 : v > 20 ? 20 : v;
           rxMute = false;
           volShownAt = now;
           saveAt = now + 1000;
@@ -684,14 +684,14 @@ static void uiTask(void *) {
         case SC_MAIN:   // вид — по настройке «Вигляд»: спектр, стрелочные индикаторы или крупная громкость
           rxs::statusBar(g, now, barsF, rxName(), cfg.rxView == 2 ? -1 : cfg.volume * 5, sound);
           if (cfg.rxView == 1) rxs::needles(g, now, vuLF, vuRF, vuLP, vuRP, cfg.rxStereo && rxAirStereo);
-          else if (cfg.rxView == 2) rxs::bigVolume(g, now, volF, cfg.rxVolMax, vuLF > vuRF ? vuLF : vuRF);
+          else if (cfg.rxView == 2) rxs::bigVolume(g, now, volF, 20, vuLF > vuRF ? vuLF : vuRF);
           else {
             specUpdate();                       // разбор — на каждом кадре
             specAnimate(now, (float)(now - specAt > 100 ? 100 : now - specAt));
             specAt = now;
             rxs::spectrum(g, barDraw, barPeak, BANDS, now);
           }
-          if (cfg.rxView != 2) rxs::volumeCard(g, now, volF, volK, cfg.rxVolMax);   // громкость — карточкой поверх (в виде «гучність» она и так крупно)
+          if (cfg.rxView != 2) rxs::volumeCard(g, now, volF, volK);   // громкость — карточкой поверх (в виде «гучність» она и так крупно)
           break;
         case SC_MENU: {
           static char vals[M_COUNT][24];
