@@ -70,6 +70,8 @@ static void rxEarStart(bool on) {
   rxEarTest = on;
 }
 static volatile uint16_t rxVuL, rxVuR;     // наибольший отсчёт левого и правого канала с прошлого чтения экраном (стрелки)
+static volatile uint32_t rxLimBusy;        // сколько отсчётов ограничитель убавлял звук (обнуляет проверка n8=8)
+static volatile float rxLimLow = 1;       // наименьшее усиление ограничителя за это время
 static volatile uint32_t rxInSamples, rxOutSamples;   // сколько отсчётов принято из эфира и отдано на выход (замер настоящих частот, n8=8)
 static volatile uint8_t rxUiAsk;           // проверка с порта (n7=…): открыть экран — 1 меню, 2 «Зв'язок», 3 главный
 // проверка пробного тона
@@ -267,6 +269,18 @@ static void rxDacUnmute(bool on) {
   if (!on) vTaskDelay(pdMS_TO_TICKS(30));  // ЦАП плавно глушит звук сам — подождать, потом можно снимать такты
 }
 
+// Сколько раз выход остался без данных: порция в очереди выхода кончилась раньше, чем задача звука положила следующую
+// (тогда в наушники уходит миллисекунда тишины — на басе это слышно как срыв). Считает сам драйвер выхода.
+static volatile uint32_t rxOutStarved, rxOutSent;
+static bool IRAM_ATTR rxOnStarve(i2s_chan_handle_t, i2s_event_data_t *, void *) {
+  rxOutStarved = rxOutStarved + 1;
+  return false;
+}
+static bool IRAM_ATTR rxOnSent(i2s_chan_handle_t, i2s_event_data_t *, void *) {
+  rxOutSent = rxOutSent + 1;
+  return false;
+}
+
 static bool rxOutBegin() {
   i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   cc.dma_desc_num = 2;          // в очереди на выход не больше 2 мс
@@ -308,6 +322,12 @@ static bool rxOutBegin() {
     // и 65: до 40 мА «вверх» и 28 мА «вниз», сопротивление открытого вывода около 17 Ом).
     gpio_set_drive_capability((gpio_num_t)PIN_OUT_P, GPIO_DRIVE_CAP_3);
     gpio_set_drive_capability((gpio_num_t)PIN_OUT_N, GPIO_DRIVE_CAP_3);
+  }
+  {
+    i2s_event_callbacks_t cb = {};
+    cb.on_send_q_ovf = rxOnStarve;
+    cb.on_sent = rxOnSent;
+    i2s_channel_register_event_callback(rxI2s, &cb, NULL);
   }
   if (i2s_channel_enable(rxI2s) != ESP_OK) return false;
   rxDacUnmute(true);
@@ -470,7 +490,24 @@ static void rxTask(void *) {
   uint32_t primeBlocks = 1000;   // сколько миллисекунд подряд звука не было
   bool wasRun = false;
   uint32_t quiet = 0, sinceUnder = 0;
-  const float limit = 30000.0f, rel = expf(-1.0f / (SRATE * 0.08f));
+  // Ограничитель с заглядыванием вперёд (с версии 2.37).
+  // Прежний (мгновенная атака по текущему отсчёту, отпускание 80 мс) на нарастающей половине каждого пика попросту
+  // срезал верхушку, а усиление внутри одного периода баса «гуляло» на 1–2 дБ — искажения, как от перегрузки. С
+  // наушниками на выводах платы их не было слышно (там нет баса), с ЦАП — слышно сразу: владелец 08.10 — «звук
+  // заваливается по низам как от перегрузки», «рыпение начинается уже на 50 процентах… в радио такой модуль работает
+  // напрямую с наушниками на полную и все идеально, так что это проблема в твоем коде». Особенно при «чёткости»: она
+  // поднимает верх до ограничителя на 4–12 дБ.
+  // Теперь звук идёт через задержку LIM_LA отсчётов (1,5 мс), а усиление считается по самому большому отсчёту в этом
+  // окне: оно плавно опускается ДО прихода пика и медленно (четверть секунды) возвращается. Замер на проверочной
+  // мелодии, громкость 75 % с «чёткостью»: скачок усиления за отсчёт был до 4,4 дБ — стал до 0,45; «гуляние» за
+  // 20 мс было 1,7 дБ — стало 0,17. Когда ограничивать нечего, звук проходит без изменений.
+  const float limit = 30000.0f;
+  enum { LIM_LA = 48 };
+  static float limL[LIM_LA], limR[LIM_LA], limNeed[LIM_LA];
+  for (int i = 0; i < LIM_LA; i++) limNeed[i] = 1;
+  int limPos = 0, limMinAge = 0;
+  float limMin = 1, limG = 1;
+  const float LIM_ATT = 1 - expf(-1.0f / 10.0f), LIM_REL = 1 - expf(-1.0f / (SRATE * 0.25f));
   // «Авто»: запас держится таким, какой был нужен за последнюю минуту, плюс 4 мс. Раз в пять секунд смотрим, как
   // глубоко запас проседал (пакеты приходят неровно: эфир занят — они ждут и приходят пачкой), и помним двенадцать
   // таких замеров. Провал звука — запас сразу вырастает на длину провала.
@@ -626,6 +663,8 @@ static void rxTask(void *) {
     int bal = cfg.rxBalance < -5 ? -5 : cfg.rxBalance > 5 ? 5 : cfg.rxBalance;
     float blWant = cfg.rxStereo && bal > 0 ? BAL_K[bal] : 1, brWant = cfg.rxStereo && bal < 0 ? BAL_K[-bal] : 1;
     int vuL = 0, vuR = 0;
+    uint32_t limBusy = 0;
+    float limLow = 1;
     bool beep = nowMs < rxIdentifyUntil && (nowMs % 500) < 160;   // три коротких гудка в полторы секунды
     static uint32_t beepPh;
     int pk = rxPeak, pkL = rxPeakL, pkR = rxPeakR;
@@ -703,10 +742,32 @@ static void rxTask(void *) {
       float yc = y + clK * (shM.run(y) - y), ysc = stOut ? ys + clK * (shS.run(ys) - ys) : 0;
       // левый и правый; в моно оба равны середине. Ограничитель общий — по большему из двух, чтобы не сдвигать звук вбок
       float vl = (yc + ysc) * gain, vr = (yc - ysc) * gain, av = fabsf(vl) > fabsf(vr) ? fabsf(vl) : fabsf(vr);
-      env = av > env ? av : env * rel;
-      if (env > limit) {
-        vl *= limit / env;
-        vr *= limit / env;
+      {
+        float need = av > limit ? limit / av : 1.0f;   // во сколько раз надо убавить, чтобы этот отсчёт уложился
+        float dl = limL[limPos], dr = limR[limPos];    // отсчёт, пришедший LIM_LA назад, — он сейчас пойдёт на выход
+        limL[limPos] = vl;
+        limR[limPos] = vr;
+        limNeed[limPos] = need;
+        limPos = limPos + 1 == LIM_LA ? 0 : limPos + 1;
+        if (need <= limMin) {                          // наименьшее «надо убавить» по окну
+          limMin = need;
+          limMinAge = 0;
+        } else if (++limMinAge >= LIM_LA) {            // прежний наименьший вышел из окна — найти новый
+          limMin = 2;
+          for (int k = 0; k < LIM_LA; k++) {           // от свежего к давнему: из равных остаётся самый свежий
+            int idx = limPos - 1 - k;
+            if (idx < 0) idx += LIM_LA;
+            if (limNeed[idx] < limMin) {
+              limMin = limNeed[idx];
+              limMinAge = k;
+            }
+          }
+        }
+        limG += (limMin - limG) * (limMin < limG ? LIM_ATT : LIM_REL);
+        vl = dl * limG;
+        vr = dr * limG;
+        if (limG < 0.999f) limBusy++;
+        if (limG < limLow) limLow = limG;
       }
       if (ear || earL > 1 || earR > 1) {   // проверка наушников: тон в одно ухо (при выходе «протифаза» канал один — в оба)
         earL += ((earSide == 1 || (earSide == 2 && !stOut) ? earAmp : 0) - earL) * 0.004f;
@@ -736,13 +797,15 @@ static void rxTask(void *) {
         ol = ol < -32768 ? -32768 : ol;
         orr = orr < -32768 ? -32768 : orr;
       }
-      out[2 * i] = (int16_t)ol;
-      out[2 * i + 1] = (int16_t)orr;
+      out[2 * i] = (int16_t)(ol > 32767 ? 32767 : ol < -32768 ? -32768 : ol);
+      out[2 * i + 1] = (int16_t)(orr > 32767 ? 32767 : orr < -32768 ? -32768 : orr);
     }
     rxPeak = pk > 32767 ? 32767 : pk;
     if (pk > 300 && !(rxFlags & FLAG_MUTE)) rxSoundMs = millis() ? millis() : 1;   // −40 дБ и громче — «в эфире звук»
     rxPeakL = pkL > 32767 ? 32767 : pkL;
     rxPeakR = pkR > 32767 ? 32767 : pkR;
+    rxLimBusy = rxLimBusy + limBusy;                     // для проверки n8=8: сколько отсчётов ограничитель убавлял звук
+    if (limLow < rxLimLow) rxLimLow = limLow;
     if (vuL > rxVuL) rxVuL = vuL > 65535 ? 65535 : vuL;   // экран забирает и обнуляет
     if (vuR > rxVuR) rxVuR = vuR > 65535 ? 65535 : vuR;
     static uint32_t underRun;   // сколько отсчётов длится нынешний провал

@@ -1,5 +1,13 @@
 # Changelog / Історія версій
 
+## 2.37 — 2026-10-08
+- EN: receiver: a look-ahead limiter (1.5 ms) replaces the instant one — no more clipped peaks and “overloaded”
+  bass at higher volume or with “Clarity” on (clearly audible with the PCM5102 DAC). `n8=8` also reports how
+  much the limiter worked and whether the output ever ran out of data.
+- UK: приймач: обмежувач із заглядуванням уперед (1,5 мс) замість миттєвого — без зрізаних піків і «перевантажених»
+  низів на більшій гучності чи з увімкненою «Чіткістю» (добре чути з ЦАП PCM5102). `n8=8` показує також, скільки
+  працював обмежувач і чи лишався вихід без даних.
+
 ## 2.36 — 2026-10-08
 - EN: PCM5102: the receiver drives the DAC's XSMT (“sound on”) from pin 14, so modules with open solder jumpers
   work without soldering; the DAC is muted before the clocks stop (no click on sleep). Wider margin of the playback

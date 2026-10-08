@@ -809,7 +809,7 @@ static void command(String s) {
           else if (p == 8) {   // n8=1 — как настроен вывод кнопки ручки; n8=<мс> — «нажать» её программно на столько миллисекунд
             if (val == 8) {   // n8=8 — настоящие частоты за время с прошлого такого вызова: звук из эфира (часы передатчика) и выход (свои часы)
               static int64_t t0;
-              static uint32_t in0, out0;
+              static uint32_t in0, out0, st0, sn0;
               int64_t t = esp_timer_get_time();
               uint32_t in = rxInSamples, out = rxOutSamples;
               if (t0) {
@@ -817,6 +817,16 @@ static void command(String s) {
                 Serial.printf("за %.1f с: з ефіру %.2f відліків/с (%+.0f ppm від 32000), на вихід %.2f відліків/с (%+.0f ppm), вихід відносно ефіру %+.0f ppm; темп %+.0f ppm\n",
                               sec, fin, (fin / 32000 - 1) * 1e6, fout, (fout / 32000 - 1) * 1e6, (fout / fin - 1) * 1e6, (double)rxRatioPpm);
               }
+              if (t0) {
+                Serial.printf("вихід лишався без даних %u раз із %u порцій по 1 мс\n", (unsigned)(rxOutStarved - st0), (unsigned)(rxOutSent - sn0));
+                float low = rxLimLow;
+                Serial.printf("обмежувач: працював %.1f %% часу, найбільше −%.1f дБ; гучність %u, чіткість %u\n", (out - out0) ? 100.0 * rxLimBusy / (out - out0) : 0.0,
+                              low < 1 ? -20 * log10f(low) : 0.0f, cfg.volume, cfg.rxClarity);
+              }
+              rxLimBusy = 0;
+              rxLimLow = 1;
+              st0 = rxOutStarved;
+              sn0 = rxOutSent;
               t0 = t;
               in0 = in;
               out0 = out;

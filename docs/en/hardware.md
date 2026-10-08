@@ -130,6 +130,8 @@ The schematics are drawn by `tools/gen_schema.py`; they are also available as SV
 | LCK (LRCK) | 12 |
 | DIN | 13 |
 
+![Receiver with PCM5102](../skhema-priemnik-s3-pcm5102.png)
+
 - In the receiver menu: «Вихід звуку» (Audio out) → **PCM5102** (the board restarts); from the serial port — `o1`.
   Headphones on pins 17/18 are silent in this mode.
 - **SCK**: to ground (the DAC recovers the clock from BCK and cleans it by itself — this is the proven option) or
@@ -150,7 +152,7 @@ The schematics are drawn by `tools/gen_schema.py`; they are also available as SV
   | H4L | FMT | data format | **L** | I2S (what the receiver sends); H — another format, the sound will be distorted |
 - A check without instruments: the serial command `n8=7` prints whether pins 10–13 are toggling (share of ones
   about 50 %). On the transmitter the receiver list shows “вихід живий” (output alive).
-- The DAC output is line level: 16–32 Ω headphones driven directly are quiet; an amplifier gives full volume.
+- Headphones can be plugged straight into the module's jack; a MAX97220 amplifier after the DAC gives more volume headroom.
 
 ## Two ways to connect headphones
 

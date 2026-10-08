@@ -104,7 +104,12 @@ encoder, on-board WS2812 RGB LED. The audio output is one-bit (PDM) on two pins 
    proportion of 0.196 / 0.507 / 1 — that is +4 / +8 / +12 dB. "Strong": 1 kHz +0.9 dB, 2 kHz +6.0, 3 kHz +9.8,
    4 kHz +11.2, 8 kHz +12.0.
 7. **Volume**: 21 steps of 2 dB; step 12 — unchanged, above it — gain up to +16 dB. It changes smoothly.
-8. **Limiter** — common to both channels, acts instantly, releases in 80 ms.
+8. **Look-ahead limiter** (since 2.37) — common to both channels. The audio passes through a 1.5 ms delay
+   (48 samples) and the gain is computed from the largest sample in that window: it goes down smoothly BEFORE the
+   peak arrives and comes back slowly (a quarter of a second). When there is nothing to limit, the audio passes
+   unchanged. The previous limiter (instant attack, 80 ms release) clipped the top of each peak and its gain
+   wandered by 1–2 dB within one bass period — with the DAC this was heard as overload in the bass, especially
+   with “Clarity” switched on.
 9. **Balance** — attenuation of one channel by 3 dB per step.
 10. **Output**: PDM 32 kHz on pins 17/18. After power-on the pins rise to mid-level in 0.7 s; before sleep they
     drop to ground in 0.5 s — so that the capacitors do not click in the headphones.
@@ -305,7 +310,7 @@ Things that have already been stepped on — so as not to step on them again.
 ## Not verified
 - Range in a large hall. One measurement: at 8 m with the module's internal antenna the receiver lost the signal;
   after the external antenna was connected there were no systematic measurements.
-- The "input to headphones" delay acoustically: the estimate is 12–15 ms for "highest", ~20, 30–35 and 40–50 ms for
+- The "input to headphones" delay acoustically: the estimate is 13–17 ms (since 2.37 including the 1.5 ms of the limiter) for "highest", ~20, 30–35 and 40–50 ms for
   the others.
 - Receiver power consumption in operation and in sleep, battery run time.
 - PCM1808 on the transmitter module. (PCM5102 on the receiver does produce sound — verified on 2026-10-08; its sound quality is still being evaluated.)
