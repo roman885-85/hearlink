@@ -132,8 +132,8 @@ output — which is why headphones can be plugged straight into the jack).
 | DIN | **13** | I2S data, 16 bit |
 | SCK | **GND** (or pin 10 — the receiver holds it low) | no master clock is supplied: the DAC recovers it from BCK |
 | XSMT | **14** (or 3V3) | “sound on”: the receiver keeps it high while the output is running |
-| FLT | **GND** | normal digital filter |
-| DEMP | **GND** | de-emphasis off |
+| FLT | **GND** or 3V3 — just not floating | digital filter: GND — normal, 3V3 — low latency |
+| DEMP | **GND** or 3V3 — just not floating | de-emphasis: GND — off, 3V3 — on (softer treble) |
 | FMT | **GND** | I2S format |
 
 ![Receiver with PCM5102](../skhema-priemnik-s3-pcm5102.png)
@@ -148,10 +148,20 @@ the same header, XSMT to receiver pin 14. Or close the jumpers as in the table.
 
 | Jumper | DAC pin | Sets | Must be | Otherwise |
 |---|---|---|---|---|
-| H1L | FLT | digital filter | **L** | H — low-latency filter; floating — clicks |
-| H2L | DEMP | 44.1 kHz de-emphasis | **L** | H — treble is cut |
+| H1L | FLT | digital filter | **L** or **H** | L — normal filter, H — low-latency filter; floating — clicks, “dirt” in the sound |
+| H2L | DEMP | 44.1 kHz de-emphasis | **L** or **H** | L — audio as it is, H — softer treble; floating — “dirt” in the sound |
 | H3L | XSMT | soft mute | **H** | L or floating — silence |
 | H4L | FMT | data format | **L** (I2S) | H — another format: loud noise instead of sound; floating — rasping |
+
+**Verified on the device (2026-10-09).** On a receiver whose module had H1L, H2L and H4L open, the sound carried
+digital “dirt”: a background buzz on some harmonics, “as if the sample rate were very low” — although the signal to
+the DAC was bit-exact (`n8=9`). After bridging **H1L → H, H2L → H, H4L → L** (H3L → H was already closed) the dirt
+was gone and the sound is clean. So all four jumpers must be closed; the kit's working receiver uses exactly this
+combination.
+
+About H2L → H: this is the de-emphasis filter designed for 44.1 kHz; at our 32 kHz it softens the treble — by
+calculation roughly −2 dB at 2 kHz, −5 dB at 4 kHz, −8 dB at 8 kHz (not measured). If speech lacks clarity, raise the
+treble on the receiver (“Clarity”, equalizer bands 2.5 and 6 kHz) or bridge H2L → L.
 
 - If the H3L jumper is bridged to “H”, do **not** connect pin 14 to XSMT; if SCK is already shorted to ground on the
   module, do not wire it anywhere else.
