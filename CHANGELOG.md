@@ -1,6 +1,31 @@
 # Changelog / Історія версій
 
-## 2.48 — 2026-10-09 (not yet released / ще не випущено)
+## 2.49 — 2026-10-09
+- EN: fixed: **the transmitter picture breaking up “until the power is switched off”**. The display driver (ESP-IDF
+  5.5.1 inside Arduino core 3.3.3) chooses which of the two frame-output buffers to refill by the parity of an
+  interrupt counter, and with frame output restarted in every frame it never resets that counter. As soon as two
+  “portion sent” interrupts merge into one (the screen core took no interrupts for half a millisecond: switching the
+  test sound, a settings write…), the driver keeps refilling the buffer that is being sent at that very moment: the
+  picture shifts by 10 lines and tears in every portion, all counters stay normal, and only a restart helped.
+  ESP-IDF fixed this later; the Arduino libraries do not have the fix. The firmware now chooses the buffer itself —
+  by the position of the portion in the frame. Measured on the device: after a forced fault the driver stays out of
+  order for good (2027 portions a second “into the wrong buffer”); with the old behaviour every portion (2029 a
+  second) lands in the buffer being transmitted, with the fix — none. A real switch of the test sound knocked the
+  driver over once in six tries. `u` shows how many times the driver lost its order; `Y9` forces the fault, `Y10` /
+  `Y11` switch the old / the new behaviour for comparison.
+- UK: виправлено: **зрив картинки передавача «до вимкнення живлення»**. Драйвер екрана (ESP-IDF 5.5.1 у складі ядра
+  Arduino 3.3.3) вибирає, який із двох буферів видачі кадру наповнювати, за парністю лічильника переривань, і за
+  перезапуску видачі в кожному кадрі цей лічильник не скидає ніколи. Щойно два переривання «порція пішла» зіллються
+  в одне (ядро екрана пів мілісекунди не приймало переривань: перемикання перевірочного звуку, запис налаштувань…),
+  драйвер відтоді наповнює той буфер, який саме передається: картинка з'їжджає на 10 рядків і рветься в кожній
+  порції, усі лічильники при цьому в нормі, а допомагав лише перезапуск. В ESP-IDF це виправили пізніше; у
+  бібліотеках Arduino виправлення немає. Тепер прошивка вибирає буфер сама — за місцем порції в кадрі. Виміряно на
+  приладі: після навмисного збою драйвер лишається збитим назавжди (2027 порцій за секунду «не в той буфер»); за
+  старої поведінки кожна порція (2029 за секунду) лягає в буфер, що саме передається, з виправленням — жодна.
+  Справжнє перемикання перевірочного звуку збило драйвер один раз із шести спроб. `u` показує, скільки разів драйвер
+  збивався; `Y9` — збити навмисно, `Y10` / `Y11` — стара / нова поведінка для порівняння.
+
+## 2.48 — 2026-10-09
 - EN: fixed: the “Equalizer” button on the “Sound” page lost its two bottom pixel rows when the spectrum bars redrew.
 - UK: виправлено: кнопка «Еквалайзер» на сторінці «Звук» втрачала два нижні рядки точок, коли перемальовувався спектр.
 - EN: **receiver volume boost** (menu “Boost”, or from the transmitter: receiver window → “Settings” → “Equalizer” →

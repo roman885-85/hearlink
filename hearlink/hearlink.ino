@@ -751,7 +751,16 @@ static void command(String s) {
         cpuProbe();
         return;
       }
-      if (cfg.isTx && cfg.board == BOARD_4848) {
+      if (cfg.isTx && cfg.board == BOARD_4848 && v == 9) {   // Y9 — опыт: нарочно сбить драйвер экрана с очереди буферов (panel4848.h)
+        lcdProvokeFlip();
+        return;
+      }
+      if (cfg.isTx && cfg.board == BOARD_4848 && (v == 10 || v == 11)) {   // Y10 — класть порции, куда велит драйвер (как до 2.49), Y11 — по-своему
+        lcdBbTrustDriver = v == 10;
+        Serial.printf("буфер для порції кадру: %s\n", lcdBbTrustDriver ? "той, що називає драйвер (як до 2.49)" : "свій — за місцем порції в кадрі");
+        return;
+      }
+      if (cfg.isTx && cfg.board == BOARD_4848 && v <= 1 && arg.length()) {
         lcdClassicMagic = v ? LCD_CLASSIC : 0;
         Serial.println("перезапуск із іншим виводом кадру");
         Serial.flush();
@@ -1438,6 +1447,15 @@ void loop() {
   }
   if (!cfg.isTx) dbgPumpRx();
   otaAutoTick();            // передатчик: приёмник со старой прошивкой на связи — обновить его самому
+  if (cfg.isTx && cfg.board == BOARD_4848) {   // драйвер экрана сбился с очереди буферов (panel4848.h): отметить, когда
+    static uint32_t seenFlips;
+    uint32_t f = lcdBbFlips;
+    if (f != seenFlips) {
+      seenFlips = f;
+      bbMark(BB_LCDFLIP, f > 255 ? 255 : f);
+      Serial.printf("екран: драйвер збився з черги буферів (%u-й раз від запуску) — порції кладемо по-своєму, картинка ціла\n", (unsigned)f);
+    }
+  }
   if (!cfg.isTx) {   // обновление прошивки по радио: приём, сверка, запись (см. ota.h)
     otaRxTick();
     bool busy = otaRxBusy();

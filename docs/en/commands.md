@@ -50,6 +50,7 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `F…` | files: `Fl<folder>` list, `Fi<file>` info, `Fp<file>` on air, `Fs` stop, `Fm<folder>` create, `Fd<path>` delete, `Fc<file>\|<folder>` copy, `F` — what is on air |
 | `Q` | the radio "black box"; `Q0…Q3` — up to which step to revive; `Q7 Q8 Q9 Q6` — perform a step on a healthy radio |
 | `Y1`/`Y0`, `Y3`/`Y4`, `Y5…Y8` | experiments with display frame output |
+| `Y9`, `Y10`/`Y11` | knock the display driver out of its buffer order on purpose; put frame portions where the driver says (as before 2.49) / the firmware's own way |
 
 ### Receivers from the transmitter
 | Command | Action |

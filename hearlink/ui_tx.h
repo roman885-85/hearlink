@@ -236,6 +236,9 @@ static void report() {
     Serial.printf("  у русі: порцій %u, сер. %u мкс, найдовша %u мкс, довших за крок розгортки %u, навздогін %u; у спокої з минулого звіту: довших за крок %u, навздогін %u; спосіб %u\n",
                   (unsigned)lcdSlFills, (unsigned)(lcdSlFills ? lcdSlSumUs / lcdSlFills : 0), (unsigned)lcdSlMaxUs, (unsigned)lcdSlOver, (unsigned)lcdSlChase,
                   (unsigned)lcdIdleOver, (unsigned)lcdIdleChase, lcdSlideMode);
+    Serial.printf("  черга буферів: драйвер збивався %u разів (зараз %s), порцій він велів покласти не в той буфер %u; покладено в буфер, що саме передається, %u; буфер вибирає %s\n",
+                  (unsigned)lcdBbFlips, lcdBbFlipped ? "ЗБИТИЙ" : "у черзі", (unsigned)lcdBbWrong, (unsigned)lcdBbHit,
+                  lcdBbTrustDriver ? "ДРАЙВЕР (дослід Y10)" : !lcdBb[1] ? "драйвер (свій вивід не запущено)" : "прошивка — за місцем порції");
     lcdIdleOver = 0;
     lcdIdleChase = 0;
     lf = f;

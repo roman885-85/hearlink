@@ -12,6 +12,8 @@
 #include "esp_heap_caps.h"
 #include "slide.h"
 #include "esp32s3/rom/cache.h"
+#include "soc/gdma_struct.h"   // какой буфер выдачи DMA закончил последним (замер попаданий «под руку»)
+#include "esp_ipc.h"
 
 #define LCD_W 480
 #define LCD_H 480
@@ -138,8 +140,61 @@ static volatile bool lcdNoPreload;     // опыт: выключить подг�
 // значит, прежнее затянулось и отставание копится: так картинка и рвётся). Печатает u, обнуляет новое перелистывание.
 static volatile uint32_t lcdSlFills, lcdSlSumUs, lcdSlMaxUs, lcdSlOver, lcdSlChase, lcdIdleOver, lcdIdleChase;
 static volatile uint8_t lcdSlideMode = 0;   // опыт (порт: Y5…Y8): как готовить порцию в движении
+// ---- ошибка драйвера: срыв картинки «до отключения питания» (обойдена в 2.49)
+// Кадр уходит на экран порциями по 10 строк через два буфера во внутренней памяти: пока один передаётся, другой
+// наполняется. Какой из двух наполнять, драйвер (ESP-IDF 5.5.1 из сборки Arduino 3.3.3) решает по чётности счётчика
+// прерываний «порция ушла» (bb_eof_count) — и при перезапуске выдачи в каждом кадре (CONFIG_LCD_RGB_RESTART_IN_VSYNC,
+// так собраны библиотеки Arduino) этот счётчик не сбрасывает НИКОГДА. Стоит двум таким прерываниям слиться в одно
+// (ядро экрана полмиллисекунды не принимало прерываний: запись настроек во флеш, работа с каналом радио…), и чётность
+// сбита насовсем: драйвер с этой минуты велит наполнять тот буфер, который как раз передаётся. Картинка съезжает на
+// 10 строк и рвётся в каждой порции; все счётчики при этом в норме (порций по-прежнему 48 на кадр), а лечит только
+// перезапуск. Владелец, 09.10: «срыв происходит без закономерности, но перед срывом картинка подвисает менее чем на
+// пол секунды… лечится только отключением и включением питания». В ESP-IDF это позже исправили («DMA restart always
+// relaunches from bounce buffer 0. Keep the software index in sync»), в наших библиотеках исправления нет.
+// Обход: буфер выбираем сами — по месту порции в кадре. Выдача в каждом кадре заново начинается с буфера 0, значит
+// порция № s всегда уходит из буфера s % 2, что бы ни насчитал драйвер. В исправном состоянии это тот же буфер,
+// который называет драйвер, так что для исправной работы ничего не меняется.
+static uint8_t *lcdBb[2];                           // оба буфера выдачи: узнаём по первым двум вызовам (до запуска выдачи)
+static volatile uint32_t lcdBbFlips, lcdBbWrong;    // сколько раз драйвер сбивался и сколько порций велел положить не в тот буфер
+static volatile uint32_t lcdBbHit;                  // порций, положенных в буфер, который в этот миг передаётся (видимый брак)
+static volatile bool lcdBbFlipped;                  // драйвер сбит сейчас
+static volatile bool lcdBbTrustDriver;              // опыт (порт: Y10, обратно Y11): класть, куда велит драйвер, — как до 2.49
+static int8_t lcdDmaCh = -1;                        // канал DMA, которым кадр уходит на экран
+
+// Какой из двух буферов выдачи DMA закончил передавать последним (0/1; -1 — не понять): по описателю, на котором
+// DMA в последний раз отметил конец порции. Так буфер для наполнения выбирал сам драйвер до ESP-IDF 5.5.
+static inline int IRAM_ATTR lcdBbDone(int len) {
+  if (lcdDmaCh < 0) return -1;
+  uint32_t d = GDMA.channel[lcdDmaCh].out.eof_des_addr;
+  if (d < 0x3FC80000u || d >= 0x3FD00000u) return -1;   // описатели лежат во внутренней памяти
+  uint8_t *p = (uint8_t *)((const uint32_t *)d)[1];
+  if (p >= lcdBb[0] && p < lcdBb[0] + len) return 0;
+  if (p >= lcdBb[1] && p < lcdBb[1] + len) return 1;
+  return -1;
+}
+
 static bool IRAM_ATTR lcdFill(esp_lcd_panel_handle_t, void *buf, int pos, int len, void *) {
   static uint32_t cur;
+  uint8_t *dst = (uint8_t *)buf;
+  int strip = pos / (len / 2);
+  if (!lcdBb[1]) {   // запуск выдачи: драйвер сам кладёт порцию 0 в буфер 0 и порцию 1 в буфер 1
+    if (strip == 0 && !lcdBb[0]) lcdBb[0] = dst;
+    else if (strip == 1 && lcdBb[0] && dst != lcdBb[0]) lcdBb[1] = dst;
+  } else {
+    static uint8_t okRun;
+    uint8_t *own = lcdBb[strip & 1];
+    if (own != dst) {
+      lcdBbWrong = lcdBbWrong + 1;
+      if (!lcdBbFlipped) {
+        lcdBbFlips = lcdBbFlips + 1;
+        lcdBbFlipped = true;
+      }
+      okRun = 0;
+    } else if (lcdBbFlipped && ++okRun >= 3) lcdBbFlipped = false;   // при начале кадра драйвер называет буфер верно — два таких вызова не в счёт
+    if (!lcdBbTrustDriver) dst = own;
+    int done = lcdBbDone(len);
+    if (done >= 0 && dst != lcdBb[done]) lcdBbHit = lcdBbHit + 1;
+  }
   if (pos == 0) {   // начало кадра: новый сдвиг берём только здесь — весь кадр рисуется с одним и тем же
     uint32_t nw = lcdSlideReq;
     if ((nw & 0x800) && (nw & 0x3FF) < LCD_W) {   // страница в движении: каждый кадр обязан быть с новым сдвигом
@@ -159,10 +214,10 @@ static bool IRAM_ATTR lcdFill(esp_lcd_panel_handle_t, void *buf, int pos, int le
   int next = pos + len / 2;   // следующая порция (в точках); после последней — начало листа
   if (next >= LCD_W * LCD_H) next = 0;
   if (!(cur & 0x800)) {
-    memcpy(buf, lcdFb + pos, len);
+    memcpy(dst, lcdFb + pos, len);
     if (!lcdNoPreload) Cache_Start_DCache_Preload((uint32_t)(lcdFb + next), len, 0);
   } else {
-    uint16_t *d = (uint16_t *)buf;
+    uint16_t *d = (uint16_t *)dst;
     const uint16_t *a = lcdFb + pos, *b = lcdFbB + pos;
     int off = cur & 0x3FF, y0 = lcdSlideY0, y1 = lcdSlideY1;
     bool right = cur & 0x400;
@@ -199,6 +254,31 @@ done:
   lcdFillSumUs = lcdFillSumUs + du;
   lcdFills = lcdFills + 1;
   return false;
+}
+
+// Опыт (порт: Y9): сбить драйвер нарочно — на 0,7 мс закрыть прерывания на ядре экрана, чтобы два прерывания
+// «порция ушла» слились в одно. Повторяем, пока чётность у драйвера не переменится (в окно попадает то одно
+// прерывание, то два). До 2.49 после этого картинка срывалась до отключения питания.
+static void lcdIrqBlock(void *) {
+  portDISABLE_INTERRUPTS();
+  esp_rom_delay_us(700);
+  portENABLE_INTERRUPTS();
+}
+static void lcdProvokeFlip() {
+  if (!lcdBb[1]) {
+    Serial.println("вивід кадру не свій — дослід неможливий");
+    return;
+  }
+  bool was = lcdBbFlipped;
+  int tries = 0;
+  while (tries < 300) {
+    tries++;
+    esp_ipc_call_blocking(1, lcdIrqBlock, NULL);
+    delay(40);   // больше кадра: если бы драйвер выправлялся сам, он бы успел
+    if (lcdBbFlipped != was) break;
+  }
+  Serial.printf("дослід: переривання екрана закрито %d разів по 0,7 мс — драйвер %s (було: %s); збивався від запуску %u разів\n", tries,
+                lcdBbFlipped ? "ЗБИТИЙ із черги буферів" : "у черзі буферів", was ? "збитий" : "у черзі", (unsigned)lcdBbFlips);
 }
 
 // Сдвиг страницы: off — 0…480, dir > 0 — новая входит справа. b == NULL — вернуться к основному листу.
@@ -275,6 +355,8 @@ static bool lcdBegin() {
   pc.flags.no_fb = 1;
   pc.num_fbs = 0;
   lcdOwnFill = lcdFb && esp_lcd_new_rgb_panel(&pc, &lcdPanel) == ESP_OK;
+  for (int i = 0; i < 5; i++)   // канал DMA экрана: тот, что подключён к LCD_CAM (5)
+    if (GDMA.channel[i].out.peri_sel.sel == 5) lcdDmaCh = i;
   if (!lcdOwnFill) {
     Serial.println(classic ? "екран: вивід кадру по-старому (для порівняння, Y0 — повернути свій)" : "екран: свій вивід кадру не запустився — працюю по-старому, без руху сторінок");
     if (lcdFb) heap_caps_free(lcdFb);

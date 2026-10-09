@@ -61,6 +61,10 @@ sensor (I2C), microSD card (SPI), CH340 USB bridge, a relay and a speaker amplif
 - Frame output to the RGB panel is custom: in portions of 10 lines through an intermediate buffer with pre-loading
   into the cache. Any flash read through `esp_partition_read` turns the cache off on both cores for fractions of a
   millisecond, and the picture jerks — which is why the sounds partition is **mapped into memory** (`mmap`).
+- The firmware chooses the buffer for every portion itself: portion No. s always goes out of buffer s % 2 (output
+  restarts from buffer 0 in every frame). The ESP-IDF 5.5.1 driver picks the buffer by the parity of an interrupt
+  counter which, with `CONFIG_LCD_RGB_RESTART_IN_VSYNC`, it never resets: one merge of two interrupts and the picture
+  stays broken until a restart (fixed in later ESP-IDF). The count of such faults is in the `u` report.
 - While the transmitter's own firmware is being written, the cache is turned off for a long time — so the writing
   goes in cycles: backlight off → 1.7 s of writing → backlight on for 1.5 s. The screen warns about the blinking in
   advance.
