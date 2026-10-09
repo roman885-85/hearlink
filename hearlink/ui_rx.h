@@ -521,7 +521,7 @@ static void uiTask(void *) {
         }
         break;
     }
-    if (saveAt && now >= saveAt) {
+    if (saveAt && rxQuietToSave(saveAt, 8000)) {   // в паузе звука: запись слышна как щелчок
       saveAt = 0;
       settingsSave();
     }

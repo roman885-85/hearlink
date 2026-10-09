@@ -483,6 +483,7 @@ static inline float rxVolumeScaled(int step) {
 // Шесть звеньев второго порядка подряд: срез низов 100 Гц (12 дБ на октаву) и пять полос — «полка» 125 Гц, колокола
 // 400 Гц, 1 и 2,5 кГц (добротность 1), «полка» 6 кГц; каждая −12…+12 дБ шагом 2. Стоит после подгонки темпа и перед
 // «чёткостью», громкостью и ограничителем: подъём полос ограничитель удержит в шкале.
+static bool rxQuietToSave(uint32_t dueMs, uint32_t maxMs);   // можно ли сейчас писать настройки (пауза в звуке) — см. ниже
 static volatile int rxEqPkIn, rxEqPkOut;   // наибольший отсчёт середины до и после эквалайзера с прошлого запроса n7=3
 static volatile uint32_t rxEqGen = 1;   // растёт при каждой смене настройки — задача звука пересчитывает звенья
 static bool rxEqSet(uint8_t band, uint8_t val) {
@@ -976,4 +977,14 @@ static void rxTask(void *) {
     i2s_channel_write(rxI2s, out, sizeof(out), &w, portMAX_DELAY);
     rxOutSamples = rxOutSamples + OUT_BLOCK;
   }
+}
+
+// Запись настроек во флеш на 8–120 мс останавливает и приём, и выход звука (у выхода I2S запас 2 мс) — в наушниках
+// щелчок или провал. Поэтому несрочную запись (ручку повернули, настройку сменили с передатчика) откладываем до паузы:
+// 0,15 с принятый звук тише −40 дБ или звука нет вовсе. Дольше maxMs не ждём.
+static bool rxQuietToSave(uint32_t dueMs, uint32_t maxMs) {
+  uint32_t now = millis();
+  if ((int32_t)(now - dueMs) < 0) return false;
+  if (now - dueMs >= maxMs) return true;
+  return !rxPlaying || !rxSoundMs || msSince(rxSoundMs, now) > 150;
 }

@@ -1,5 +1,14 @@
 # Changelog / Історія версій
 
+## 2.48 — 2026-10-09 (not yet released / ще не випущено)
+- EN: settings are written to flash in a pause of the sound (transmitter: 0.15 s quieter than −46 dB on air;
+  receiver: the received sound quieter than −40 dB), waiting no longer than 8 s. A flash write stops the audio input
+  for 8–120 ms — measured: 438 packets instead of 500 in the second of the write. The receiver list (`P`) also shows
+  each receiver's equalizer, knob lock and exact firmware version.
+- UK: налаштування записуються у флеш у паузі звуку (передавач: 0,15 с в ефірі тихіше −46 дБ; приймач: прийнятий звук
+  тихіше −40 дБ), але чекаємо не довше 8 с. Запис у флеш зупиняє приймання звуку на 8–120 мс — виміряно: 438 пакетів
+  замість 500 за секунду запису. Список приймачів (`P`) показує ще еквалайзер, блокування ручки й точну версію.
+
 ## 2.47 — 2026-10-09
 - EN: transmitter screen: opening a settings window is cheaper — only the part of the page that stays visible around
   the window is dimmed (the picture is the same pixel for pixel; the full-page dim took 53 ms idle and up to 0.45 s

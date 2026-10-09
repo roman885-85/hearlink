@@ -476,9 +476,16 @@ static void rxPowerTick() {
 static void rxLinkTick() {
   static uint32_t nextMs = 1500;
   uint32_t now = millis();
-  if (rxSaveAsked) {
-    rxSaveAsked = false;
-    settingsSave();
+  {   // настройку сменили с передатчика — записать, но в паузе звука (см. rxQuietToSave)
+    static uint32_t saveDue;
+    if (rxSaveAsked) {
+      rxSaveAsked = false;
+      if (!saveDue) saveDue = now ? now : 1;
+    }
+    if (saveDue && rxQuietToSave(saveDue, 8000)) {
+      saveDue = 0;
+      settingsSave();
+    }
   }
   {   // канал, найденный поиском, запомнить: в следующий раз приёмник начнёт с него и поймает передатчик сразу
     static uint8_t savedCh = 0;

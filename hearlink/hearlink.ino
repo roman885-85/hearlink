@@ -1480,7 +1480,7 @@ void loop() {
   if (cfg.isTx && peersDirty) {
     static uint32_t saveAt;
     if (!saveAt) saveAt = millis() + 3000;       // имена меняются редко — сохранить чуть погодя, одной записью
-    else if (millis() > saveAt) {
+    else if (txQuietToSave(saveAt, 8000)) {      // и в паузе звука (см. txQuietToSave)
       saveAt = 0;
       peersSave();
     }

@@ -884,7 +884,7 @@ static void task(void *) {
       vTaskDelay(pdMS_TO_TICKS(200));
       ESP.restart();
     }
-    if (saveAt && now >= saveAt) {
+    if (saveAt && txQuietToSave(saveAt, 8000)) {   // в паузе звука: запись на миг останавливает приём со входа
       saveAt = 0;
       settingsSave();
     }

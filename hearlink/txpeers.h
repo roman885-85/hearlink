@@ -631,6 +631,9 @@ static void peersPrint() {
     if (p.hasInfo)
       Serial.printf("    налаштування: чіткість %u, баланс %d, межа гучності %u, вигляд %u, світлодіод %u, мова %u%s\n", p.par[RXP_CLARITY], (int)p.par[RXP_BALANCE] - 5,
                     p.par[RXP_VOLMAX], p.par[RXP_VIEW], p.par[RXP_LED], p.par[RXP_LANG], p.earTest ? "; іде перевірка навушників" : "");
+    if (p.hasEq)   // приёмники с 2.45: эквалайзер и (с 2.46) блокировка ручки
+      Serial.printf("    еквалайзер %d %d %d %d %d дБ, зріз низів %u; блокування ручки %u (0 немає, 1 меню, 2 гучність, 3 усе); прошивка %u.%02u\n",
+                    (p.eq[0] - 6) * 2, (p.eq[1] - 6) * 2, (p.eq[2] - 6) * 2, (p.eq[3] - 6) * 2, (p.eq[4] - 6) * 2, p.lowCut, p.lock, p.fwMaj, p.fwMin);
   }
   if (!n) Serial.println("  приймачів у списку немає");
 }

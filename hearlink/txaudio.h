@@ -385,6 +385,12 @@ static volatile bool txMute;               // тишина в эфире: пак
 #define TX_HARD_US 20000
 static volatile bool txThinOn = true;
 static volatile uint32_t txThinned, txSkipped;   // за секунду: пакетов пропущено с заменой копиями и кадров потеряно совсем
+// Запись настроек во флеш выключает кэш на 8–120 мс (долго — когда NVS стирает страницу), и звук со входа за это время
+// теряется: замер 09.10 — в секунду записи в эфир ушло 438 пакетов из 500, у приёмника «порожньо 105 мс». Поэтому
+// несрочную запись откладываем до паузы в звуке: 0,15 с в эфире тише −46 дБ (или передача стоит). Дольше maxMs не
+// ждём — запишем как есть: настройка не должна пропасть, если питание выключат.
+static volatile uint32_t txLoudMs;            // когда в эфир последний раз шёл звук громче −46 дБ (0 — ещё не было)
+static bool txQuietToSave(uint32_t dueMs, uint32_t maxMs);
 static volatile bool txEqOnTone;              // проба (порт: e9=1): эквалайзер входа действует и на проверочный тон 1 кГц — для замера
 static volatile uint32_t txEqGen = 1;         // растёт при смене эквалайзера входа — задача передачи пересчитывает звенья
 static volatile bool txSideCopyOn;            // слать копию разности каналов: её понимают все приёмники на связи (см. proto.h)
@@ -523,6 +529,7 @@ static void txTask(void *) {
         if (a > pa) pa = a;
       }
       if (pa > txPeakAir) txPeakAir = pa > 32767 ? 32767 : pa;
+      if (pa > 160) txLoudMs = millis() ? millis() : 1;
     }
     // Стерео идёт в эфир, когда оно включено и источник стереофонический: мелодии, проверка каналов, внешний АЦП.
     // Голос в списке с мелодиями идёт тем же видом пакета (разность — нули), чтобы приёмники не перестраивались.
@@ -681,4 +688,11 @@ static void txTask(void *) {
     memcpy(scHist, scNow, SC_LEN);
     txFrames = txFrames + 1;
   }
+}
+
+static bool txQuietToSave(uint32_t dueMs, uint32_t maxMs) {
+  uint32_t now = millis();
+  if ((int32_t)(now - dueMs) < 0) return false;   // срок ещё не пришёл
+  if (now - dueMs >= maxMs) return true;          // ждали паузы слишком долго
+  return txPause || !txLoudMs || msSince(txLoudMs, now) > 150;
 }
