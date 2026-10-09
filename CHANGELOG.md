@@ -1,6 +1,6 @@
 # Changelog / Історія версій
 
-## 2.46 — 2026-10-09 (not yet released / ще не випущено)
+## 2.46 — 2026-10-09
 - EN: receiver knob lock set from the transmitter (receiver window → “Settings” → “Knob lock”: none / menu / volume /
   all); the receiver shows “Locked”. The “Auto-update: on / off” switch in the “Update” window.
 - UK: блокування ручки приймача з передавача (вікно приймача → «Налаштування» → «Блокування ручки»: немає / меню /
