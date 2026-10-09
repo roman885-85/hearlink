@@ -144,12 +144,20 @@ static inline void rsPush(int16_t l, int16_t r) {
     int p = rsNextF >> 27;                                    // 32 фазы
     float a = (rsNextF & 0x07FFFFFF) * (1.0f / 134217728.0f), sl = 0, sr = 0;   // и доля между соседними фазами
     const float *c0 = rsTab[p], *c1 = rsTab[p + 1], *hl = rsHist[0] + rsW, *hr = rsHist[1] + rsW;
-    for (int j = 0; j < RS_TAPS; j++) {
-      float c = c0[j] + (c1[j] - c0[j]) * a;
-      sl += hl[j] * c;
-      sr += hr[j] * c;
+    if (rsNextF & 0x07FFFFFF) {
+      for (int j = 0; j < RS_TAPS; j++) {
+        float c = c0[j] + (c1[j] - c0[j]) * a;
+        sl += hl[j] * c;
+        sr += hr[j] * c;
+      }
+    } else {   // время попало точно на фазу таблицы (у 48 кГц → 32 кГц так всегда: фаз всего две) — доля не нужна (с 2.48)
+      for (int j = 0; j < RS_TAPS; j++) {
+        sl += hl[j] * c0[j];
+        sr += hr[j] * c0[j];
+      }
     }
-    int il = (int)lroundf(sl), ir = (int)lroundf(sr);
+    // округление до ближайшего, половина — от нуля: то же, что lroundf, но без вызова библиотеки на каждый отсчёт
+    int il = (int)(sl + (sl >= 0 ? 0.5f : -0.5f)), ir = (int)(sr + (sr >= 0 ? 0.5f : -0.5f));
     mpPut(il > 32767 ? 32767 : il < -32768 ? -32768 : il, ir > 32767 ? 32767 : ir < -32768 ? -32768 : ir);
     uint32_t f = rsNextF + rsStepF;
     rsNextI += rsStepI + (f < rsNextF ? 1 : 0);
