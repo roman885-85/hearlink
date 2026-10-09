@@ -313,6 +313,15 @@ int main() {
   frame(false, 0, 0);
   tap(40 + 160, 450);
   save("03-zvuk");
+  { Box b = itemBox(ID_TXEQ_OPEN); tap(b.x + 20, b.y + 10); }
+  save("03a-ekvalaizer-vkhodu");
+  { Box b = txeqBox(ID_TXEQ_MINUS + 0); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }   // низ: −6 дБ
+  { Box b = txeqBox(ID_TXEQ_PLUS + 3); tap(b.x + 20, b.y + 20); }                                                       // 2,5 кГц: +2 дБ
+  { Box b = txeqBox(ID_TXEQ_PLUS + 5); tap(b.x + 20, b.y + 20); }                                                       // срез низов
+  save("03b-ekvalaizer-vkhodu-pislya-natyskan");
+  printf("эквалайзер входа: запрошено полоса %d значение %d\n", out.eqBand, out.eqVal);
+  { Box b = txeqBox(ID_TXEQ_OK); tap(b.x + 20, b.y + 20); }
+  save("03c-zvuk-pislya-ekvalaizera");
   tap(120, 245);
   save("04-zvuk-pidsylennya");
   tap(120, 400);   // «Скасувати» — где бы ни стояла, после закроем принудительно

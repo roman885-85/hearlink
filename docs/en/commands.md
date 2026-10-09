@@ -62,6 +62,9 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `N<name>` | give a name |
 | `X` | output check by ear (five states of 6 s each) |
 | `i<no.>=<value>[@number]` | settings: 0 clarity 0–3, 1 balance −5…5, 2 volume limit 1–20, 3 view 0–2, 4 LED 0–3, 5 language 0–2; `i9=1` / `i9=0` — headphone test. Example: `i0=2@884A94` |
+| `i20…i24=<dB>[@number]`, `i25=<0/1>[@number]` | receiver equalizer: bands 125 Hz, 400 Hz, 1 kHz, 2.5 kHz, 6 kHz (−12…12 dB) and the low cut; the state and the level before/after are in the `n7=3` reply |
+| `e`, `e<0…4>=<dB>`, `e5=<0/1>` | transmitter input equalizer: show / band / low cut; `e9=1` — probe: apply it to the 1 kHz tone too (for measuring) |
+| `a0` / `a1` / `a2` | input: built-in / PCM1808 / probe — PCM1808 for one boot without the master clock (the port works; normally with PCM1808 the transmitter prints nothing: the clock goes out on the TXD pin) |
 | `J` / `J1` / `J0` | access requests / open the adding window for 3 min / close it |
 | `j<no.>` | allow access to a receiver from the list of requests |
 | `R<number>` | remove a receiver from the kit (`R4C3B10`) |

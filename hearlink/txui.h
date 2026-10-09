@@ -76,6 +76,8 @@ enum Param { P_CHANNEL, P_KIT, P_RATE, P_POWER, P_GAIN, P_INPUT, P_TONE, P_BRIGH
 // Что показывать. Заполняет устройство перед каждым кадром.
 struct View {
   int val[P_COUNT] = { 6, 1, 0, 15, 0, 0, 0, 80, 0, 0, 0, 30, -16, 2, 0, 0, 0 };
+  int8_t txEq[5] = {};                 // эквалайзер входа передатчика: −6…6 (шаг 2 дБ)
+  uint8_t txLowCut = 0;
   // уровень входа (сглаженный); «шапка» — докуда риска недавно доходила; настоящий пик отсчётов (для подсказок)
   float levelDb = -60, holdDb = -60, peakDb = -60;
   int lastTone = 5;                    // какой проверочный звук включится по кнопке «Перевірка» (последний выбранный)
@@ -153,6 +155,7 @@ struct View {
 // Что человек попросил. Устройство выполняет и обнуляет.
 struct Out {
   int setParam = -1, setValue = 0;
+  int eqBand = -1, eqVal = 0;          // эквалайзер входа: полоса 0…4 (значение −6…6, шаг 2 дБ) или 5 — срез низов (0/1)
   bool scan = false, recToggle = false, restart = false, factory = false, touched = false, powerOff = false;
   int mute = -1;                       // попросили включить (1) или выключить (0) тишину в эфире
   // команда приёмнику: 0 — нет; иначе RXC_…
@@ -321,12 +324,14 @@ constexpr int ID_RX_IDENT = 100, ID_RX_RENAME = 101, ID_RX_VOLDN = 102, ID_RX_VO
 constexpr int ID_RX_STEREO = 107;
 constexpr int ID_RX_SET = 108;                 // «Налаштування» в окне приёмника — открывает окно его настроек
 constexpr int ID_RXS_MINUS = 140, ID_RXS_PLUS = 150;   // + строка окна настроек приёмника (0…6)
+constexpr int ID_TXEQ_OPEN = 163, ID_TXEQ_OK = 164;       // «Еквалайзер» у спектра на странице «Звук» и «Готово» в его окне
+constexpr int ID_TXEQ_MINUS = 170, ID_TXEQ_PLUS = 180;    // + строка окна эквалайзера входа (0…5)
 constexpr int ID_RXS_EAR = 160, ID_RXS_OK = 161, ID_RXS_PAGE = 162;   // PAGE — «Еквалайзер» / «Налаштування»
 constexpr int ID_SHEET = 110;                  // +строка окна «Перевірочний звук»
 constexpr int ID_OTA_DEMO = 133;   // «Пробне» — пробное обновление: приёмники принимают и сверяют, но не записывают
 constexpr int ID_OTA_OPEN = 130, ID_OTA_START = 131, ID_OTA_CLOSE = 132;   // «Оновлення» приёмников по радио: открыть окно, начать, закрыть/отменить
 constexpr int ID_PAIR_OPEN = 120, ID_PAIR_CLOSE = 121, ID_PAIR_OK = 122;   // «Додати приймач»; ID_PAIR_OK + номер просьбы — «Дозволити»
-enum Modal { M_NONE, M_PARAM, M_ABOUT, M_CONFIRM, M_RX, M_KEYS, M_SHEET, M_PAIR, M_FILES, M_OTA, M_RXSET };
+enum Modal { M_NONE, M_PARAM, M_ABOUT, M_CONFIRM, M_RX, M_KEYS, M_SHEET, M_PAIR, M_FILES, M_OTA, M_RXSET, M_TXEQ };
 // окно «Перевірочний звук»: все настройки проверочного звука одним списком
 static const int SHEET[] = { P_TONE, P_TRACK, P_DUCK_S, P_DUCK_DB, P_VOICE_GAP, P_MUSIC_DB, P_VOICE_DB };
 const int SHEET_N = sizeof(SHEET) / sizeof(SHEET[0]);
@@ -729,6 +734,7 @@ static Box itemBox(int id) {
     case ID_OTA_OPEN: return Box{ 168, 364, 144, 40 };
     case ID_POWEROFF: return Box{ 16, 332, 448, 52 };
     case ID_ROW + P_LANG: return rowBox(3, 76, 46, 6);
+    case ID_TXEQ_OPEN: return Box{ 312, 80, 144, 34 };   // в шапке плитки спектра, над рисками
     case ID_ROW + P_GAIN: return Box{ 16, 218, 218, 54 };
     case ID_ROW + P_INPUT: return Box{ 246, 218, 218, 54 };
     case ID_ROW + P_TONE: return Box{ 332, 280, 132, 54 };   // «який звук» — открывает окно настроек проверки
@@ -921,6 +927,7 @@ static void drawItem(int id, bool pressed) {
   if (id == ID_SRC_LIVE || id == ID_SRC_TEST) return drawSource(id, pressed);
   if (id == ID_MUTE) return drawMute(pressed);
   if (id == ID_POWER) return drawPower(pressed);
+  if (id == ID_TXEQ_OPEN) return drawButton(b, tr("Еквалайзер"), 0, pressed);
   if (id >= ID_RXROW && id < ID_RXROW + RX_ROWS) return drawRxRow(id - ID_RXROW, pressed);
   if (id >= ID_ROW && id < ID_ROW + P_COUNT) return drawRow(id - ID_ROW, pressed);
   if (id >= ID_HELP && id < ID_HELP + HELP_N) {
@@ -1189,8 +1196,9 @@ static void drawContent() {
     case PG_SOUND:
       card(Box{ 16, 76, 448, 134 });
       g.text(32, 100, tr("Спектр входу"), F_CAP, C_MUTED_FG);
-      g.text(448, 100, tr("100 Гц … 12 кГц"), F_CAP, C_MUTED_FG, AL_R);
+      g.text(300, 100, tr("100 Гц … 12 кГц"), F_CAP, C_MUTED_FG, AL_R);
       drawSpectrum(true);
+      item(ID_TXEQ_OPEN);   // эквалайзер входа — рядом со спектром, который он меняет
       item(ID_ROW + P_GAIN);
       item(ID_ROW + P_INPUT);
       item(ID_SRC_LIVE);
@@ -1756,6 +1764,46 @@ static void drawRxSetRow(int row) {
   rxsText(view.rx[i], row, t, sizeof(t));
   g.text(mBox.x + mBox.w - 16 - 116, y + 26, t, F_CAPB, C_FG, AL_R, 150);
 }
+// ---- Окно «Еквалайзер входу» (с 2.45): шесть строк с «−/+», как на листе эквалайзера приёмника, но для самого
+// передатчика — звук с пульта правится один раз для всех приёмников.
+static Box txeqBox(int id) {
+  if (id == ID_TXEQ_OK) return Box{ (int16_t)(mBox.x + mBox.w - 16 - 134), (int16_t)(mBox.y + mBox.h - 62), 134, 48 };
+  bool plus = id >= ID_TXEQ_PLUS;
+  int row = id - (plus ? ID_TXEQ_PLUS : ID_TXEQ_MINUS);
+  return Box{ (int16_t)(mBox.x + mBox.w - 16 - (plus ? 50 : 106)), (int16_t)(mBox.y + 56 + row * 46), 50, 40 };
+}
+static void drawTxEqButton(int id, bool pressed) {
+  Box b = txeqBox(id);
+  if (id == ID_TXEQ_OK) return drawButton(b, tr("Готово"), 1, pressed);
+  bool plus = id >= ID_TXEQ_PLUS;
+  card(b, pressed ? m2::Gfx::blend(C_SECONDARY, C_FG, 40) : C_SECONDARY, C_BORDER);
+  g.box(b.x + b.w / 2 - 9, b.y + b.h / 2 - 2, 18, 4, 1, C_FG);   // знаки — фигурами
+  if (plus) g.box(b.x + b.w / 2 - 2, b.y + b.h / 2 - 9, 4, 18, 1, C_FG);
+}
+static void drawTxEqRow(int row) {
+  char t[40];
+  int y = mBox.y + 56 + row * 46;
+  g.fill(mBox.x + 16, y, mBox.w - 32 - 112, 40, C_CARD);
+  g.text(mBox.x + 18, y + 26, tr(RXS_EQ_NAME[row]), F_CAP, C_MUTED_FG);
+  if (row < 5) snprintf(t, sizeof(t), tr("%s%d дБ"), view.txEq[row] > 0 ? "+" : "", view.txEq[row] * 2);
+  else snprintf(t, sizeof(t), "%s", view.txLowCut ? tr("увімкнено") : tr("вимкнено"));
+  g.text(mBox.x + mBox.w - 16 - 116, y + 26, t, F_CAPB, C_FG, AL_R, 150);
+}
+static void drawTxEqModal() {
+  mBox = Box{ 24, 30, 432, 420 };
+  card(mBox, C_CARD, C_BORDER);
+  g.text(mBox.x + 20, mBox.y + 36, tr("Еквалайзер входу"), F_H, C_FG, AL_L, 392);
+  for (int row = 0; row < 6; row++) {
+    drawTxEqRow(row);
+    for (int id : { ID_TXEQ_MINUS + row, ID_TXEQ_PLUS + row }) {
+      drawTxEqButton(id, false);
+      hot[hotN++] = Hot{ txeqBox(id), id };
+    }
+  }
+  g.text(mBox.x + 18, mBox.y + mBox.h - 32, tr("Для всіх приймачів"), F_CAP, C_MUTED_FG);
+  drawTxEqButton(ID_TXEQ_OK, false);
+  hot[hotN++] = Hot{ txeqBox(ID_TXEQ_OK), ID_TXEQ_OK };
+}
 static uint32_t rxsShown;
 static uint32_t rxsSum() {   // что сейчас показано: изменилось (приёмник сообщил другое) — перерисовать
   int i = rxFind(rxSelId);
@@ -2178,6 +2226,10 @@ static void drawModal() {
     drawRxModal();
     return;
   }
+  if (modal == M_TXEQ) {
+    drawTxEqModal();
+    return;
+  }
   if (modal == M_RXSET) {
     drawRxSetModal();
     return;
@@ -2461,6 +2513,28 @@ static void activate(int id) {
     }
     return;
   }
+  if (modal == M_TXEQ) {
+    if (id == ID_TXEQ_OK) closeModal();
+    else if (id >= ID_TXEQ_MINUS && id < ID_TXEQ_PLUS + 6) {
+      bool plus = id >= ID_TXEQ_PLUS;
+      int row = id - (plus ? ID_TXEQ_PLUS : ID_TXEQ_MINUS);
+      if (row < 0 || row > 5) return;
+      int v;
+      if (row < 5) {
+        v = view.txEq[row] + (plus ? 1 : -1);
+        v = v < -6 ? -6 : v > 6 ? 6 : v;
+        if (v == view.txEq[row]) return;
+        view.txEq[row] = (int8_t)v;
+      } else {
+        v = !view.txLowCut;
+        view.txLowCut = (uint8_t)v;
+      }
+      out.eqBand = row;
+      out.eqVal = v;
+      drawTxEqRow(row);
+    }
+    return;
+  }
   if (modal == M_RXSET) {
     int i = rxFind(rxSelId);
     memcpy(out.rxId, rxSelId, 3);
@@ -2684,6 +2758,10 @@ static void activate(int id) {
       modal = M_ABOUT;
       drawModal();
       break;
+    case ID_TXEQ_OPEN:
+      modal = M_TXEQ;
+      drawModal();
+      break;
     case ID_RESTART: confirm(CF_RESTART); break;
     case ID_FACTORY: confirm(CF_FACTORY); break;
     case ID_ART_BACK:
@@ -2710,6 +2788,7 @@ static void redrawItem(int id, bool pressed) {
   if (modal == M_FILES) return fmItem(id, pressed);
   if (modal == M_RX) drawRxButton(id, pressed);
   else if (modal == M_RXSET) drawRxSetButton(id, pressed);
+  else if (modal == M_TXEQ) drawTxEqButton(id, pressed);
   else if (modal == M_PAIR) drawPairButton(id, pressed);
   else if (modal == M_OTA) drawOtaButton(id, pressed);
   else if (modal != M_NONE) drawModalItem(id, pressed);

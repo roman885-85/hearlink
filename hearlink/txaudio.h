@@ -75,6 +75,11 @@ static void txAdcRestart() {
   txAdcRestarts = txAdcRestarts + 1;
 }
 
+// Проба (порт: a2): на ОДИН запуск вход I2S работает без главного такта на выводе 43 (он же TXD порта) — АЦП при этом
+// молчит, но весь путь «вход I2S → эфир» идёт как обычно, а передатчик печатает в порт. С настоящим тактом порт нем.
+static RTC_NOINIT_ATTR uint32_t txI2sNoMclk;
+#define I2S_NO_MCLK 0x6E6F4D43u
+static bool txI2sProbe;   // этот запуск — такая проба
 // Внешний АЦП PCM1808 по I2S. Написано по описанию микросхемы; на модуле не проверено.
 static bool txI2sBegin() {
   i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
@@ -87,7 +92,9 @@ static bool txI2sBegin() {
   sc.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
   sc.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
   bool m = cfg.board == BOARD_4848;
-  sc.gpio_cfg.mclk = (gpio_num_t)(m ? PIN_I2S_MCLK_4848 : PIN_I2S_MCLK);
+  txI2sProbe = txI2sNoMclk == I2S_NO_MCLK;
+  txI2sNoMclk = 0;
+  sc.gpio_cfg.mclk = txI2sProbe ? I2S_GPIO_UNUSED : (gpio_num_t)(m ? PIN_I2S_MCLK_4848 : PIN_I2S_MCLK);
   sc.gpio_cfg.bclk = (gpio_num_t)(m ? PIN_I2S_BCK_4848 : PIN_I2S_BCK);
   sc.gpio_cfg.ws = (gpio_num_t)(m ? PIN_I2S_WS_4848 : PIN_I2S_WS);
   sc.gpio_cfg.dout = I2S_GPIO_UNUSED;
@@ -378,6 +385,8 @@ static volatile bool txMute;               // тишина в эфире: пак
 #define TX_HARD_US 20000
 static volatile bool txThinOn = true;
 static volatile uint32_t txThinned, txSkipped;   // за секунду: пакетов пропущено с заменой копиями и кадров потеряно совсем
+static volatile bool txEqOnTone;              // проба (порт: e9=1): эквалайзер входа действует и на проверочный тон 1 кГц — для замера
+static volatile uint32_t txEqGen = 1;         // растёт при смене эквалайзера входа — задача передачи пересчитывает звенья
 static volatile bool txSideCopyOn;            // слать копию разности каналов: её понимают все приёмники на связи (см. proto.h)
 static volatile uint32_t txThinMs;               // когда последний раз шёл затор (несколько пропусков подряд), а не одиночный пропуск
 // Переход на другой канал без паузы (см. txscan.h): главный цикл выбирает канал и ставит txHopCh; задача передачи
@@ -397,6 +406,8 @@ static void txTask(void *) {
   static uint8_t hist[Q_MAX_COPIES][3 + Q_MAX_N / 2];   // сжатые кадры N−1 и N−2
   static uint8_t blk[3 + Q_MAX_N / 2];
   static uint8_t blkS[3 + Q_MAX_N / 2];
+  static Eq6 inEq;                                // эквалайзер входа (см. eq.h)
+  uint32_t inEqGen = 0;
   static uint8_t scNow[SC_LEN], scHist[SC_LEN];   // копия разности: этого кадра и прошлого
   static int16_t pcm[FRAME], side[FRAME];     // середина (Л+П)/2 и разность (Л−П)/2
   static int16_t acc[FRAME * 6], accS[FRAME * 6];   // набор на пакет, 32 кГц
@@ -434,22 +445,38 @@ static void txTask(void *) {
       rLastDoneMs = millis();
       continue;
     }
+    if (inEqGen != txEqGen) {   // эквалайзер входа сменили — пересчитать звенья
+      inEqGen = txEqGen;
+      inEq.build(cfg.txEq, cfg.txLowCut != 0);
+    }
     bool card = txCardOn;   // файл с карты — впереди и входа, и проверочного звука
     bool plainTone = !card && (cfg.tone == TEST_TONE || (cfg.tone >= TEST_VOICE && cfg.tone != TEST_LR && !txSoundsOk));
     if (cfg.tone || card) memset(side, 0, sizeof(side));
     if (card) txCardSound(pcm, side);
     else if (cfg.tone == TEST_LR) txToneLR(pcm, side);
-    else if (plainTone) txTone(pcm);
+    else if (plainTone) {
+      txTone(pcm);
+      if (txEqOnTone && inEq.any)
+        for (int i = 0; i < FRAME; i++) {
+          float v = inEq.run(0, pcm[i]);
+          pcm[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v;
+        }
+    }
     else if (cfg.tone) txTestSound(pcm, side);
-    else if (cfg.gainDb) {   // подсиление входа с упором в край шкалы
+    else if (cfg.gainDb || inEq.any) {   // эквалайзер входа, затем подсиление — с упором в край шкалы
       static int8_t lastDb = 0;
       static float k = 1;
       if (lastDb != cfg.gainDb) {
         lastDb = cfg.gainDb;
         k = powf(10.0f, lastDb / 20.0f);
       }
+      bool eqS = inEq.any && cfg.input == IN_I2S;   // разность каналов есть только у внешнего АЦП
       for (int i = 0; i < FRAME; i++) {
-        float v = pcm[i] * k, u = side[i] * k;
+        float v = pcm[i], u = side[i];
+        if (inEq.any) v = inEq.run(0, v);
+        if (eqS) u = inEq.run(1, u);
+        v *= k;
+        u *= k;
         pcm[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v;
         side[i] = u > 32767 ? 32767 : u < -32768 ? -32768 : (int16_t)u;
       }

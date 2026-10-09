@@ -302,6 +302,10 @@ static bool radioReinit() {
 //   2) ещё через 0,3 с — драйвер Wi-Fi целиком выгрузить и поднять;
 //   3) ещё через 0,5 с — перезапустить плату без заставки (rOnDead ставит hearlink.ino): эфир вернётся через секунды.
 static void (*rOnDead)();
+// Плата уходит на перезапуск (ставит обработчик выключения, см. setup): радио уже останавливают, отправка и сторож
+// молчат. Без этого (до 2.45) сторож принимал остановку радио за отказ и брался его «оживлять» посреди перезапуска —
+// тот зависал до сторожа часов («запуск через: ЗАВИСАННЯ»), а в «чёрном ящике» оставалась ложная запись «РАДІО СТАЛО».
+static volatile bool rRebooting;
 static bool quickBoot;                     // этот запуск — быстрый перезапуск после вставшего радио (без заставки)
 static bool updatedBoot;                   // этот запуск — после того как передатчик обновил сам себя с карты
 static volatile uint8_t bbTestStep;        // отладка (порт: Q7…Q9): выполнить ступень оживления 1…3 на здоровом радио
@@ -309,6 +313,7 @@ static volatile uint8_t rReviveMax = 3;    // отладка (порт: Q0…Q3)
 static volatile uint8_t rReviveFrom = 1;   // отладка: с какой ступени начинать
 static void radioSend(const uint8_t *pkt, size_t len) {
   static bool refusing;
+  if (rRebooting) return;
   radioApplyIfAsked();
   uint32_t s0 = (uint32_t)esp_timer_get_time();
   esp_err_t err = esp_now_send(BCAST, pkt, len);

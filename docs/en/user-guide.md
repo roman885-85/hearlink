@@ -24,6 +24,13 @@ The input spectrum; **«Підсилення входу» (Input gain)** (−12�
 N seconds, left/right channel check) with a choice of tune and volumes; **«Якість звуку» (Sound quality)**;
 **«Ефір» (Air)** mono/stereo.
 
+**«Еквалайзер» (Equalizer)** (a button on the spectrum tile, since 2.45) — the input equalizer: it shapes the sound
+from the mixer once for all receivers. Five bands (bass 125 Hz, 400 Hz, 1 kHz, 2.5 kHz, treble 6 kHz), each
+−12…+12 dB in 2 dB steps, and a low cut below 100 Hz. It acts on the input (built-in or PCM1808) and does not touch
+the test sound or files from the card. The spectrum on this page shows the sound after the equalizer.
+
+![Input equalizer](../img/tx-03b-ekvalaizer-vkhodu.png)
+
 | Quality | On air | Added delay | Lowest radio rate | When to choose |
 |---|---|---|---|---|
 | «найвища» (highest) | 32 kHz uncompressed | 2 ms | 5.5 Mbit/s | hall up to ~15 m, clean air, music |
@@ -59,10 +66,14 @@ Touching the row opens the receiver window: signal, volume, loss, buffer, output
 headphones), **«Перейменувати» (Rename)** (up to 32 letters), **«Тихіше / Гучніше» (Quieter / Louder)**,
 **«Налаштування» (Settings)**, **«Вимкнути» (Turn off)**, **«Видалити з набору» (Remove from kit)**.
 
-![Receiver settings](../img/tx-18d-pryimach-nalashtuvannya.png)
+![Receiver settings](../img/tx-18d-pryimach-nalashtuvannya.png) ![Receiver equalizer](../img/tx-18g-ekvalaizer.png)
 
 **Settings** of a receiver from the transmitter: audio output, speech clarity, balance, volume limit, screen view,
-LED, interface language, the button **«Перевірка навушників» (Headphone test)**.
+LED, interface language, the button **«Перевірка навушників» (Headphone test)**. The **«Еквалайзер» (Equalizer)**
+button to the right of the name (receivers with 2.45+) opens the second sheet of the same window — the equalizer of
+this receiver: the same five bands and a low cut below 100 Hz (on by default in a receiver); the same button
+(«Налаштування», Settings) goes back. This is how the sound is fitted to one person's hearing, while the input
+equalizer works for everybody at once.
 
 #### Adding a receiver
 

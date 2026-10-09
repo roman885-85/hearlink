@@ -508,6 +508,8 @@ static const char *const LANG_EN[][2] = {
   { "%d дБм", "%d dBm" },
   { "Межа гучності", "Volume limit" },
   { "Еквалайзер", "Equalizer" },
+  { "Еквалайзер входу", "Input equalizer" },
+  { "Для всіх приймачів", "For all receivers" },
   { "Низ, 125 Гц", "Bass, 125 Hz" },
   { "400 Гц", "400 Hz" },
   { "1 кГц", "1 kHz" },

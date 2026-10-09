@@ -1,12 +1,17 @@
 # Changelog / Історія версій
 
-## 2.45 — 2026-10-09 (not yet released / ще не випущено)
-- EN: receiver equalizer set from the transmitter (receiver window → “Settings” → “Equalizer”): five bands
-  (125 Hz, 400 Hz, 1 kHz, 2.5 kHz, 6 kHz; −12…+12 dB in 2 dB steps) and a 100 Hz low cut, which is on by default.
-  Port: `i20…i24=<dB>[@id]`, `i25=<0/1>`.
-- UK: еквалайзер приймача з передавача (вікно приймача → «Налаштування» → «Еквалайзер»): п'ять смуг (125 Гц, 400 Гц,
-  1 кГц, 2,5 кГц, 6 кГц; −12…+12 дБ кроком 2) і зріз низів нижче 100 Гц, з коробки ввімкнений. Порт:
-  `i20…i24=<дБ>[@номер]`, `i25=<0/1>`.
+## 2.45 — 2026-10-09
+- EN: equalizers. **Receiver equalizer** set from the transmitter (receiver window → “Settings” → “Equalizer”):
+  five bands (125 Hz, 400 Hz, 1 kHz, 2.5 kHz, 6 kHz; −12…+12 dB in 2 dB steps) and a 100 Hz low cut, on by default.
+  **Input equalizer** of the transmitter (the “Equalizer” button on the spectrum tile of the “Sound” page): the same
+  bands and low cut applied once to the input for all receivers. Port: `i20…i25`, `e…`. Fixed: a restart asked from
+  the port or the screen could hang for a second and leave a false “radio stopped” record (the radio watchdog
+  interfered with the shutdown).
+- UK: еквалайзери. **Еквалайзер приймача** з передавача (вікно приймача → «Налаштування» → «Еквалайзер»): п'ять смуг
+  (125 Гц, 400 Гц, 1 кГц, 2,5 кГц, 6 кГц; −12…+12 дБ кроком 2) і зріз низів нижче 100 Гц, з коробки ввімкнений.
+  **Еквалайзер входу** передавача (кнопка «Еквалайзер» на плитці спектра сторінки «Звук»): ті самі смуги й зріз —
+  один раз для всіх приймачів. Порт: `i20…i25`, `e…`. Виправлено: перезапуск із порту чи з екрана міг зависнути на
+  секунду й лишити хибний запис «радіо стало» (сторож радіо втручався у вимкнення).
 
 ## 2.44 — 2026-10-08
 - EN: receiver: the playback-rate adjustment now uses a windowed-sinc interpolator (24 taps × 128 phases) instead of

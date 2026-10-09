@@ -372,6 +372,10 @@ static void task(void *) {
     ui::rateNowText = RATES[cfg.rateIdx].name;
     v.val[ui::P_POWER] = cfg.powerDbm;
     v.val[ui::P_GAIN] = cfg.gainDb;
+    if (ui::out.eqBand < 0) {   // пока нажатие не выполнено, на экране — то, что нажали
+      for (int k = 0; k < 5; k++) v.txEq[k] = (int8_t)((int)cfg.txEq[k] - 6);
+      v.txLowCut = cfg.txLowCut;
+    }
     v.val[ui::P_INPUT] = cfg.input;
     v.val[ui::P_TONE] = cfg.tone;
     v.lastTone = cfg.lastTone;
@@ -731,6 +735,13 @@ static void task(void *) {
       }
       o.setParam = -1;
       saveAt = now + 600;   // запись почти сразу: выключили питание через секунду после изменения — оно не должно пропасть
+    }
+    if (o.eqBand >= 0) {   // эквалайзер входа
+      if (o.eqBand < 5) cfg.txEq[o.eqBand] = (uint8_t)constrain(o.eqVal + 6, 0, 12);
+      else cfg.txLowCut = o.eqVal ? 1 : 0;
+      txEqGen = txEqGen + 1;
+      o.eqBand = -1;
+      saveAt = now + 600;
     }
     if (o.setSrcName) {   // источник звука переименован
       o.setSrcName = false;

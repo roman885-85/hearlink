@@ -483,6 +483,7 @@ static inline float rxVolumeScaled(int step) {
 // Шесть звеньев второго порядка подряд: срез низов 100 Гц (12 дБ на октаву) и пять полос — «полка» 125 Гц, колокола
 // 400 Гц, 1 и 2,5 кГц (добротность 1), «полка» 6 кГц; каждая −12…+12 дБ шагом 2. Стоит после подгонки темпа и перед
 // «чёткостью», громкостью и ограничителем: подъём полос ограничитель удержит в шкале.
+static volatile int rxEqPkIn, rxEqPkOut;   // наибольший отсчёт середины до и после эквалайзера с прошлого запроса n7=3
 static volatile uint32_t rxEqGen = 1;   // растёт при каждой смене настройки — задача звука пересчитывает звенья
 static bool rxEqSet(uint8_t band, uint8_t val) {
   if (band < 5) {
@@ -495,48 +496,6 @@ static bool rxEqSet(uint8_t band, uint8_t val) {
   rxEqGen = rxEqGen + 1;
   return true;
 }
-struct RxEq {
-  float c[6][5];        // b0 b1 b2 a1 a2 (a0 = 1)
-  float z[2][6][2];     // состояние: середина и разность
-  bool on[6], any;
-  void set(int k, float b0, float b1, float b2, float a0, float a1, float a2) {
-    c[k][0] = b0 / a0; c[k][1] = b1 / a0; c[k][2] = b2 / a0; c[k][3] = a1 / a0; c[k][4] = a2 / a0;
-  }
-  void build() {
-    static const float F[5] = { 125, 400, 1000, 2500, 6000 };
-    any = false;
-    {   // срез низов: фильтр Баттерворта 100 Гц
-      float w = 2 * PI * 100.0f / SRATE, cs = cosf(w), al = sinf(w) / (2 * 0.7071f);
-      set(0, (1 + cs) / 2, -(1 + cs), (1 + cs) / 2, 1 + al, -2 * cs, 1 - al);
-      on[0] = cfg.rxLowCut != 0;
-      any |= on[0];
-    }
-    for (int b = 0; b < 5; b++) {
-      int v = cfg.rxEq[b] > 12 ? 6 : cfg.rxEq[b];
-      float A = powf(10.0f, (v - 6) * 2.0f / 40.0f), w = 2 * PI * F[b] / SRATE, cs = cosf(w), sn = sinf(w);
-      on[b + 1] = v != 6;
-      any |= on[b + 1];
-      if (b == 0 || b == 4) {   // «полки»: низ и верх
-        float al = sn / 2 * 1.4142f, q = 2 * sqrtf(A) * al, s = b == 0 ? 1.0f : -1.0f;   // s: знак у косинуса
-        set(b + 1, A * ((A + 1) - s * (A - 1) * cs + q), s * 2 * A * ((A - 1) - s * (A + 1) * cs), A * ((A + 1) - s * (A - 1) * cs - q),
-            (A + 1) + s * (A - 1) * cs + q, -s * 2 * ((A - 1) + s * (A + 1) * cs), (A + 1) + s * (A - 1) * cs - q);
-      } else {
-        float al = sn / 2;   // добротность 1
-        set(b + 1, 1 + al * A, -2 * cs, 1 - al * A, 1 + al / A, -2 * cs, 1 - al / A);
-      }
-    }
-  }
-  inline float run(int ch, float x) {
-    for (int k = 0; k < 6; k++) {
-      if (!on[k]) continue;
-      float *s = z[ch][k], *q = c[k], y = q[0] * x + s[0];
-      s[0] = q[1] * x - q[3] * y + s[1];
-      s[1] = q[2] * x - q[4] * y;
-      x = y;
-    }
-    return x;
-  }
-};
 
 // Подгонка темпа (с 2.44): таблица sinc с окном Кайзера, 24 отсчёта × 128 фаз, между фазами — по прямой.
 // Прежняя (кубическая, по 4 отсчётам) ошибалась на верхах: в полосе 4–8 кГц −30 дБ к звуку, 8–14 кГц −14 дБ. С ЦАП
@@ -572,7 +531,7 @@ static bool rsBegin() {
 
 static void rxTask(void *) {
   static int16_t out[OUT_BLOCK * 2];
-  static RxEq eq;
+  static Eq6 eq;
   uint32_t eqGen = 0;
   bool rsOk = rsBegin();   // памяти не нашлось — останется прежняя, кубическая
   if (!rxOutBegin()) {
@@ -772,7 +731,7 @@ static void rxTask(void *) {
     }
     if (eqGen != rxEqGen) {   // настройку эквалайзера сменили — пересчитать звенья (состояние остаётся: без щелчка)
       eqGen = rxEqGen;
-      eq.build();
+      eq.build(cfg.rxEq, cfg.rxLowCut != 0);
     }
     // звук — только в работе: во время заставки и сообщений тихо (выход уже включён, вход плавный)
     uint32_t nowMs = millis();
@@ -894,9 +853,17 @@ static void rxTask(void *) {
       // громкость (без щелчков при смене) и ограничитель
       gain += (want - gain) * 0.002f;
       // чёткость речи: смесь звука и его копии с поднятым верхом (см. выше)
+      {
+        int a0 = (int)fabsf(y);
+        if (a0 > rxEqPkIn) rxEqPkIn = a0;
+      }
       if (eq.any) {   // эквалайзер и срез низов
         y = eq.run(0, y);
         if (stOut) ys = eq.run(1, ys);
+      }
+      {
+        int a1 = (int)fabsf(y);
+        if (a1 > rxEqPkOut) rxEqPkOut = a1;
       }
       clK += (clWant - clK) * 0.001f;
       float yc = y + clK * (shM.run(y) - y), ysc = stOut ? ys + clK * (shS.run(ys) - ys) : 0;

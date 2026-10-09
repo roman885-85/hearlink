@@ -62,6 +62,7 @@ void settingsFactory();
 
 #include "dbgtee.h"   // с этого места Serial — порт «с ответвлением» (отладка по радио)
 #include "radio.h"
+#include "eq.h"       // эквалайзер — общий для входа передатчика и для приёмника
 #include "txaudio.h"
 #include "txpeers.h"
 #include "rxaudio.h"
@@ -158,6 +159,8 @@ static void settingsLoad() {
   if (cfg.autoUpd > 1) cfg.autoUpd = 1;
   for (uint8_t &v : cfg.rxEq) if (v > 12) v = 6;
   if (cfg.rxLowCut > 1) cfg.rxLowCut = 1;
+  for (uint8_t &v : cfg.txEq) if (v > 12) v = 6;
+  if (cfg.txLowCut > 1) cfg.txLowCut = 0;
   // До 2.40 «звук как есть» был шаг 12 (60 %), с 2.40 — шаг 20 (100 %). Чтобы после обновления приёмник звучал как до
   // него, шаг и предел сдвигаются на 8; всё, что стояло выше 60 % (там было усиление с ограничителем), становится 100 %.
   if (oldVolScale) {
@@ -246,7 +249,7 @@ static void help() {
   Serial.printf("захист: ключ набору %s%s\n", secHave ? "є" : "НЕМАЄ", cfg.isTx || secHave ? "" : " — приймач не підключено до набору, просить доступ");
   if (cfg.isTx) {
     static const char *const T[TEST_COUNT] = { "вимкнено", "тон 1000 Гц", "голос", "голос і музика", "музика", "музика з оголошенням", "перевірка каналів (лівий — один гудок, правий — два)" };
-    Serial.printf("вхід: %s, перевірочний звук: %s%s\n", cfg.input == IN_I2S ? "PCM1808 (I2S)" : "вбудований АЦП", T[cfg.tone < TEST_COUNT ? cfg.tone : 0],
+    Serial.printf("вхід: %s, перевірочний звук: %s%s\n", cfg.input == IN_I2S ? (txI2sProbe ? "PCM1808 (I2S) — ПРОБА без головного такту" : "PCM1808 (I2S)") : "вбудований АЦП", T[cfg.tone < TEST_COUNT ? cfg.tone : 0],
                   txSoundsOk ? "" : " (звуків у пам'яті немає — замість них тон)");
     Serial.printf("  мелодія: %s; оголошення кожні %u с; музика під голосом %d дБ; повтор голосу через %u с; гучність музики %d дБ, голосу %d дБ\n",
                   cfg.testTrack ? String(cfg.testTrack).c_str() : "по черзі", cfg.duckS, cfg.duckDb, cfg.voiceGapS, cfg.musicDb, cfg.voiceDb);
@@ -616,7 +619,11 @@ static void command(String s) {
       } else if (cfg.isTx && v >= 0 && (v < ui::PG_N || v == 9)) txscreen::pageAsk = v;   // U<0–5> — открыть вкладку, U9 — карту
       return;
     case 'b': cfg.board = v ? BOARD_4848 : BOARD_DEVKIT; restart = true; break;
-    case 'a': cfg.input = v ? IN_I2S : IN_ADC; restart = true; break;
+    case 'a':   // a0 — встроенный вход, a1 — PCM1808; a2 — проба: PCM1808 на один запуск без главного такта (порт работает)
+      cfg.input = v ? IN_I2S : IN_ADC;
+      txI2sNoMclk = v == 2 ? I2S_NO_MCLK : 0;
+      restart = true;
+      break;
     case 'o': cfg.output = v ? OUT_I2S : OUT_PDM; restart = true; break;
     case 'd':
       if (v != 0 && (v < 4 || v > 40)) return;
@@ -985,12 +992,33 @@ static void command(String s) {
           }
           else if (rxParamSet((uint8_t)p, val)) settingsSave();
         }
-        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s; еквалайзер %d %d %d %d %d дБ, зріз низів %u\n",
+        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s; еквалайзер %d %d %d %d %d дБ, зріз низів %u; рівень до нього %.1f дБ, після %.1f дБ\n",
                       cfg.rxClarity, cfg.rxBalance, cfg.rxVolMax, cfg.volume, cfg.volume ? 20 * log10f(rxVolumeGain(rxVolumeScaled(cfg.volume))) : -99.0f, cfg.rxView, cfg.rxLed, cfg.rxLang, uiLang ? "English" : "українська",
                       rxEarTest ? "; ІДЕ ПЕРЕВІРКА НАВУШНИКІВ" : "", (cfg.rxEq[0] - 6) * 2, (cfg.rxEq[1] - 6) * 2, (cfg.rxEq[2] - 6) * 2,
-                      (cfg.rxEq[3] - 6) * 2, (cfg.rxEq[4] - 6) * 2, cfg.rxLowCut);
+                      (cfg.rxEq[3] - 6) * 2, (cfg.rxEq[4] - 6) * 2, cfg.rxLowCut,
+                      20 * log10f((rxEqPkIn + 1) / 32768.0f), 20 * log10f((rxEqPkOut + 1) / 32768.0f));
+        rxEqPkIn = 0;
+        rxEqPkOut = 0;
       }
       return;
+    case 'e': {   // передатчик: эквалайзер входа — e<полоса 0…4>=<дБ −12…12>, e5=<0/1> — срез низов; e — показать
+      int b = -1, val = 0;
+      if (cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b == 9) {   // e9=1 — проба: эквалайзер и на тоне 1 кГц
+        txEqOnTone = val != 0;
+        Serial.printf("еквалайзер входу на перевірочному тоні: %u\n", (unsigned)txEqOnTone);
+        return;
+      }
+      bool set = cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b >= 0 && b <= 5;
+      if (set) {
+        if (b < 5) cfg.txEq[b] = (uint8_t)constrain(val / 2 + 6, 0, 12);
+        else cfg.txLowCut = val ? 1 : 0;
+        txEqGen = txEqGen + 1;
+      }
+      Serial.printf("еквалайзер входу: %d %d %d %d %d дБ (125 Гц, 400 Гц, 1 кГц, 2,5 кГц, 6 кГц), зріз низів %u\n", (cfg.txEq[0] - 6) * 2,
+                    (cfg.txEq[1] - 6) * 2, (cfg.txEq[2] - 6) * 2, (cfg.txEq[3] - 6) * 2, (cfg.txEq[4] - 6) * 2, cfg.txLowCut);
+      if (set) break;
+      return;
+    }
     case 'i':   // передатчик: настройка приёмнику — i<номер>=<значение>[@номер приёмника]; i9=1 / i9=0 — проверка наушников
       if (cfg.isTx) {
         int p = -1, val = 0;
@@ -1325,6 +1353,7 @@ void setup() {
     else rOnAudio = rxOnPacket;
   }
   if (!radioBegin()) Serial.println("радіо не запустилось");
+  esp_register_shutdown_handler([]() { rRebooting = true; });   // после запуска радио: вызовется раньше, чем его остановят
   secBegin();
   if (cfg.isTx) {
     // Ключ набора рождается в передатчике (радио уже включено — случайность настоящая). Эпоха — номер этого включения:
