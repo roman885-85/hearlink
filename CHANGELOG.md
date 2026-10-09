@@ -1,5 +1,16 @@
 # Changelog / Історія версій
 
+## 2.47 — 2026-10-09
+- EN: transmitter screen: opening a settings window is cheaper — only the part of the page that stays visible around
+  the window is dimmed (the picture is the same pixel for pixel; the full-page dim took 53 ms idle and up to 0.45 s
+  while a file was playing). While a file from the card or the test tune plays, the decoder takes the processor away
+  from the screen for shorter periods (the menu used to freeze for about a second at a time). The `u` report shows
+  how long windows take to draw.
+- UK: екран передавача: вікно налаштування відкривається дешевше — притемнюється лише та частина сторінки, яку видно
+  довкола вікна (картинка та сама, точка в точку; притемнення всієї сторінки тривало 53 мс у спокої й до 0,45 с, коли
+  грав файл). Поки грає файл із картки чи перевірочна мелодія, розбір звуку забирає процесор в екрана на коротший
+  час (раніше меню завмирало приблизно на секунду). Звіт `u` показує, скільки триває малювання вікон.
+
 ## 2.46 — 2026-10-09
 - EN: receiver knob lock set from the transmitter (receiver window → “Settings” → “Knob lock”: none / menu / volume /
   all); the receiver shows “Locked”. The “Auto-update: on / off” switch in the “Update” window.

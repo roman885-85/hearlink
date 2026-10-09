@@ -531,6 +531,33 @@ static void card(const Box &b, uint16_t fill = C_CARD, uint16_t edge = C_BORDER)
   g.box(b.x + 1, b.y + 1, b.w - 2, b.h - 2, RADIUS - 1, fill);
 }
 
+// Плитка окна поверх страницы. Страница под окном притемняется — но только там, где её видно: полосы вокруг окна
+// и четыре уголка под скруглением (их плитка закрывает не целиком). До 2.47 темнился весь лист 480×480, а потом почти
+// весь закрывался плиткой: 230 тыс. точек во внешней памяти ради видимых 30–50 тыс. — 53 мс в покое и до 0,45 с, когда
+// ядро занято разбором звука (замер 09.10). Картинка получается та же, точка в точку.
+static bool modalAgain;
+static Box mBox;
+static uint32_t dgDimUs, dgModalUs;     // наибольшее время затемнения страницы под окном и рисования окна (для отчёта u)
+static void modalCard() {
+  if (!modalAgain) {
+    uint32_t t0 = micros();
+    const uint8_t A = 150;
+    const Box &b = mBox;
+    int x1 = b.x + b.w, y1 = b.y + b.h;
+    if (b.y > 0) g.fillA(0, 0, W, b.y, 0x0000, A);
+    if (y1 < H) g.fillA(0, y1, W, H - y1, 0x0000, A);
+    if (b.x > 0) g.fillA(0, b.y, b.x, b.h, 0x0000, A);
+    if (x1 < W) g.fillA(x1, b.y, W - x1, b.h, 0x0000, A);
+    g.fillA(b.x, b.y, RADIUS, RADIUS, 0x0000, A);
+    g.fillA(x1 - RADIUS, b.y, RADIUS, RADIUS, 0x0000, A);
+    g.fillA(b.x, y1 - RADIUS, RADIUS, RADIUS, 0x0000, A);
+    g.fillA(x1 - RADIUS, y1 - RADIUS, RADIUS, RADIUS, 0x0000, A);
+    uint32_t d = micros() - t0;
+    if (d > dgDimUs) dgDimUs = d;
+  }
+  card(mBox, C_CARD, C_BORDER);
+}
+
 // Текст с переносом по словам. Рисует строки с first по first+maxLines−1, возвращает общее число строк.
 static int wrap(int x, int y, int w, int lineH, const char *text, const GFXfont *f, uint16_t c, int maxLines = 99, int first = 0, bool draw = true) {
   char line[160];
@@ -1250,7 +1277,6 @@ static void drawContent() {
 }
 
 // ---------------------------------------------------------------- окна поверх страницы
-static Box mBox;
 static int mOptY = 150, mOptStep = 56;   // где в окне начинаются варианты списка и шаг между ними
 static int mCols = 1;                    // столбцов в списке (длинный список — два)
 static Box mItem(int id) {
@@ -1445,7 +1471,7 @@ static void drawPairButton(int id, bool pressed) {
 static void drawPairModal() {
   char t[48];
   mBox = Box{ 24, 30, 432, 420 };
-  card(mBox, C_CARD, C_BORDER);
+  modalCard();
   g.text(mBox.x + 20, mBox.y + 38, tr("Додати приймач"), F_H, C_FG);
   g.text(mBox.x + 20, mBox.y + 70, tr("Увімкніть новий приймач поруч — він попросить доступ."), F_CAP, C_MUTED_FG);
   g.text(mBox.x + 20, mBox.y + 92, tr("Звірте код із кодом на екрані приймача і дозвольте."), F_CAP, C_MUTED_FG);
@@ -1576,7 +1602,7 @@ static void drawOtaModal() {
   }
   char t[96];
   mBox = Box{ 24, 30, 432, 420 };
-  card(mBox, C_CARD, C_BORDER);
+  modalCard();
   g.text(mBox.x + 20, mBox.y + 38, tr("Оновлення приймачів"), F_H, C_FG);
   int x = mBox.x + 20, w = mBox.w - 40;
   if (o.stage == 0) {   // ещё не начато: что есть на карте и что будет
@@ -1675,7 +1701,7 @@ static void drawRxModal() {
   if (i < 0) return;
   const View::Rx &r = view.rx[i];
   mBox = Box{ 24, 14, 432, 452 };
-  card(mBox, C_CARD, C_BORDER);
+  modalCard();
   g.text(mBox.x + 20, mBox.y + 36, r.name, F_H, C_FG, AL_L, 392);
   drawRxLines();
   auto btn = [&](int id) {
@@ -1803,7 +1829,7 @@ static void drawTxEqRow(int row) {
 }
 static void drawTxEqModal() {
   mBox = Box{ 24, 30, 432, 420 };
-  card(mBox, C_CARD, C_BORDER);
+  modalCard();
   g.text(mBox.x + 20, mBox.y + 36, tr("Еквалайзер входу"), F_H, C_FG, AL_L, 392);
   for (int row = 0; row < 6; row++) {
     drawTxEqRow(row);
@@ -1838,7 +1864,7 @@ static void drawRxSetModal() {
   int i = rxFind(rxSelId);
   if (i < 0) return;
   mBox = Box{ 24, 6, 432, 468 };   // восемь строк по 44 точки и кнопки
-  card(mBox, C_CARD, C_BORDER);
+  modalCard();
   if (!view.rx[i].hasEq) rxsPage = 0;   // приёмник до 2.45 эквалайзера не знает
   g.text(mBox.x + 20, mBox.y + 34, view.rx[i].name, F_H, C_FG, AL_L, view.rx[i].hasEq ? 208 : 392);
   if (view.rx[i].hasEq) {
@@ -2224,7 +2250,6 @@ static void kbLive() {
 
 #include "fmui.h"   // экран «Картка пам'яті» — файловый менеджер
 
-static bool modalAgain;   // окно перерисовывается поверх себя же (живые окна: ход обновления, просьбы о доступе)
 static void drawModal() {
   hotN = 0;
   if (modal == M_KEYS) {
@@ -2235,7 +2260,14 @@ static void drawModal() {
     fmDraw();
     return;
   }
-  if (!modalAgain) g.fillA(0, 0, W, H, 0x0000, 150);   // притемнить страницу (при перерисовке того же окна — уже притемнена)
+  uint32_t dg0 = micros();
+  struct DgEnd {   // по выходе из функции — записать, сколько заняло рисование окна
+    uint32_t t0;
+    ~DgEnd() {
+      uint32_t d = micros() - t0;
+      if (d > dgModalUs) dgModalUs = d;
+    }
+  } dgEnd{ dg0 };
   if (modal == M_RX) {
     drawRxModal();
     return;
@@ -2259,7 +2291,7 @@ static void drawModal() {
   if (modal == M_SHEET) {
     int h = 58 + SHEET_N * 48 + 70;
     mBox = Box{ 24, (int16_t)((H - h) / 2), 432, (int16_t)h };
-    card(mBox, C_CARD, C_BORDER);
+    modalCard();
     g.text(mBox.x + 20, mBox.y + 38, tr("Перевірочний звук"), F_H, C_FG);
     for (int k = 0; k < SHEET_N; k++) mHot(ID_SHEET + k);
     Box b = Box{ (int16_t)(mBox.x + 16), (int16_t)(mBox.y + h - 64), (int16_t)(mBox.w - 32), 50 };
@@ -2278,7 +2310,7 @@ static void drawModal() {
     mOptStep = mCols > 1 ? 48 : nopt > 6 ? 44 : nopt > 5 ? 48 : 56;
     int h = d.kind == K_LIST ? mOptY + (nopt + mCols - 1) / mCols * mOptStep + 12 : 72 + lines * 22 + 96 + 96;
     mBox = Box{ 24, (int16_t)((H - h) / 2), 432, (int16_t)h };
-    card(mBox, C_CARD, C_BORDER);
+    modalCard();
     g.text(mBox.x + 20, mBox.y + 38, d.name, F_H, C_FG);
     wrap(mBox.x + 20, mBox.y + 68, 392, 22, d.desc, F_CAP, C_MUTED_FG);
     if (d.kind == K_LIST) {
@@ -2293,7 +2325,7 @@ static void drawModal() {
     }
   } else if (modal == M_ABOUT) {
     mBox = Box{ 24, 60, 432, 360 };
-    card(mBox, C_CARD, C_BORDER);
+    modalCard();
     g.text(mBox.x + 20, mBox.y + 38, tr("Стан і про пристрій"), F_H, C_FG);
     drawAboutLines();
     Box b = mItem(ID_M_OK);
@@ -2316,7 +2348,7 @@ static void drawModal() {
     int lines = wrap(0, 0, 392, 24, TEXT[modalArg], F_TXT, 0, 99, 0, false);
     int h = 64 + lines * 24 + 100;
     mBox = Box{ 24, (int16_t)((H - h) / 2), 432, (int16_t)h };
-    card(mBox, C_CARD, C_BORDER);
+    modalCard();
     g.text(mBox.x + 20, mBox.y + 38, TITLE[modalArg], F_H, C_FG);
     wrap(mBox.x + 20, mBox.y + 72, 392, 24, TEXT[modalArg], F_TXT, C_MUTED_FG);
     mHot(ID_M_CANCEL);

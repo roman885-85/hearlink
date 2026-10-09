@@ -247,6 +247,11 @@ static void report() {
   dgApplyMaxUs = 0;
   dgApplyN = 0;
   dgSendMaxUs = 0;
+  Serial.printf("вікно: затемнення сторінки до %.1f мс, усе малювання вікна до %.1f мс; розбір звуку піднімався понад екран %u разів\n",
+                ui::dgDimUs / 1000.0f, ui::dgModalUs / 1000.0f, (unsigned)mpBoosts);
+  ui::dgDimUs = 0;
+  ui::dgModalUs = 0;
+  mpBoosts = 0;
   Serial.printf("кадр меню: сер. %.2f мс, найдовший %.1f мс (за %u кадрів); картка пам'яті: %s%s; вільно пам'яті %u КБ, PSRAM %u КБ\n",
                 n ? sum / 1000.0f / n : 0.0f, mx / 1000.0f, (unsigned)n, recSd ? tr("є") : recCard == CARD_BAD_FS ? tr("не та розмітка") : recCard == CARD_NO_INIT ? tr("не запускається") : tr("не відповідає"), recOn ? tr(", іде запис") : "",
                 (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getFreePsram() / 1024));
