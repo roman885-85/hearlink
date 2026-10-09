@@ -1,5 +1,11 @@
 # Changelog / Історія версій
 
+## 2.46 — 2026-10-09 (not yet released / ще не випущено)
+- EN: receiver knob lock set from the transmitter (receiver window → “Settings” → “Knob lock”: none / menu / volume /
+  all); the receiver shows “Locked”. The “Auto-update: on / off” switch in the “Update” window.
+- UK: блокування ручки приймача з передавача (вікно приймача → «Налаштування» → «Блокування ручки»: немає / меню /
+  гучність / усе); приймач показує «Заблоковано». Перемикач «Автооновлення: увімкнено / вимкнено» у вікні «Оновлення».
+
 ## 2.45 — 2026-10-09
 - EN: equalizers. **Receiver equalizer** set from the transmitter (receiver window → “Settings” → “Equalizer”):
   five bands (125 Hz, 400 Hz, 1 kHz, 2.5 kHz, 6 kHz; −12…+12 dB in 2 dB steps) and a 100 Hz low cut, on by default.

@@ -325,7 +325,8 @@ static void uiTask(void *) {
   uint32_t lostAt = 0, clipSaidAt = 0, weakSince = 0, weakSaidAt = 0, nameSum = 0;
   int parWas[RXP_COUNT];                   // настройки «для слуха и удобства», как были на прошлом кадре
   for (int p = 0; p < RXP_COUNT; p++) parWas[p] = rxParamGet(p);
-  uint32_t limitSaidAt = 0;
+  uint32_t limitSaidAt = 0, lockSaidAt = 0;
+  uint8_t lockWas = cfg.rxLock;
   // стрелочные индикаторы и полоска уровня: уровень и пик каналов 0…1 с «ходом» стрелки (вверх быстро, вниз медленно)
   float vuLF = 0, vuRF = 0, vuLP = 0, vuRP = 0;
   uint32_t vuLPAt = 0, vuRPAt = 0;
@@ -440,6 +441,20 @@ static void uiTask(void *) {
       rxEarStart(false);
       clickKnob = longKnob = false;
     }
+    // Блокировка ручки с передатчика (с 2.46): 1 — меню, 2 — громкость (поворот и «тиша» нажатием), 3 — всё.
+    if ((cfg.rxLock & 1) && (screen == S_MENU || screen == S_EDIT || screen == S_ABOUT || screen == S_LINK)) screen = S_MAIN;
+    if (screen == S_MAIN && cfg.rxLock) {
+      bool hit = ((cfg.rxLock & 2) && (turn || clickKnob)) || ((cfg.rxLock & 1) && longKnob);
+      if (cfg.rxLock & 2) {
+        turn = 0;
+        clickKnob = false;
+      }
+      if (cfg.rxLock & 1) longKnob = false;
+      if (hit && now - lockSaidAt > 2500) {   // человек крутит, а ничего не меняется — сказать почему
+        lockSaidAt = now;
+        say(tr("Заблоковано"));
+      }
+    }
     switch (screen) {
       case S_MAIN:
         if (turn) {
@@ -550,6 +565,10 @@ static void uiTask(void *) {
         for (const char *c = rxName(); *c; c++) ns = ns * 33 + (uint8_t)*c;
         if (nameSum && ns != nameSum) say(tr("Нове ім'я приймача"));
         nameSum = ns;
+      }
+      if (cfg.rxLock != lockWas) {   // ручку заблокировали или освободили с передатчика
+        say(cfg.rxLock ? tr("Заблоковано") : tr("Розблоковано"));
+        lockWas = cfg.rxLock;
       }
       for (int p = 0; p < RXP_COUNT; p++) {   // настройку сменили не ручкой (с передатчика) — сказать, что и на что
         int v = rxParamGet(p);

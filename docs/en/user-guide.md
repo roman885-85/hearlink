@@ -75,6 +75,12 @@ this receiver: the same five bands and a low cut below 100 Hz (on by default in 
 («Налаштування», Settings) goes back. This is how the sound is fitted to one person's hearing, while the input
 equalizer works for everybody at once.
 
+The last row is **«Блокування ручки» (Knob lock)** (receivers with 2.46+): *none* / *menu* (a long press does not open
+the menu) / *volume* (turning and mute-by-press do nothing) / *all*. The receiver shows «Заблоковано» (Locked) when
+someone tries. Everything can still be changed from the transmitter.
+
+![Knob lock](../img/tx-18d2-blokuvannya-ruchky.png)
+
 #### Adding a receiver
 
 ![Add](../img/tx-17b-dodaty-zapyty.png)
@@ -111,7 +117,8 @@ itself (to those that were switched off — when they are switched on). A lost r
 **Automatically** (since 2.42): when a receiver with firmware older than the transmitter's comes on the air (it was
 switched off or asleep during the update, or it is a new one), the transmitter starts the distribution by itself
 after about 10 s. The sound on air stops for ~20 s for everyone; at most two attempts per receiver per power-on of
-the transmitter. Switch off / on: port commands `M7` / `M6`.
+the transmitter. Switch off / on: the **«Автооновлення: увімкнено / вимкнено» (Auto-update: on / off)** button in the
+“Update” window (since 2.46) or the port commands `M7` / `M6`.
 
 **Receivers only** (the transmitter already has the new version): "Receivers" → "Update" → **«Почати» (Start)**.
 **«Пробне» (Trial)** — shows what it looks like: the receivers receive and verify everything but write nothing.

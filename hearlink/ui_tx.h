@@ -519,12 +519,15 @@ static void task(void *) {
         memcpy(r.eq, p.eq, sizeof(r.eq));
         r.lowCut = p.lowCut;
         r.hasEq = p.hasEq;
+        r.lock = p.lock;
+        r.hasLock = p.hasInfo && (p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 46));
         r.earTest = p.earTest;
       }
       portEXIT_CRITICAL(&peerMux);
       v.rxN = n;
       {   // обновление приёмников по радио — для окна
         ui::View::Ota &ov = v.ota;
+        if (ui::out.otaAuto < 0) ov.autoUpd = cfg.autoUpd;
         uint8_t st = otaTx.stage;
         if (st != OT_IDLE || ov.stage != 1) ov.stage = st;   // «1» ставит сама кнопка «Почати» — до ответа задачи
         ov.secs = otaTxActive() ? (now - otaTx.startMs) / 1000 : (otaTx.endMs - otaTx.startMs) / 1000;
@@ -736,6 +739,11 @@ static void task(void *) {
       o.setParam = -1;
       saveAt = now + 600;   // запись почти сразу: выключили питание через секунду после изменения — оно не должно пропасть
     }
+    if (o.otaAuto >= 0) {   // автообновление приёмников — включить / выключить
+      cfg.autoUpd = o.otaAuto ? 1 : 0;
+      o.otaAuto = -1;
+      saveAt = now + 600;
+    }
     if (o.eqBand >= 0) {   // эквалайзер входа
       if (o.eqBand < 5) cfg.txEq[o.eqBand] = (uint8_t)constrain(o.eqVal + 6, 0, 12);
       else cfg.txLowCut = o.eqVal ? 1 : 0;
@@ -799,6 +807,7 @@ static void task(void *) {
           case ui::RXC_SET:   // настройка «для слуха и удобства»: номер × 32 + значение
             peerCommand(p.id, CMD_SET, (uint8_t)o.rxArg);
             if ((o.rxArg >> 5) < RXP_COUNT) p.par[o.rxArg >> 5] = o.rxArg & 31;
+            else if ((o.rxArg >> 5) == RXP_X_LOCK) p.lock = o.rxArg & 3;
             p.parSetMs = now ? now : 1;
             break;
           case ui::RXC_EQ:   // эквалайзер: полоса × 16 + значение

@@ -161,6 +161,7 @@ static void settingsLoad() {
   if (cfg.rxLowCut > 1) cfg.rxLowCut = 1;
   for (uint8_t &v : cfg.txEq) if (v > 12) v = 6;
   if (cfg.txLowCut > 1) cfg.txLowCut = 0;
+  if (cfg.rxLock > 3) cfg.rxLock = 0;
   // До 2.40 «звук как есть» был шаг 12 (60 %), с 2.40 — шаг 20 (100 %). Чтобы после обновления приёмник звучал как до
   // него, шаг и предел сдвигаются на 8; всё, что стояло выше 60 % (там было усиление с ограничителем), становится 100 %.
   if (oldVolScale) {
@@ -992,9 +993,9 @@ static void command(String s) {
           }
           else if (rxParamSet((uint8_t)p, val)) settingsSave();
         }
-        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s; еквалайзер %d %d %d %d %d дБ, зріз низів %u; рівень до нього %.1f дБ, після %.1f дБ\n",
+        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s; блокування %u; еквалайзер %d %d %d %d %d дБ, зріз низів %u; рівень до нього %.1f дБ, після %.1f дБ\n",
                       cfg.rxClarity, cfg.rxBalance, cfg.rxVolMax, cfg.volume, cfg.volume ? 20 * log10f(rxVolumeGain(rxVolumeScaled(cfg.volume))) : -99.0f, cfg.rxView, cfg.rxLed, cfg.rxLang, uiLang ? "English" : "українська",
-                      rxEarTest ? "; ІДЕ ПЕРЕВІРКА НАВУШНИКІВ" : "", (cfg.rxEq[0] - 6) * 2, (cfg.rxEq[1] - 6) * 2, (cfg.rxEq[2] - 6) * 2,
+                      rxEarTest ? "; ІДЕ ПЕРЕВІРКА НАВУШНИКІВ" : "", cfg.rxLock, (cfg.rxEq[0] - 6) * 2, (cfg.rxEq[1] - 6) * 2, (cfg.rxEq[2] - 6) * 2,
                       (cfg.rxEq[3] - 6) * 2, (cfg.rxEq[4] - 6) * 2, cfg.rxLowCut,
                       20 * log10f((rxEqPkIn + 1) / 32768.0f), 20 * log10f((rxEqPkOut + 1) / 32768.0f));
         rxEqPkIn = 0;
@@ -1030,6 +1031,9 @@ static void command(String s) {
           snprintf(idx, sizeof(idx), "%02X%02X%02X", peers[i].id[0], peers[i].id[1], peers[i].id[2]);
           if (who[0] && strcasecmp(who, idx)) continue;
           if (!peers[i].hasInfo) continue;   // понимают приёмники с версии 2.32 — они сообщают свои настройки
+          if (p == 6) {   // i6=<0…3> — блокировка ручки: 0 нет, 1 меню, 2 громкость, 3 всё (приёмники с 2.46)
+            peerCommand(peers[i].id, CMD_SET, (uint8_t)((RXP_X_LOCK << 5) | (val & 3)));
+          } else
           if (p >= 20 && p <= 25) {   // i20…i24=<−12…12 дБ> — полосы эквалайзера, i25=<0/1> — срез низов
             if (!peers[i].hasEq) continue;
             int v = p == 25 ? (val ? 1 : 0) : constrain(val / 2 + 6, 0, 12);

@@ -29,6 +29,7 @@ struct Peer {
   uint8_t par[RXP_COUNT];     // значения в том виде, как идут по радио (баланс — со сдвигом на 5)
   uint8_t earTest;            // у него идёт проверка наушников
   uint8_t fwMaj, fwMin;       // точная версия прошивки (приёмники с 2.42; у прежних — нули)
+  uint8_t lock;               // блокировка ручки приёмника (с 2.46): 0 — нет, 1 — меню, 2 — громкость, 3 — всё
   uint8_t eq[5], lowCut;      // эквалайзер приёмника (с 2.45); hasEq — сообщает ли
   bool hasEq;
   uint8_t autoTries;          // сколько раз в это включение передатчик сам пытался его обновить
@@ -383,6 +384,7 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
         const uint8_t *e = body + RXP_COUNT + 3;
         peers[k].eq[0] = e[0] & 15; peers[k].eq[1] = e[0] >> 4; peers[k].eq[2] = e[1] & 15; peers[k].eq[3] = e[1] >> 4;
         peers[k].eq[4] = e[2] & 15; peers[k].lowCut = (e[2] >> 4) & 1;
+        peers[k].lock = (e[2] >> 5) & 3;
       }
       peers[k].hasInfo = true;
     }

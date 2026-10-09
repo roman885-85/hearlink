@@ -275,6 +275,7 @@ int main() {
   {
     View::Rx &r = view.rx[0];
     r.hasInfo = true;
+    r.hasLock = true;
     r.stereo = true;
     const uint8_t par[6] = { 2, 5 + 2, 14, 1, 2, 0 };   // чёткость «середня», баланс «праве +2», предел 70 %, стрелки, норма, как у передатчика
     memcpy(r.par, par, 6);
@@ -288,6 +289,10 @@ int main() {
     save("18c-pryimach-vikno-2.32");
     { Box b = rxBtn(ID_RX_SET); tap(b.x + 30, b.y + 20); }
     save("18d-pryimach-nalashtuvannya");
+    { Box b = rxsBox(ID_RXS_PLUS + 7); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }   // блокировка: немає → меню → гучність
+    printf("блокировка: команда %d, значение %d\n", out.rxCmd, out.rxArg);
+    save("18d2-blokuvannya-ruchky");
+    { Box b = rxsBox(ID_RXS_MINUS + 7); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }
     { Box b = rxsBox(ID_RXS_PLUS + 1); tap(b.x + 20, b.y + 20); }     // чёткость: середня → сильна
     { Box b = rxsBox(ID_RXS_MINUS + 0); tap(b.x + 20, b.y + 20); }    // выход: два канали → протифаза (баланс гаснет)
     { Box b = rxsBox(ID_RXS_EAR); tap(b.x + 20, b.y + 20); }          // проверка наушников

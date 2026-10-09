@@ -114,6 +114,8 @@ struct View {
     uint8_t par[6] = {};
     uint8_t eq[5] = { 6, 6, 6, 6, 6 }, lowCut = 1;   // эквалайзер приёмника (с 2.45): 0…12 = −12…+12 дБ
     bool hasEq = false;
+    uint8_t lock = 0;                                // блокировка ручки (с 2.46): 0 — нет, 1 — меню, 2 — громкость, 3 — всё
+    bool hasLock = false;
     bool earTest = false;   // у приёмника идёт проверка наушников
   } rx[RX_MAX];
   int rxN = 0;
@@ -135,6 +137,7 @@ struct View {
     // обновление с карты (upd.h): 0 не смотрели, 1 карты нет, 2 смотрю, 3 файлов нет, 4 та же прошивка, 5 ЕСТЬ, 6 файл не годится,
     // 7 — в файле прошивка старше работающей
     uint8_t card = 0, cardWhy = 0, selfPct = 0;
+    uint8_t autoUpd = 1;    // автообновление приёмников со старой прошивкой включено
     uint8_t selfWait = 0;   // сколько секунд до начала записи в передатчик (идёт предупреждение); 0 — запись идёт
     bool fromCard = false, demo = false;
     char cardVer[12] = "", cardFile[40] = "", sendVer[12] = "";
@@ -164,6 +167,7 @@ struct Out {
   char rxName[RX_NAME] = "";
   bool setSrcName = false;             // источник звука переименован: новое имя — в srcName (пусто — вернуть «З пульта»)
   char srcName[RX_NAME] = "";
+  int otaAuto = -1;                    // автообновление приёмников: включить (1) / выключить (0)
   bool otaStart = false, otaCancel = false;   // обновление приёмников по радио: начать / отменить
   bool otaCard = false, otaDemo = false, updScan = false;   // обновить всё файлом с карты / пробное / просмотреть папку на карте
   int pairOpen = -1;                   // открыть (1) или закрыть (0) приём просьб о доступе
@@ -328,6 +332,7 @@ constexpr int ID_TXEQ_OPEN = 163, ID_TXEQ_OK = 164;       // «Еквалайз�
 constexpr int ID_TXEQ_MINUS = 170, ID_TXEQ_PLUS = 180;    // + строка окна эквалайзера входа (0…5)
 constexpr int ID_RXS_EAR = 160, ID_RXS_OK = 161, ID_RXS_PAGE = 162;   // PAGE — «Еквалайзер» / «Налаштування»
 constexpr int ID_SHEET = 110;                  // +строка окна «Перевірочний звук»
+constexpr int ID_OTA_AUTO = 134;   // «Автооновлення: увімкнено / вимкнено» в окне обновления (с 2.46)
 constexpr int ID_OTA_DEMO = 133;   // «Пробне» — пробное обновление: приёмники принимают и сверяют, но не записывают
 constexpr int ID_OTA_OPEN = 130, ID_OTA_START = 131, ID_OTA_CLOSE = 132;   // «Оновлення» приёмников по радио: открыть окно, начать, закрыть/отменить
 constexpr int ID_PAIR_OPEN = 120, ID_PAIR_CLOSE = 121, ID_PAIR_OK = 122;   // «Додати приймач»; ID_PAIR_OK + номер просьбы — «Дозволити»
@@ -1472,6 +1477,7 @@ static bool otaSelf() {   // передатчик пишет прошивку в
   return view.ota.stage == 10 || view.ota.stage == 11;
 }
 static Box otaBtn(int id) {
+  if (id == ID_OTA_AUTO) return Box{ (int16_t)(mBox.x + 20), (int16_t)(mBox.y + 312), (int16_t)(mBox.w - 40), 38 };
   int y = mBox.y + mBox.h - 64;
   if (view.ota.stage == 0) {   // три кнопки в ряд: начать, пробное, закрыть
     int k = id == ID_OTA_START ? 0 : id == ID_OTA_DEMO ? 1 : 2;
@@ -1482,6 +1488,7 @@ static Box otaBtn(int id) {
 static void drawOtaButton(int id, bool pressed) {
   if (id == ID_OTA_START) drawButton(otaBtn(id), view.ota.card == 5 ? tr("Оновити") : tr("Почати"), 1, pressed);
   else if (id == ID_OTA_DEMO) drawButton(otaBtn(id), tr("Пробне"), 0, pressed);
+  else if (id == ID_OTA_AUTO) drawButton(otaBtn(id), view.ota.autoUpd ? tr("Автооновлення: увімкнено") : tr("Автооновлення: вимкнено"), 0, pressed);
   else if (id == ID_OTA_CLOSE) drawButton(otaBtn(id), otaBusy() ? tr("Скасувати") : tr("Закрити"), otaBusy() ? 2 : 0, pressed);
 }
 static uint32_t otaShown = 0;
@@ -1490,7 +1497,7 @@ static uint32_t otaSum() {   // всё, от чего зависит вид ок
   uint32_t h = 2166136261u;
   auto mix = [&](uint32_t v) { h = (h ^ v) * 16777619u; };
   mix(o.stage); mix(o.percent); mix(o.n); mix(o.more); mix(o.done); mix(o.fail); mix(o.same); mix(o.lost);
-  mix(o.card); mix(o.cardWhy); mix(o.selfPct); mix(o.fromCard); mix(o.demo); mix(o.selfWait);
+  mix(o.card); mix(o.cardWhy); mix(o.selfPct); mix(o.fromCard); mix(o.demo); mix(o.selfWait); mix(o.autoUpd);
   for (const char *c = o.cardVer; *c; c++) mix((uint8_t)*c);
   for (int i = 0; i < o.n; i++) {
     mix(o.it[i].phase); mix(o.it[i].percent); mix(o.it[i].err); mix(o.it[i].lost);
@@ -1604,6 +1611,8 @@ static void drawOtaModal() {
     hot[hotN++] = Hot{ otaBtn(ID_OTA_START), ID_OTA_START };
     drawOtaButton(ID_OTA_DEMO, false);
     hot[hotN++] = Hot{ otaBtn(ID_OTA_DEMO), ID_OTA_DEMO };
+    drawOtaButton(ID_OTA_AUTO, false);   // приёмник со старой прошивкой, выйдя на связь, обновляется сам — или нет
+    hot[hotN++] = Hot{ otaBtn(ID_OTA_AUTO), ID_OTA_AUTO };
   } else {
     const char *head = "";
     uint16_t ink = C_FG;
@@ -1692,13 +1701,14 @@ static void drawRxModal() {
 // громкости, вид главного экрана, светодиод, язык — и проверка наушников. Каждая строка: название, нынешнее значение
 // и кнопки «меньше / больше»; нажатие сразу уходит приёмнику командой, он подтверждает следующим сообщением о себе.
 // (Владелец 06.10: функции должны быть парами — что меняется на приёмнике, меняется и отсюда.)
-constexpr int RXS_N = 7;
-static const char *const RXS_NAME[RXS_N] = { "Вихід звуку", "Чіткість мови", "Баланс", "Межа гучності", "Вигляд екрана", "Світлодіод", "Мова написів" };
+constexpr int RXS_N = 8;
+static const char *const RXS_NAME[RXS_N] = { "Вихід звуку", "Чіткість мови", "Баланс", "Межа гучності", "Вигляд екрана", "Світлодіод", "Мова написів", "Блокування ручки" };
 // Окно в два листа: настройки и эквалайзер (с 2.45) — строки и кнопки «−/+» те же, меняется их смысл.
 static int rxsPage;   // 0 — настройки, 1 — эквалайзер: строки 0…4 — полосы, 5 — срез низов, 6 — пусто
 static const char *const RXS_EQ_NAME[6] = { "Низ, 125 Гц", "400 Гц", "1 кГц", "2,5 кГц", "Верх, 6 кГц", "Зріз низів, 100 Гц" };
 static int rxsGet(const View::Rx &r, int row) {   // значение строки числом
   if (rxsPage) return row < 5 ? (int)r.eq[row] - 6 : row == 5 ? r.lowCut : 0;
+  if (row == 7) return r.lock;
   return row == 0 ? (r.stereo ? 1 : 0) : row == 2 ? (int)r.par[1] - 5 : r.par[row - 1];
 }
 static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
@@ -1719,24 +1729,25 @@ static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
     case 3: snprintf(t, n, "%d %%", v * 5); break;
     case 4: snprintf(t, n, "%s", v == 1 ? tr("стрілки") : v == 2 ? tr("гучність") : tr("спектр")); break;
     case 5: snprintf(t, n, "%s", v == 0 ? tr("вимкнено") : v == 1 ? tr("тьмяно") : v == 3 ? tr("яскраво") : tr("норма")); break;
+    case 7: snprintf(t, n, "%s", !r.hasLock ? "—" : v == 1 ? tr("меню") : v == 2 ? tr("гучність") : v == 3 ? tr("усе") : tr("немає")); break;
     default: snprintf(t, n, "%s", v == 1 ? "українська" : v == 2 ? "English" : tr("як у передавача"));
   }
 }
 // новое значение строки после нажатия «меньше» (d = −1) или «больше» (+1); вид экрана и язык идут по кругу
 static int rxsStep(const View::Rx &r, int row, int d) {
-  static const int8_t LO[RXS_N] = { 0, 0, -5, 4, 0, 0, 0 }, HI[RXS_N] = { 1, 3, 5, 20, 2, 3, 2 };
+  static const int8_t LO[RXS_N] = { 0, 0, -5, 4, 0, 0, 0, 0 }, HI[RXS_N] = { 1, 3, 5, 20, 2, 3, 2, 3 };
   int v = rxsGet(r, row) + d;
   if (rxsPage) return row < 5 ? (v < -6 ? -6 : v > 6 ? 6 : v) : row == 5 ? (v & 1) : 0;
   if (row == 0 || row == 4 || row == 6) return v < LO[row] ? HI[row] : v > HI[row] ? LO[row] : v;
   return v < LO[row] ? LO[row] : v > HI[row] ? HI[row] : v;
 }
 static Box rxsBox(int id) {
-  if (id == ID_RXS_EAR) return Box{ (int16_t)(mBox.x + 16), (int16_t)(mBox.y + mBox.h - 62), 258, 48 };
-  if (id == ID_RXS_OK) return Box{ (int16_t)(mBox.x + 282), (int16_t)(mBox.y + mBox.h - 62), 134, 48 };
+  if (id == ID_RXS_EAR) return Box{ (int16_t)(mBox.x + 16), (int16_t)(mBox.y + mBox.h - 58), 258, 48 };
+  if (id == ID_RXS_OK) return Box{ (int16_t)(mBox.x + 282), (int16_t)(mBox.y + mBox.h - 58), 134, 48 };
   if (id == ID_RXS_PAGE) return Box{ (int16_t)(mBox.x + mBox.w - 16 - 176), (int16_t)(mBox.y + 8), 176, 40 };
   bool plus = id >= ID_RXS_PLUS;
   int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
-  return Box{ (int16_t)(mBox.x + mBox.w - 16 - (plus ? 50 : 106)), (int16_t)(mBox.y + 56 + row * 46), 50, 40 };
+  return Box{ (int16_t)(mBox.x + mBox.w - 16 - (plus ? 50 : 106)), (int16_t)(mBox.y + 52 + row * 44), 50, 40 };
 }
 static void drawRxSetButton(int id, bool pressed) {
   int i = rxFind(rxSelId);
@@ -1746,8 +1757,9 @@ static void drawRxSetButton(int id, bool pressed) {
   if (id == ID_RXS_PAGE) return drawButton(b, rxsPage ? tr("Налаштування") : tr("Еквалайзер"), 0, pressed);
   bool plus = id >= ID_RXS_PLUS;
   int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
-  bool dead = i >= 0 && !rxsPage && row == 2 && !view.rx[i].stereo;   // баланс при одном канале не к чему приложить
-  if (rxsPage && row == 6) return g.fill(b.x, b.y, b.w, b.h, C_CARD);   // на листе эквалайзера седьмой строки нет
+  bool dead = i >= 0 && !rxsPage && ((row == 2 && !view.rx[i].stereo) ||   // баланс при одном канале не к чему приложить
+                                     (row == 7 && !view.rx[i].hasLock));    // блокировку понимают приёмники с 2.46
+  if (rxsPage && row >= 6) return g.fill(b.x, b.y, b.w, b.h, C_CARD);   // на листе эквалайзера шесть строк
   card(b, pressed && !dead ? m2::Gfx::blend(C_SECONDARY, C_FG, 40) : C_SECONDARY, C_BORDER);
   uint16_t ink = dead ? C_BORDER : C_FG;
   g.box(b.x + b.w / 2 - 9, b.y + b.h / 2 - 2, 18, 4, 1, ink);   // знаки — фигурами
@@ -1757,9 +1769,9 @@ static void drawRxSetRow(int row) {
   int i = rxFind(rxSelId);
   if (i < 0) return;
   char t[40];
-  int y = mBox.y + 56 + row * 46;
+  int y = mBox.y + 52 + row * 44;
   g.fill(mBox.x + 16, y, mBox.w - 32 - 112, 40, C_CARD);
-  if (rxsPage && row == 6) return;
+  if (rxsPage && row >= 6) return;
   g.text(mBox.x + 18, y + 26, tr(rxsPage ? RXS_EQ_NAME[row] : RXS_NAME[row]), F_CAP, C_MUTED_FG);
   rxsText(view.rx[i], row, t, sizeof(t));
   g.text(mBox.x + mBox.w - 16 - 116, y + 26, t, F_CAPB, C_FG, AL_R, 150);
@@ -1815,6 +1827,8 @@ static uint32_t rxsSum() {   // что сейчас показано: измен
   for (int k = 0; k < 5; k++) mix(r.eq[k]);
   mix(r.lowCut);
   mix(r.hasEq);
+  mix(r.lock);
+  mix(r.hasLock);
   mix(r.stereo);
   mix(r.earTest);
   mix(r.online);
@@ -1823,10 +1837,10 @@ static uint32_t rxsSum() {   // что сейчас показано: измен
 static void drawRxSetModal() {
   int i = rxFind(rxSelId);
   if (i < 0) return;
-  mBox = Box{ 24, 14, 432, 452 };
+  mBox = Box{ 24, 6, 432, 468 };   // восемь строк по 44 точки и кнопки
   card(mBox, C_CARD, C_BORDER);
   if (!view.rx[i].hasEq) rxsPage = 0;   // приёмник до 2.45 эквалайзера не знает
-  g.text(mBox.x + 20, mBox.y + 36, view.rx[i].name, F_H, C_FG, AL_L, view.rx[i].hasEq ? 208 : 392);
+  g.text(mBox.x + 20, mBox.y + 34, view.rx[i].name, F_H, C_FG, AL_L, view.rx[i].hasEq ? 208 : 392);
   if (view.rx[i].hasEq) {
     drawRxSetButton(ID_RXS_PAGE, false);
     hot[hotN++] = Hot{ rxsBox(ID_RXS_PAGE), ID_RXS_PAGE };
@@ -1835,7 +1849,7 @@ static void drawRxSetModal() {
     drawRxSetRow(row);
     for (int id : { ID_RXS_MINUS + row, ID_RXS_PLUS + row }) {
       drawRxSetButton(id, false);
-      if (!(rxsPage && row == 6)) hot[hotN++] = Hot{ rxsBox(id), id };
+      if (!(rxsPage && row >= 6)) hot[hotN++] = Hot{ rxsBox(id), id };
     }
   }
   for (int id : { ID_RXS_EAR, ID_RXS_OK }) {
@@ -2445,6 +2459,11 @@ static void activate(int id) {
       else out.otaStart = true;
       view.ota.stage = 1;   // сразу показать «готую» (настоящее состояние придёт со следующим кадром)
       drawModal();
+    } else if (id == ID_OTA_AUTO) {
+      view.ota.autoUpd = !view.ota.autoUpd;
+      out.otaAuto = view.ota.autoUpd;
+      drawOtaButton(ID_OTA_AUTO, false);
+      otaShown = otaSum();
     } else if (id == ID_OTA_CLOSE) {
       if (otaBusy()) out.otaCancel = true;
       else closeModal();
@@ -2571,9 +2590,14 @@ static void activate(int id) {
       bool plus = id >= ID_RXS_PLUS;
       int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
       if (row == 2 && !r.stereo) return;   // баланс при одном канале
+      if (row == 7 && !r.hasLock) return;  // блокировку понимают приёмники с 2.46
       int v = rxsStep(r, row, plus ? 1 : -1);
       if (v == rxsGet(r, row)) return;
-      if (row == 0) {
+      if (row == 7) {
+        r.lock = (uint8_t)v;
+        out.rxCmd = RXC_SET;
+        out.rxArg = (6 << 5) | v;          // RXP_X_LOCK
+      } else if (row == 0) {
         r.stereo = v;
         out.rxCmd = RXC_STEREO;
         out.rxArg = v;
