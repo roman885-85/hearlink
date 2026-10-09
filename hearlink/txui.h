@@ -110,6 +110,8 @@ struct View {
     // настройки «для слуха и удобства» (приёмники с 2.32): чёткость, баланс (+5), предел громкости, вид, светодиод, язык
     bool hasInfo = false;
     uint8_t par[6] = {};
+    uint8_t eq[5] = { 6, 6, 6, 6, 6 }, lowCut = 1;   // эквалайзер приёмника (с 2.45): 0…12 = −12…+12 дБ
+    bool hasEq = false;
     bool earTest = false;   // у приёмника идёт проверка наушников
   } rx[RX_MAX];
   int rxN = 0;
@@ -166,7 +168,8 @@ struct Out {
 };
 enum { RXC_IDENTIFY = 1, RXC_NAME, RXC_ENABLE, RXC_VOLUME, RXC_FORGET, RXC_STEREO,
        RXC_SET,       // настройка приёмника: rxArg = номер настройки × 32 + значение (как в команде CMD_SET)
-       RXC_EARTEST }; // проверка наушников: rxArg 1 — начать, 0 — прекратить
+       RXC_EARTEST,
+       RXC_EQ };      // эквалайзер приёмника: rxArg = полоса × 16 + значение (как в команде CMD_EQ) // проверка наушников: rxArg 1 — начать, 0 — прекратить
 
 // ---------------------------------------------------------------- настройки и пояснения к ним
 enum { K_STEP, K_LIST, K_TOGGLE };
@@ -318,7 +321,7 @@ constexpr int ID_RX_IDENT = 100, ID_RX_RENAME = 101, ID_RX_VOLDN = 102, ID_RX_VO
 constexpr int ID_RX_STEREO = 107;
 constexpr int ID_RX_SET = 108;                 // «Налаштування» в окне приёмника — открывает окно его настроек
 constexpr int ID_RXS_MINUS = 140, ID_RXS_PLUS = 150;   // + строка окна настроек приёмника (0…6)
-constexpr int ID_RXS_EAR = 160, ID_RXS_OK = 161;
+constexpr int ID_RXS_EAR = 160, ID_RXS_OK = 161, ID_RXS_PAGE = 162;   // PAGE — «Еквалайзер» / «Налаштування»
 constexpr int ID_SHEET = 110;                  // +строка окна «Перевірочний звук»
 constexpr int ID_OTA_DEMO = 133;   // «Пробне» — пробное обновление: приёмники принимают и сверяют, но не записывают
 constexpr int ID_OTA_OPEN = 130, ID_OTA_START = 131, ID_OTA_CLOSE = 132;   // «Оновлення» приёмников по радио: открыть окно, начать, закрыть/отменить
@@ -1683,11 +1686,20 @@ static void drawRxModal() {
 // (Владелец 06.10: функции должны быть парами — что меняется на приёмнике, меняется и отсюда.)
 constexpr int RXS_N = 7;
 static const char *const RXS_NAME[RXS_N] = { "Вихід звуку", "Чіткість мови", "Баланс", "Межа гучності", "Вигляд екрана", "Світлодіод", "Мова написів" };
+// Окно в два листа: настройки и эквалайзер (с 2.45) — строки и кнопки «−/+» те же, меняется их смысл.
+static int rxsPage;   // 0 — настройки, 1 — эквалайзер: строки 0…4 — полосы, 5 — срез низов, 6 — пусто
+static const char *const RXS_EQ_NAME[6] = { "Низ, 125 Гц", "400 Гц", "1 кГц", "2,5 кГц", "Верх, 6 кГц", "Зріз низів, 100 Гц" };
 static int rxsGet(const View::Rx &r, int row) {   // значение строки числом
+  if (rxsPage) return row < 5 ? (int)r.eq[row] - 6 : row == 5 ? r.lowCut : 0;
   return row == 0 ? (r.stereo ? 1 : 0) : row == 2 ? (int)r.par[1] - 5 : r.par[row - 1];
 }
 static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
   int v = rxsGet(r, row);
+  if (rxsPage) {
+    if (row < 5) snprintf(t, n, tr("%s%d дБ"), v > 0 ? "+" : "", v * 2);
+    else snprintf(t, n, "%s", row == 5 ? (v ? tr("увімкнено") : tr("вимкнено")) : "");
+    return;
+  }
   switch (row) {
     case 0: snprintf(t, n, "%s", v ? tr("два канали") : tr("протифаза")); break;
     case 1: snprintf(t, n, "%s", v == 0 ? tr("вимкнено") : v == 1 ? tr("легка") : v == 2 ? tr("середня") : tr("сильна")); break;
@@ -1706,12 +1718,14 @@ static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
 static int rxsStep(const View::Rx &r, int row, int d) {
   static const int8_t LO[RXS_N] = { 0, 0, -5, 4, 0, 0, 0 }, HI[RXS_N] = { 1, 3, 5, 20, 2, 3, 2 };
   int v = rxsGet(r, row) + d;
+  if (rxsPage) return row < 5 ? (v < -6 ? -6 : v > 6 ? 6 : v) : row == 5 ? (v & 1) : 0;
   if (row == 0 || row == 4 || row == 6) return v < LO[row] ? HI[row] : v > HI[row] ? LO[row] : v;
   return v < LO[row] ? LO[row] : v > HI[row] ? HI[row] : v;
 }
 static Box rxsBox(int id) {
   if (id == ID_RXS_EAR) return Box{ (int16_t)(mBox.x + 16), (int16_t)(mBox.y + mBox.h - 62), 258, 48 };
   if (id == ID_RXS_OK) return Box{ (int16_t)(mBox.x + 282), (int16_t)(mBox.y + mBox.h - 62), 134, 48 };
+  if (id == ID_RXS_PAGE) return Box{ (int16_t)(mBox.x + mBox.w - 16 - 176), (int16_t)(mBox.y + 8), 176, 40 };
   bool plus = id >= ID_RXS_PLUS;
   int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
   return Box{ (int16_t)(mBox.x + mBox.w - 16 - (plus ? 50 : 106)), (int16_t)(mBox.y + 56 + row * 46), 50, 40 };
@@ -1721,9 +1735,11 @@ static void drawRxSetButton(int id, bool pressed) {
   Box b = rxsBox(id);
   if (id == ID_RXS_EAR) return drawButton(b, i >= 0 && view.rx[i].earTest ? tr("Зупинити перевірку") : tr("Перевірка навушників"), 0, pressed);
   if (id == ID_RXS_OK) return drawButton(b, tr("Готово"), 1, pressed);
+  if (id == ID_RXS_PAGE) return drawButton(b, rxsPage ? tr("Налаштування") : tr("Еквалайзер"), 0, pressed);
   bool plus = id >= ID_RXS_PLUS;
   int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
-  bool dead = i >= 0 && row == 2 && !view.rx[i].stereo;   // баланс при одном канале не к чему приложить
+  bool dead = i >= 0 && !rxsPage && row == 2 && !view.rx[i].stereo;   // баланс при одном канале не к чему приложить
+  if (rxsPage && row == 6) return g.fill(b.x, b.y, b.w, b.h, C_CARD);   // на листе эквалайзера седьмой строки нет
   card(b, pressed && !dead ? m2::Gfx::blend(C_SECONDARY, C_FG, 40) : C_SECONDARY, C_BORDER);
   uint16_t ink = dead ? C_BORDER : C_FG;
   g.box(b.x + b.w / 2 - 9, b.y + b.h / 2 - 2, 18, 4, 1, ink);   // знаки — фигурами
@@ -1735,7 +1751,8 @@ static void drawRxSetRow(int row) {
   char t[40];
   int y = mBox.y + 56 + row * 46;
   g.fill(mBox.x + 16, y, mBox.w - 32 - 112, 40, C_CARD);
-  g.text(mBox.x + 18, y + 26, tr(RXS_NAME[row]), F_CAP, C_MUTED_FG);
+  if (rxsPage && row == 6) return;
+  g.text(mBox.x + 18, y + 26, tr(rxsPage ? RXS_EQ_NAME[row] : RXS_NAME[row]), F_CAP, C_MUTED_FG);
   rxsText(view.rx[i], row, t, sizeof(t));
   g.text(mBox.x + mBox.w - 16 - 116, y + 26, t, F_CAPB, C_FG, AL_R, 150);
 }
@@ -1747,6 +1764,9 @@ static uint32_t rxsSum() {   // что сейчас показано: измен
   uint32_t h = 2166136261u;
   auto mix = [&](uint32_t v) { h = (h ^ v) * 16777619u; };
   for (int k = 0; k < 6; k++) mix(r.par[k]);
+  for (int k = 0; k < 5; k++) mix(r.eq[k]);
+  mix(r.lowCut);
+  mix(r.hasEq);
   mix(r.stereo);
   mix(r.earTest);
   mix(r.online);
@@ -1757,12 +1777,17 @@ static void drawRxSetModal() {
   if (i < 0) return;
   mBox = Box{ 24, 14, 432, 452 };
   card(mBox, C_CARD, C_BORDER);
-  g.text(mBox.x + 20, mBox.y + 36, view.rx[i].name, F_H, C_FG, AL_L, 392);
+  if (!view.rx[i].hasEq) rxsPage = 0;   // приёмник до 2.45 эквалайзера не знает
+  g.text(mBox.x + 20, mBox.y + 36, view.rx[i].name, F_H, C_FG, AL_L, view.rx[i].hasEq ? 208 : 392);
+  if (view.rx[i].hasEq) {
+    drawRxSetButton(ID_RXS_PAGE, false);
+    hot[hotN++] = Hot{ rxsBox(ID_RXS_PAGE), ID_RXS_PAGE };
+  }
   for (int row = 0; row < RXS_N; row++) {
     drawRxSetRow(row);
     for (int id : { ID_RXS_MINUS + row, ID_RXS_PLUS + row }) {
       drawRxSetButton(id, false);
-      hot[hotN++] = Hot{ rxsBox(id), id };
+      if (!(rxsPage && row == 6)) hot[hotN++] = Hot{ rxsBox(id), id };
     }
   }
   for (int id : { ID_RXS_EAR, ID_RXS_OK }) {
@@ -2427,6 +2452,7 @@ static void activate(int id) {
         drawModal();
         break;
       case ID_RX_SET:   // настройки приёмника — отдельным окном поверх этого
+        rxsPage = 0;
         modal = M_RXSET;
         modalAgain = true;
         drawModal();
@@ -2447,6 +2473,24 @@ static void activate(int id) {
       out.rxCmd = RXC_EARTEST;
       out.rxArg = r.earTest ? 1 : 0;
       drawRxSetButton(ID_RXS_EAR, false);
+      rxsShown = rxsSum();
+    } else if (id == ID_RXS_PAGE) {   // другой лист того же окна
+      rxsPage = !rxsPage;
+      modalAgain = true;
+      drawModal();
+      modalAgain = false;
+    } else if (rxsPage && id >= ID_RXS_MINUS && id < ID_RXS_PLUS + RXS_N) {
+      View::Rx &r = view.rx[i];
+      bool plus = id >= ID_RXS_PLUS;
+      int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
+      if (row > 5) return;
+      int v = rxsStep(r, row, plus ? 1 : -1);
+      if (v == rxsGet(r, row)) return;
+      if (row < 5) r.eq[row] = (uint8_t)(v + 6);
+      else r.lowCut = (uint8_t)v;
+      out.rxCmd = RXC_EQ;
+      out.rxArg = (row << 4) | (row < 5 ? r.eq[row] : r.lowCut);
+      drawRxSetRow(row);
       rxsShown = rxsSum();
     } else if (id >= ID_RXS_MINUS && id < ID_RXS_PLUS + RXS_N) {
       View::Rx &r = view.rx[i];
@@ -3057,8 +3101,10 @@ static void frameBody(bool down, int tx, int ty) {
       needFull = true;
     } else if (pressId == ID_NONE && rxsSum() != rxsShown) {
       for (int row = 0; row < RXS_N; row++) drawRxSetRow(row);
-      drawRxSetButton(ID_RXS_MINUS + 2, false);
-      drawRxSetButton(ID_RXS_PLUS + 2, false);
+      if (!rxsPage) {
+        drawRxSetButton(ID_RXS_MINUS + 2, false);
+        drawRxSetButton(ID_RXS_PLUS + 2, false);
+      }
       drawRxSetButton(ID_RXS_EAR, false);
       rxsShown = rxsSum();
     }

@@ -144,6 +144,9 @@ static void rxOnCommand(const uint8_t *data, int len) {
     case CMD_EARTEST:
       if (rxPower != PW_STANDBY && !cfg.off) rxEarStart(c->arg != 0);
       break;
+    case CMD_EQ:
+      if (rxEqSet(c->arg >> 4, c->arg & 15)) rxSaveAsked = true;
+      break;
   }
 }
 
@@ -534,5 +537,8 @@ static void rxLinkTick() {
   for (uint8_t p = 0; p < RXP_COUNT; p++) in.p[p] = rxParamWire(p);
   in.earTest = rxEarTest ? 1 : 0;
   fwParts(in.spare[0], in.spare[1]);
+  in.spare[2] = (uint8_t)(cfg.rxEq[0] | (cfg.rxEq[1] << 4));
+  in.spare[3] = (uint8_t)(cfg.rxEq[2] | (cfg.rxEq[3] << 4));
+  in.spare[4] = (uint8_t)(cfg.rxEq[4] | (cfg.rxLowCut ? 0x10 : 0) | 0x80);   // старший бит — «эквалайзер есть»
   if (secSeal(SEC_RXINFO, in.echoEpoch, in.echoSeq, in.id, (const uint8_t *)&in, ST_CLEAR, in.p, INFO_BODY, in.tag)) esp_now_send(BCAST, (const uint8_t *)&in, sizeof(in));
 }

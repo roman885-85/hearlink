@@ -29,6 +29,8 @@ struct Peer {
   uint8_t par[RXP_COUNT];     // значения в том виде, как идут по радио (баланс — со сдвигом на 5)
   uint8_t earTest;            // у него идёт проверка наушников
   uint8_t fwMaj, fwMin;       // точная версия прошивки (приёмники с 2.42; у прежних — нули)
+  uint8_t eq[5], lowCut;      // эквалайзер приёмника (с 2.45); hasEq — сообщает ли
+  bool hasEq;
   uint8_t autoTries;          // сколько раз в это включение передатчик сам пытался его обновить
   uint32_t autoNeedMs;        // с какого времени он на связи, не спит и с прошивкой старее, чем у передатчика
   uint32_t parSetMs;          // когда настройку сменили с передатчика: 2,5 с после этого сообщения приёмника её не затирают
@@ -376,6 +378,12 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
       }
       peers[k].fwMaj = body[RXP_COUNT + 1];
       peers[k].fwMin = body[RXP_COUNT + 2];
+      peers[k].hasEq = body[RXP_COUNT + 5] & 0x80;
+      if (!peers[k].parSetMs || msSince(peers[k].parSetMs) > 2500) {
+        const uint8_t *e = body + RXP_COUNT + 3;
+        peers[k].eq[0] = e[0] & 15; peers[k].eq[1] = e[0] >> 4; peers[k].eq[2] = e[1] & 15; peers[k].eq[3] = e[1] >> 4;
+        peers[k].eq[4] = e[2] & 15; peers[k].lowCut = (e[2] >> 4) & 1;
+      }
       peers[k].hasInfo = true;
     }
     portEXIT_CRITICAL(&peerMux);

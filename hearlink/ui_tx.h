@@ -512,6 +512,9 @@ static void task(void *) {
         r.uptimeMin = p.uptimeMin;
         r.hasInfo = p.hasInfo;
         memcpy(r.par, p.par, sizeof(r.par));
+        memcpy(r.eq, p.eq, sizeof(r.eq));
+        r.lowCut = p.lowCut;
+        r.hasEq = p.hasEq;
         r.earTest = p.earTest;
       }
       portEXIT_CRITICAL(&peerMux);
@@ -785,6 +788,12 @@ static void task(void *) {
           case ui::RXC_SET:   // настройка «для слуха и удобства»: номер × 32 + значение
             peerCommand(p.id, CMD_SET, (uint8_t)o.rxArg);
             if ((o.rxArg >> 5) < RXP_COUNT) p.par[o.rxArg >> 5] = o.rxArg & 31;
+            p.parSetMs = now ? now : 1;
+            break;
+          case ui::RXC_EQ:   // эквалайзер: полоса × 16 + значение
+            peerCommand(p.id, CMD_EQ, (uint8_t)o.rxArg);
+            if ((o.rxArg >> 4) < 5) p.eq[o.rxArg >> 4] = o.rxArg & 15;
+            else p.lowCut = o.rxArg & 1;
             p.parSetMs = now ? now : 1;
             break;
           case ui::RXC_EARTEST:

@@ -293,6 +293,15 @@ int main() {
     { Box b = rxsBox(ID_RXS_EAR); tap(b.x + 20, b.y + 20); }          // проверка наушников
     printf("налаштування приймача: команда %d, аргумент %d\n", out.rxCmd, out.rxArg);
     save("18e-nalashtuvannya-pislya-natyskan");
+    view.rx[rxFind(rxSelId)].hasEq = true;
+    drawModal();
+    save("18f-nalashtuvannya-z-knopkoyu-ekvalaizera");
+    { Box b = rxsBox(ID_RXS_PAGE); tap(b.x + 20, b.y + 20); }
+    { Box b = rxsBox(ID_RXS_MINUS + 0); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }   // низ: −4 дБ
+    { Box b = rxsBox(ID_RXS_PLUS + 3); tap(b.x + 20, b.y + 20); }                              // 2,5 кГц: +2 дБ
+    save("18g-ekvalaizer");
+    { Box b = rxsBox(ID_RXS_PAGE); tap(b.x + 20, b.y + 20); }
+    save("18h-nazad-do-nalashtuvan");
     { Box b = rxsBox(ID_RXS_OK); tap(b.x + 20, b.y + 20); }
     save("18f-nazad-u-vikno-pryimacha");
     r.hasInfo = false;

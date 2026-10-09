@@ -156,6 +156,8 @@ static void settingsLoad() {
   if (cfg.rxLed > 3) cfg.rxLed = 2;
   if (cfg.rxLang > 2) cfg.rxLang = 0;
   if (cfg.autoUpd > 1) cfg.autoUpd = 1;
+  for (uint8_t &v : cfg.rxEq) if (v > 12) v = 6;
+  if (cfg.rxLowCut > 1) cfg.rxLowCut = 1;
   // До 2.40 «звук как есть» был шаг 12 (60 %), с 2.40 — шаг 20 (100 %). Чтобы после обновления приёмник звучал как до
   // него, шаг и предел сдвигаются на 8; всё, что стояло выше 60 % (там было усиление с ограничителем), становится 100 %.
   if (oldVolScale) {
@@ -983,9 +985,10 @@ static void command(String s) {
           }
           else if (rxParamSet((uint8_t)p, val)) settingsSave();
         }
-        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s\n",
+        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s; еквалайзер %d %d %d %d %d дБ, зріз низів %u\n",
                       cfg.rxClarity, cfg.rxBalance, cfg.rxVolMax, cfg.volume, cfg.volume ? 20 * log10f(rxVolumeGain(rxVolumeScaled(cfg.volume))) : -99.0f, cfg.rxView, cfg.rxLed, cfg.rxLang, uiLang ? "English" : "українська",
-                      rxEarTest ? "; ІДЕ ПЕРЕВІРКА НАВУШНИКІВ" : "");
+                      rxEarTest ? "; ІДЕ ПЕРЕВІРКА НАВУШНИКІВ" : "", (cfg.rxEq[0] - 6) * 2, (cfg.rxEq[1] - 6) * 2, (cfg.rxEq[2] - 6) * 2,
+                      (cfg.rxEq[3] - 6) * 2, (cfg.rxEq[4] - 6) * 2, cfg.rxLowCut);
       }
       return;
     case 'i':   // передатчик: настройка приёмнику — i<номер>=<значение>[@номер приёмника]; i9=1 / i9=0 — проверка наушников
@@ -999,6 +1002,11 @@ static void command(String s) {
           snprintf(idx, sizeof(idx), "%02X%02X%02X", peers[i].id[0], peers[i].id[1], peers[i].id[2]);
           if (who[0] && strcasecmp(who, idx)) continue;
           if (!peers[i].hasInfo) continue;   // понимают приёмники с версии 2.32 — они сообщают свои настройки
+          if (p >= 20 && p <= 25) {   // i20…i24=<−12…12 дБ> — полосы эквалайзера, i25=<0/1> — срез низов
+            if (!peers[i].hasEq) continue;
+            int v = p == 25 ? (val ? 1 : 0) : constrain(val / 2 + 6, 0, 12);
+            peerCommand(peers[i].id, CMD_EQ, (uint8_t)(((p - 20) << 4) | v));
+          } else
           if (p == 9) peerCommand(peers[i].id, CMD_EARTEST, val ? 1 : 0);
           else if (p >= 0 && p < RXP_COUNT) peerCommand(peers[i].id, CMD_SET, (uint8_t)((p << 5) | ((val + (p == RXP_BALANCE ? 5 : 0)) & 31)));
           Serial.printf("команду надіслано приймачу %s\n", idx);
