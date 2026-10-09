@@ -71,7 +71,8 @@ headphones), **«Перейменувати» (Rename)** (up to 32 letters), **�
 **Settings** of a receiver from the transmitter: audio output, speech clarity, balance, volume limit, screen view,
 LED, interface language, the button **«Перевірка навушників» (Headphone test)**. The **«Еквалайзер» (Equalizer)**
 button to the right of the name (receivers with 2.45+) opens the second sheet of the same window — the equalizer of
-this receiver: the same five bands and a low cut below 100 Hz (on by default in a receiver); the same button
+this receiver: the same five bands, a low cut below 100 Hz (on by default in a receiver) and, since 2.48, the
+**«Підсилення гучності» (Volume boost)** (0…+24 dB); the same button
 («Налаштування», Settings) goes back. This is how the sound is fitted to one person's hearing, while the input
 equalizer works for everybody at once.
 
@@ -189,6 +190,7 @@ was changed from the transmitter) and so on.
 | **«Мова» (Language)** | as transmitter / українська / English |
 | **«Чіткість» (Clarity)** | off / light (+4 dB) / medium (+8) / strong (+12) — a boost above 2 kHz, where the consonants are |
 | **«Баланс» (Balance)** | left +1…+5 / center / right +1…+5 (3 dB each); only with the «2 канали» (2 channels) output |
+| **«Підсилення» (Boost)** | off / +2…+24 dB — digital gain above “audio as it is” for a weak headphone amplifier. Quiet audio gets the whole boost, loud audio as much as fits below full scale (since 2.48) |
 | **«Межа гучн.» (Volume limit)** | 20…100 % — the loudness ceiling: the knob scale stays 0…100 %, but 100 % sounds like this limit (since 2.41) |
 | **«Навушники → тест» (Headphones → test)** | a tone alternately in the left and the right ear |
 | **«Зв'язок» (Link)** | signal in dBm, loss, buffer, a one-minute graph |

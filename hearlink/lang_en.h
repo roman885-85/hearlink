@@ -510,6 +510,8 @@ static const char *const LANG_EN[][2] = {
   { "Еквалайзер", "Equalizer" },
   { "Еквалайзер входу", "Input equalizer" },
   { "Блокування ручки", "Knob lock" },
+  { "Підсилення", "Boost" },
+  { "Підсилення гучності", "Volume boost" },
   { "меню", "menu" },
   { "усе", "all" },
   { "немає", "none" },

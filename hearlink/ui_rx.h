@@ -190,11 +190,11 @@ static void specUpdate() {
 // С версии 2.32 в начале списка — то, что нужно слушающему (владелец 07.10 выбрал из предложенного: вид главного экрана,
 // светодиод, язык, чёткость речи, баланс, предел громкости, проверка наушников, качество связи), дальше — служебное.
 // Те же шесть настроек меняются и с передатчика (окно приёмника → «Налаштування»); дверь у них одна — rxParamSet.
-enum { M_VIEW, M_LED, M_LANG, M_CLARITY, M_BALANCE, M_VOLMAX, M_EARTEST, M_LINK,
+enum { M_VIEW, M_LED, M_LANG, M_CLARITY, M_BALANCE, M_VOLMAX, M_BOOST, M_EARTEST, M_LINK,
        M_KIT, M_CHANNEL, M_DEPTH, M_OUTPUT, M_STEREO, M_SCREEN, M_FORGET, M_ABOUT, M_EXIT, M_COUNT };
-static const char *const MENU_NAME[M_COUNT] = { "Вигляд", "Світлодіод", "Мова", "Чіткість", "Баланс", "Межа гучн.", "Навушники", "Зв'язок",
+static const char *const MENU_NAME[M_COUNT] = { "Вигляд", "Світлодіод", "Мова", "Чіткість", "Баланс", "Межа гучн.", "Підсилення", "Навушники", "Зв'язок",
                                                 "Набір", "Канал", "Запас", "Вихід звуку", "Виводи", "Екран", "Забути набір", "Про пристрій", "Вийти" };
-static const uint8_t MENU_ICON[M_COUNT] = { 9, 10, 11, 12, 13, 14, 15, 16, 0, 1, 2, 3, 4, 5, 6, 7, 8 };   // значки — rxs::menuIcon
+static const uint8_t MENU_ICON[M_COUNT] = { 9, 10, 11, 12, 13, 14, 17, 15, 16, 0, 1, 2, 3, 4, 5, 6, 7, 8 };   // значки — rxs::menuIcon
 // какой пункт меню отвечает за настройку RXP_… (для оповещения «настройку сменили с передатчика»)
 static const uint8_t PARAM_ITEM[RXP_COUNT] = { M_CLARITY, M_BALANCE, M_VOLMAX, M_VIEW, M_LED, M_LANG };
 // «Забути набір»: стереть ключ набора — приёмник снова попросит доступ (для перехода к другому передатчику или
@@ -215,6 +215,10 @@ static void menuValue(int item, char *s, size_t n) {
       else snprintf(s, n, cfg.rxBalance < 0 ? tr("ліве +%d") : tr("праве +%d"), cfg.rxBalance < 0 ? -cfg.rxBalance : cfg.rxBalance);
       break;
     case M_VOLMAX: snprintf(s, n, "%u %%", cfg.rxVolMax * 5); break;
+    case M_BOOST:
+      if (cfg.rxBoost) snprintf(s, n, tr("%s%d дБ"), "+", cfg.rxBoost * 2);
+      else snprintf(s, n, "%s", tr("вимк."));
+      break;
     case M_EARTEST: snprintf(s, n, "%s", tr("тест")); break;
     case M_LINK:
       if (rLastRxMs && msSince(rLastRxMs) < 1200) snprintf(s, n, tr("%d дБм"), (int)rRssi);
@@ -251,6 +255,7 @@ static bool menuChange(int item, int d) {   // true — нужна переза�
       rxParamSet(RXP_VOLMAX, v < 4 ? 4 : v);
       break;
     }
+    case M_BOOST: rxParamSet(RXP_X_BOOST, cfg.rxBoost + d); break;   // слышно сразу
     case M_KIT: break;   // номер набора приёмник получает от передатчика (при подключении и вслед за его сменой) — здесь только показ
     case M_CHANNEL: {   // 0 — авто, 1…13
       int v = cfg.autoChannel ? 0 : cfg.channel;
@@ -326,7 +331,7 @@ static void uiTask(void *) {
   int parWas[RXP_COUNT];                   // настройки «для слуха и удобства», как были на прошлом кадре
   for (int p = 0; p < RXP_COUNT; p++) parWas[p] = rxParamGet(p);
   uint32_t limitSaidAt = 0, lockSaidAt = 0;
-  uint8_t lockWas = cfg.rxLock;
+  uint8_t lockWas = cfg.rxLock, boostWas = cfg.rxBoost;
   // стрелочные индикаторы и полоска уровня: уровень и пик каналов 0…1 с «ходом» стрелки (вверх быстро, вниз медленно)
   float vuLF = 0, vuRF = 0, vuLP = 0, vuRP = 0;
   uint32_t vuLPAt = 0, vuRPAt = 0;
@@ -565,6 +570,15 @@ static void uiTask(void *) {
         for (const char *c = rxName(); *c; c++) ns = ns * 33 + (uint8_t)*c;
         if (nameSum && ns != nameSum) say(tr("Нове ім'я приймача"));
         nameSum = ns;
+      }
+      if (cfg.rxBoost != boostWas) {   // усиление сменили (с передатчика — сказать; своей ручкой — и так видно)
+        if (screen != S_EDIT) {
+          char val[24], msg[44];
+          menuValue(M_BOOST, val, sizeof(val));
+          snprintf(msg, sizeof(msg), "%s: %s", tr(MENU_NAME[M_BOOST]), val);
+          say(msg);
+        }
+        boostWas = cfg.rxBoost;
       }
       if (cfg.rxLock != lockWas) {   // ручку заблокировали или освободили с передатчика
         say(cfg.rxLock ? tr("Заблоковано") : tr("Розблоковано"));

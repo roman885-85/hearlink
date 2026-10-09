@@ -276,6 +276,7 @@ int main() {
     View::Rx &r = view.rx[0];
     r.hasInfo = true;
     r.hasLock = true;
+    r.hasBoost = true;
     r.stereo = true;
     const uint8_t par[6] = { 2, 5 + 2, 14, 1, 2, 0 };   // чёткость «середня», баланс «праве +2», предел 70 %, стрелки, норма, как у передатчика
     memcpy(r.par, par, 6);
@@ -304,6 +305,8 @@ int main() {
     { Box b = rxsBox(ID_RXS_PAGE); tap(b.x + 20, b.y + 20); }
     { Box b = rxsBox(ID_RXS_MINUS + 0); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }   // низ: −4 дБ
     { Box b = rxsBox(ID_RXS_PLUS + 3); tap(b.x + 20, b.y + 20); }                              // 2,5 кГц: +2 дБ
+    { Box b = rxsBox(ID_RXS_PLUS + 6); for (int k = 0; k < 4; k++) tap(b.x + 20, b.y + 20); }   // усиление: +8 дБ
+    printf("усиление: команда %d, значение %d\n", out.rxCmd, out.rxArg);
     save("18g-ekvalaizer");
     { Box b = rxsBox(ID_RXS_PAGE); tap(b.x + 20, b.y + 20); }
     save("18h-nazad-do-nalashtuvan");

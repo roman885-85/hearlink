@@ -116,6 +116,8 @@ struct View {
     bool hasEq = false;
     uint8_t lock = 0;                                // блокировка ручки (с 2.46): 0 — нет, 1 — меню, 2 — громкость, 3 — всё
     bool hasLock = false;
+    uint8_t boost = 0;                               // усиление (с 2.48): 0…12 = 0…+24 дБ
+    bool hasBoost = false;
     bool earTest = false;   // у приёмника идёт проверка наушников
   } rx[RX_MAX];
   int rxN = 0;
@@ -1731,9 +1733,9 @@ constexpr int RXS_N = 8;
 static const char *const RXS_NAME[RXS_N] = { "Вихід звуку", "Чіткість мови", "Баланс", "Межа гучності", "Вигляд екрана", "Світлодіод", "Мова написів", "Блокування ручки" };
 // Окно в два листа: настройки и эквалайзер (с 2.45) — строки и кнопки «−/+» те же, меняется их смысл.
 static int rxsPage;   // 0 — настройки, 1 — эквалайзер: строки 0…4 — полосы, 5 — срез низов, 6 — пусто
-static const char *const RXS_EQ_NAME[6] = { "Низ, 125 Гц", "400 Гц", "1 кГц", "2,5 кГц", "Верх, 6 кГц", "Зріз низів, 100 Гц" };
+static const char *const RXS_EQ_NAME[7] = { "Низ, 125 Гц", "400 Гц", "1 кГц", "2,5 кГц", "Верх, 6 кГц", "Зріз низів, 100 Гц", "Підсилення гучності" };
 static int rxsGet(const View::Rx &r, int row) {   // значение строки числом
-  if (rxsPage) return row < 5 ? (int)r.eq[row] - 6 : row == 5 ? r.lowCut : 0;
+  if (rxsPage) return row < 5 ? (int)r.eq[row] - 6 : row == 5 ? r.lowCut : row == 6 ? r.boost : 0;
   if (row == 7) return r.lock;
   return row == 0 ? (r.stereo ? 1 : 0) : row == 2 ? (int)r.par[1] - 5 : r.par[row - 1];
 }
@@ -1741,7 +1743,10 @@ static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
   int v = rxsGet(r, row);
   if (rxsPage) {
     if (row < 5) snprintf(t, n, tr("%s%d дБ"), v > 0 ? "+" : "", v * 2);
-    else snprintf(t, n, "%s", row == 5 ? (v ? tr("увімкнено") : tr("вимкнено")) : "");
+    else if (row == 5) snprintf(t, n, "%s", v ? tr("увімкнено") : tr("вимкнено"));
+    else if (row == 6 && !r.hasBoost) snprintf(t, n, "—");
+    else if (row == 6 && v) snprintf(t, n, tr("%s%d дБ"), "+", v * 2);
+    else snprintf(t, n, "%s", row == 6 ? tr("вимкнено") : "");
     return;
   }
   switch (row) {
@@ -1763,7 +1768,7 @@ static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
 static int rxsStep(const View::Rx &r, int row, int d) {
   static const int8_t LO[RXS_N] = { 0, 0, -5, 4, 0, 0, 0, 0 }, HI[RXS_N] = { 1, 3, 5, 20, 2, 3, 2, 3 };
   int v = rxsGet(r, row) + d;
-  if (rxsPage) return row < 5 ? (v < -6 ? -6 : v > 6 ? 6 : v) : row == 5 ? (v & 1) : 0;
+  if (rxsPage) return row < 5 ? (v < -6 ? -6 : v > 6 ? 6 : v) : row == 5 ? (v & 1) : row == 6 ? (v < 0 ? 0 : v > 12 ? 12 : v) : 0;
   if (row == 0 || row == 4 || row == 6) return v < LO[row] ? HI[row] : v > HI[row] ? LO[row] : v;
   return v < LO[row] ? LO[row] : v > HI[row] ? HI[row] : v;
 }
@@ -1785,7 +1790,8 @@ static void drawRxSetButton(int id, bool pressed) {
   int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
   bool dead = i >= 0 && !rxsPage && ((row == 2 && !view.rx[i].stereo) ||   // баланс при одном канале не к чему приложить
                                      (row == 7 && !view.rx[i].hasLock));    // блокировку понимают приёмники с 2.46
-  if (rxsPage && row >= 6) return g.fill(b.x, b.y, b.w, b.h, C_CARD);   // на листе эквалайзера шесть строк
+  if (i >= 0 && rxsPage && row == 6 && !view.rx[i].hasBoost) dead = true;   // усиление понимают приёмники с 2.48
+  if (rxsPage && row >= 7) return g.fill(b.x, b.y, b.w, b.h, C_CARD);   // на листе эквалайзера семь строк
   card(b, pressed && !dead ? m2::Gfx::blend(C_SECONDARY, C_FG, 40) : C_SECONDARY, C_BORDER);
   uint16_t ink = dead ? C_BORDER : C_FG;
   g.box(b.x + b.w / 2 - 9, b.y + b.h / 2 - 2, 18, 4, 1, ink);   // знаки — фигурами
@@ -1797,7 +1803,7 @@ static void drawRxSetRow(int row) {
   char t[40];
   int y = mBox.y + 52 + row * 44;
   g.fill(mBox.x + 16, y, mBox.w - 32 - 112, 40, C_CARD);
-  if (rxsPage && row >= 6) return;
+  if (rxsPage && row >= 7) return;
   g.text(mBox.x + 18, y + 26, tr(rxsPage ? RXS_EQ_NAME[row] : RXS_NAME[row]), F_CAP, C_MUTED_FG);
   rxsText(view.rx[i], row, t, sizeof(t));
   g.text(mBox.x + mBox.w - 16 - 116, y + 26, t, F_CAPB, C_FG, AL_R, 150);
@@ -1855,6 +1861,8 @@ static uint32_t rxsSum() {   // что сейчас показано: измен
   mix(r.hasEq);
   mix(r.lock);
   mix(r.hasLock);
+  mix(r.boost);
+  mix(r.hasBoost);
   mix(r.stereo);
   mix(r.earTest);
   mix(r.online);
@@ -1875,7 +1883,7 @@ static void drawRxSetModal() {
     drawRxSetRow(row);
     for (int id : { ID_RXS_MINUS + row, ID_RXS_PLUS + row }) {
       drawRxSetButton(id, false);
-      if (!(rxsPage && row >= 6)) hot[hotN++] = Hot{ rxsBox(id), id };
+      if (!(rxsPage && row >= 7)) hot[hotN++] = Hot{ rxsBox(id), id };
     }
   }
   for (int id : { ID_RXS_EAR, ID_RXS_OK }) {
@@ -2608,13 +2616,19 @@ static void activate(int id) {
       View::Rx &r = view.rx[i];
       bool plus = id >= ID_RXS_PLUS;
       int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
-      if (row > 5) return;
+      if (row > 6 || (row == 6 && !r.hasBoost)) return;
       int v = rxsStep(r, row, plus ? 1 : -1);
       if (v == rxsGet(r, row)) return;
-      if (row < 5) r.eq[row] = (uint8_t)(v + 6);
-      else r.lowCut = (uint8_t)v;
-      out.rxCmd = RXC_EQ;
-      out.rxArg = (row << 4) | (row < 5 ? r.eq[row] : r.lowCut);
+      if (row == 6) {   // усиление идёт командой настройки (RXP_X_BOOST), а не эквалайзера
+        r.boost = (uint8_t)v;
+        out.rxCmd = RXC_SET;
+        out.rxArg = (7 << 5) | v;
+      } else {
+        if (row < 5) r.eq[row] = (uint8_t)(v + 6);
+        else r.lowCut = (uint8_t)v;
+        out.rxCmd = RXC_EQ;
+        out.rxArg = (row << 4) | (row < 5 ? r.eq[row] : r.lowCut);
+      }
       drawRxSetRow(row);
       rxsShown = rxsSum();
     } else if (id >= ID_RXS_MINUS && id < ID_RXS_PLUS + RXS_N) {

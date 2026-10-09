@@ -526,6 +526,8 @@ static void task(void *) {
         r.hasEq = p.hasEq;
         r.lock = p.lock;
         r.hasLock = p.hasInfo && (p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 46));
+        r.boost = p.boost > 12 ? 0 : p.boost;
+        r.hasBoost = p.hasInfo && (p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 48));
         r.earTest = p.earTest;
       }
       portEXIT_CRITICAL(&peerMux);
@@ -813,6 +815,7 @@ static void task(void *) {
             peerCommand(p.id, CMD_SET, (uint8_t)o.rxArg);
             if ((o.rxArg >> 5) < RXP_COUNT) p.par[o.rxArg >> 5] = o.rxArg & 31;
             else if ((o.rxArg >> 5) == RXP_X_LOCK) p.lock = o.rxArg & 3;
+            else if ((o.rxArg >> 5) == RXP_X_BOOST) p.boost = o.rxArg & 31;
             p.parSetMs = now ? now : 1;
             break;
           case ui::RXC_EQ:   // эквалайзер: полоса × 16 + значение

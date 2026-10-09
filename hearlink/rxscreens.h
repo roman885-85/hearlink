@@ -956,6 +956,14 @@ static void menuIcon(u8g2_t *g, int id, int x, int y) {   // значок 9×9, 
       u8g2_DrawLine(g, x + 2, y + 4, x + 5, y + 6);
       u8g2_DrawLine(g, x + 5, y + 6, x + 8, y + 1);
       break;
+    case 17:  // усиление: динамик и «плюс»
+      u8g2_DrawBox(g, x, y + 3, 2, 3);
+      u8g2_DrawLine(g, x + 2, y + 3, x + 4, y + 1);
+      u8g2_DrawLine(g, x + 2, y + 5, x + 4, y + 7);
+      u8g2_DrawVLine(g, x + 4, y + 1, 7);
+      u8g2_DrawHLine(g, x + 6, y + 4, 3);
+      u8g2_DrawVLine(g, x + 7, y + 3, 3);
+      break;
     default:  // назад: стрелка
       u8g2_DrawHLine(g, x + 1, y + 4, 7);
       u8g2_DrawLine(g, x + 1, y + 4, x + 4, y + 1);

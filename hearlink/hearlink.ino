@@ -162,6 +162,7 @@ static void settingsLoad() {
   for (uint8_t &v : cfg.txEq) if (v > 12) v = 6;
   if (cfg.txLowCut > 1) cfg.txLowCut = 0;
   if (cfg.rxLock > 3) cfg.rxLock = 0;
+  if (cfg.rxBoost > 12) cfg.rxBoost = 0;
   // До 2.40 «звук как есть» был шаг 12 (60 %), с 2.40 — шаг 20 (100 %). Чтобы после обновления приёмник звучал как до
   // него, шаг и предел сдвигаются на 8; всё, что стояло выше 60 % (там было усиление с ограничителем), становится 100 %.
   if (oldVolScale) {
@@ -828,6 +829,9 @@ static void command(String s) {
         int p = -1, val = 0;
         if (sscanf(arg.c_str(), "%d=%d", &p, &val) == 2) {
           if (p == 9) rxEarStart(val != 0);
+          else if (p == 10) {   // n10=<дБ 0…24> — усиление (с 2.48)
+            if (rxParamSet(RXP_X_BOOST, val / 2)) settingsSave();
+          }
           else if (p == 7) rxUiAsk = (uint8_t)val;   // n7=1 меню, n7=2 «Зв'язок», n7=3 главный экран — для замеров
           else if (p == 8) {   // n8=1 — как настроен вывод кнопки ручки; n8=<мс> — «нажать» её программно на столько миллисекунд
             if (val == 9) {   // n8=9 — «логический анализатор»: что на самом деле идёт на ЦАП по выводам BCK, LRCK и данных
@@ -993,9 +997,9 @@ static void command(String s) {
           }
           else if (rxParamSet((uint8_t)p, val)) settingsSave();
         }
-        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s; блокування %u; еквалайзер %d %d %d %d %d дБ, зріз низів %u; рівень до нього %.1f дБ, після %.1f дБ\n",
+        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s; підсилення +%u дБ (зараз %+.1f); блокування %u; еквалайзер %d %d %d %d %d дБ, зріз низів %u; рівень до нього %.1f дБ, після %.1f дБ\n",
                       cfg.rxClarity, cfg.rxBalance, cfg.rxVolMax, cfg.volume, cfg.volume ? 20 * log10f(rxVolumeGain(rxVolumeScaled(cfg.volume))) : -99.0f, cfg.rxView, cfg.rxLed, cfg.rxLang, uiLang ? "English" : "українська",
-                      rxEarTest ? "; ІДЕ ПЕРЕВІРКА НАВУШНИКІВ" : "", cfg.rxLock, (cfg.rxEq[0] - 6) * 2, (cfg.rxEq[1] - 6) * 2, (cfg.rxEq[2] - 6) * 2,
+                      rxEarTest ? "; ІДЕ ПЕРЕВІРКА НАВУШНИКІВ" : "", cfg.rxBoost * 2, 20 * log10f(rxBoostNow > 0.01f ? rxBoostNow : 0.01f), cfg.rxLock, (cfg.rxEq[0] - 6) * 2, (cfg.rxEq[1] - 6) * 2, (cfg.rxEq[2] - 6) * 2,
                       (cfg.rxEq[3] - 6) * 2, (cfg.rxEq[4] - 6) * 2, cfg.rxLowCut,
                       20 * log10f((rxEqPkIn + 1) / 32768.0f), 20 * log10f((rxEqPkOut + 1) / 32768.0f));
         rxEqPkIn = 0;
@@ -1031,6 +1035,9 @@ static void command(String s) {
           snprintf(idx, sizeof(idx), "%02X%02X%02X", peers[i].id[0], peers[i].id[1], peers[i].id[2]);
           if (who[0] && strcasecmp(who, idx)) continue;
           if (!peers[i].hasInfo) continue;   // понимают приёмники с версии 2.32 — они сообщают свои настройки
+          if (p == 7) {   // i7=<дБ 0…24> — усиление приёмника (с 2.48)
+            peerCommand(peers[i].id, CMD_SET, (uint8_t)((RXP_X_BOOST << 5) | constrain(val / 2, 0, 12)));
+          } else
           if (p == 6) {   // i6=<0…3> — блокировка ручки: 0 нет, 1 меню, 2 громкость, 3 всё (приёмники с 2.46)
             peerCommand(peers[i].id, CMD_SET, (uint8_t)((RXP_X_LOCK << 5) | (val & 3)));
           } else

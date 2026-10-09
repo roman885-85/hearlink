@@ -1,6 +1,14 @@
 # Changelog / Історія версій
 
 ## 2.48 — 2026-10-09 (not yet released / ще не випущено)
+- EN: **receiver volume boost** (menu “Boost”, or from the transmitter: receiver window → “Settings” → “Equalizer” →
+  “Volume boost”): 0…+24 dB of digital gain above “audio as it is”, for a weak headphone amplifier. The boost only
+  uses the room left below full scale: quiet audio gets all of it, loud audio as much as fits, so it does not bring
+  back the “sagging” of the old volume scale. Port: `i7=<dB>[@id]`, on the receiver `n10=<dB>`.
+- UK: **підсилення гучності приймача** (меню «Підсилення» або з передавача: вікно приймача → «Налаштування» →
+  «Еквалайзер» → «Підсилення гучності»): 0…+24 дБ цифрового підсилення понад «звук як є» — для слабкого підсилювача
+  навушників. Підсилення займає лише місце, що лишилося до повної шкали: тихий звук отримує його все, гучний —
+  скільки вміщається, тож «завалів» старої шкали гучності воно не повертає. Порт: `i7=<дБ>[@номер]`, на приймачі `n10=<дБ>`.
 - EN: settings are written to flash in a pause of the sound (transmitter: 0.15 s quieter than −46 dB on air;
   receiver: the received sound quieter than −40 dB), waiting no longer than 8 s. A flash write stops the audio input
   for 8–120 ms — measured: 438 packets instead of 500 in the second of the write. The receiver list (`P`) also shows

@@ -35,6 +35,7 @@ static int rxParamGet(uint8_t p) {
     case RXP_LED: return cfg.rxLed;
     case RXP_LANG: return cfg.rxLang;
     case RXP_X_LOCK: return cfg.rxLock;
+    case RXP_X_BOOST: return cfg.rxBoost;
   }
   return 0;
 }
@@ -53,6 +54,7 @@ static bool rxParamSet(uint8_t p, int v) {   // значение приводи�
       rxLangApply();
       break;
     case RXP_X_LOCK: cfg.rxLock = lim(v, 0, 3); break;
+    case RXP_X_BOOST: cfg.rxBoost = lim(v, 0, 12); break;
     default: return false;
   }
   return true;
@@ -546,6 +548,7 @@ static void rxLinkTick() {
   for (uint8_t p = 0; p < RXP_COUNT; p++) in.p[p] = rxParamWire(p);
   in.earTest = rxEarTest ? 1 : 0;
   fwParts(in.spare[0], in.spare[1]);
+  in.spare[0] = (uint8_t)((in.spare[0] & 15) | ((cfg.rxBoost > 12 ? 0 : cfg.rxBoost) << 4));   // версия и усиление
   in.spare[2] = (uint8_t)(cfg.rxEq[0] | (cfg.rxEq[1] << 4));
   in.spare[3] = (uint8_t)(cfg.rxEq[2] | (cfg.rxEq[3] << 4));
   in.spare[4] = (uint8_t)(cfg.rxEq[4] | (cfg.rxLowCut ? 0x10 : 0) | ((cfg.rxLock & 3) << 5) | 0x80);   // старший бит — «эквалайзер есть»

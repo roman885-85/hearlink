@@ -62,6 +62,7 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `N<name>` | give a name |
 | `X` | output check by ear (five states of 6 s each) |
 | `i<no.>=<value>[@number]` | settings: 0 clarity 0–3, 1 balance −5…5, 2 volume limit 1–20, 3 view 0–2, 4 LED 0–3, 5 language 0–2; `i9=1` / `i9=0` — headphone test. Example: `i0=2@884A94` |
+| `i7=<dB 0…24>[@number]` | digital boost of a receiver (on the receiver itself — `n10=<dB>`); the `n7=3` reply shows “boost +N dB (now …)” |
 | `i6=<0…3>[@number]` | receiver knob lock: 0 none, 1 menu, 2 volume, 3 all (on the receiver itself — `n6=<0…3>`) |
 | `i20…i24=<dB>[@number]`, `i25=<0/1>[@number]` | receiver equalizer: bands 125 Hz, 400 Hz, 1 kHz, 2.5 kHz, 6 kHz (−12…12 dB) and the low cut; the state and the level before/after are in the `n7=3` reply |
 | `e`, `e<0…4>=<dB>`, `e5=<0/1>` | transmitter input equalizer: show / band / low cut; `e9=1` — probe: apply it to the 1 kHz tone too (for measuring) |
