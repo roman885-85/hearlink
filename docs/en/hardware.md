@@ -88,7 +88,10 @@ easy to find by name: “ESP32-4848S040”, “SH1106 1.3 OLED EC11”, “MAX97
 
 The module has only three free pins: IO1, IO2, IO40 (on the H1 connector they are labeled L1–L3; their order on the
 connector is found with the serial command `H`). When the PCM1808 is in use, the serial output (TXD) is taken by the
-ADC clock — the transmitter prints nothing to the port but still accepts commands.
+ADC clock — the transmitter prints nothing to the port but still accepts commands. Since 2.56 the clock is put on this pin only while the
+PCM1808 input is actually on air: with the test sound or a card file on air the port works as usual (details at the
+top of [“Serial commands”](commands.md)). The built-in ADC is only for checks without an external ADC: with it the
+transmitter's radio stalls for 0.2 s now and then (the built-in ADC and the radio share hardware in the chip).
 
 ### Transmitter on a plain ESP32-S3 board (no display)
 

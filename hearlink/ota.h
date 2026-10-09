@@ -556,6 +556,11 @@ static void otaTxPacket(uint8_t kind, uint32_t n, const uint8_t *body, size_t bl
   memcpy(b, body, bl);
   if (!secSeal(SEC_OTA, h->session, h->n, NULL, pkt, OTA_AAD, b, bl, b + bl)) return;
   for (int i = 0; i < 60 && (int32_t)(rPut - rGot) >= 5; i++) vTaskDelay(1);   // не быстрее, чем радио отдаёт в эфир
+  static uint8_t breath;   // и раз в 16 пакетов — пауза в любом случае: когда эфир отдаёт быстро, очередь не копится,
+  if (++breath >= 16) {    // паузы выше не случаются, и задача раздачи держала ядро дольше 5 с — сторож ронял плату (09.10)
+    breath = 0;
+    vTaskDelay(1);
+  }
   radioSend(pkt, sizeof(OtaHdr) + bl + SEC_TAG);
 }
 static void otaTxAnnounce() {

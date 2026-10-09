@@ -16,6 +16,8 @@
 
 | What you see | Cause | What to do |
 |---|---|---|
+| the transmitter port is silent or pours out “garbage”, no replies to commands | mixer audio from the PCM1808 input is on air: its master clock occupies TXD, the pin the transmitter prints with | switch the test sound on («Перевірка» (Test) or `g5` blind) — the port comes back (since 2.56); or switch the input to the built-in ADC (`a0`) — for debugging only |
+| the sound in the receivers drops for fractions of a second, “no signal” flashes | the transmitter input is the built-in ADC: with it the transmitter radio stalls now and then and is revived in 0.2 s (the port prints “# РАДІО СТАЛО…”) | use the PCM1808 input («Звук» (Sound) → «Вхід» (Input)); with the built-in ADC this is unavoidable |
 | «ТИХО НА ВХОДІ» (INPUT SILENT), the level is at zero | no signal from the mixer; the wrong output | check the cable and the level; «Перевірка» (Test) → if the receivers hear the test sound, the problem is in the input |
 | «ПЕРЕВАНТАЖЕННЯ» (OVERLOAD), on the receivers «Гучно на вході!» (Input too loud!) | the level from the mixer is too high | reduce it on the mixer or set «Підсилення входу» (Input gain) to a negative value |
 | 50 Hz hum | a ground loop between the mixer and the power supply | a 3.5 mm isolator; power from the same extension cord as the mixer |

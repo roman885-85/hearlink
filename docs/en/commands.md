@@ -6,6 +6,16 @@ USB port, **115200 baud**, a command is a line terminated by a newline. The firs
 the argument with no space (`c7`, `V12`). Replies are in Ukrainian. A receiver is silent on the port until something
 arrives from the port; after the first command it prints a report every second.
 
+> **The transmitter port and the PCM1808.** The PCM1808 master clock goes out through TXD (IO43) — the very pin the
+> transmitter prints to the port with. Since 2.56 the clock is put on the pin only while the PCM1808 input is actually
+> on air. So:
+> — with **the test sound or a card file** on air the port works fully, the input may stay PCM1808;
+> — with **mixer audio through the PCM1808** on air the transmitter prints nothing (it accepts commands “blind”). To
+> get replies and reports meanwhile, switch the test sound on (main page, «Перевірка» (Test), or `g5`) or switch the
+> input to the built-in ADC (tab «Звук» (Sound) → «Вхід» (Input), or `a0`). With the built-in ADC the transmitter's
+> radio stalls for 0.2 s now and then — it is for debugging only, not for real work.
+> Before 2.56 the port was silent whenever the input was the PCM1808. Flashing over the cable works with either input.
+
 From a computer: `python3 tools/port.py ПОРТ СЕКУНД [command …]` — send commands and show the replies;
 `python3 tools/txlog.py ПОРТ СЕКУНД [second:command …]` — record all output with timestamps and send commands at
 the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port name and the number of seconds.)
@@ -48,8 +58,9 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `D` | memory card status |
 | `Z1` / `Z0` / `Z` | recording to the card: start / stop / list; `Z2`, `Z3`, `Zv<file>` — a test pattern and its verification |
 | `F…` | files: `Fl<folder>` list, `Fi<file>` info, `Fp<file>` on air, `Fs` stop, `Fm<folder>` create, `Fd<path>` delete, `Fc<file>\|<folder>` copy, `F` — what is on air |
-| `Q` | the radio "black box"; `Q0…Q3` — up to which step to revive; `Q7 Q8 Q9 Q6` — perform a step on a healthy radio |
+| `Q` | the radio "black box"; `Q0…Q3` — up to which step to revive (an experiment only: the limit expires by itself after 60 s, or after 5 s without air); `Q7 Q8 Q9 Q6` — perform a step on a healthy radio; `Q10` — an imitated stalled driver; `Qn` — what the radio hears (noise level); `Qp<bits>` — radio protocol experiment (1 b, 2 g, 4 n, 8 LR; `Qp15` — as usual). `Q` also prints measurements: gaps between sends, the path of a lone packet, frame processing time by stages |
 | `Y1`/`Y0`, `Y3`/`Y4`, `Y5…Y8` | experiments with display frame output |
+| `M8` | full-screen warning “cable update — the screen goes dark for a minute” (25 s or until the board is reset) |
 | `Y9`, `Y10`/`Y11` | knock the display driver out of its buffer order on purpose; put frame portions where the driver says (as before 2.49) / the firmware's own way |
 
 ### Receivers from the transmitter

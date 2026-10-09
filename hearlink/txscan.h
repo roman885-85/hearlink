@@ -80,6 +80,7 @@ static volatile uint16_t hopWaitMs;          // причина: сколько �
 static volatile uint8_t hopSecs;             //          и сколько секунд из последних восьми были плохими
 static volatile uint32_t hopAtMs, hopSeq;    // когда; номер события (экран показывает сообщение, когда номер сменился)
 static volatile bool hopForce;               // с порта попросили перейти сейчас (проверка без настоящего затора)
+static volatile bool hopStall;               // последний уход — из-за того, что радио на канале вставало (а не из-за ожидания)
 static volatile uint32_t hopQuietUntil;      // до этого времени новых попыток не делать
 static volatile bool scanSurvey;             // идущий поиск — только замер (при включении): канал не менять
 static uint32_t chBadUntil[13];              // с этого канала ушли из-за затора — до этого времени его не выбирать
@@ -124,8 +125,24 @@ static void hopTick(uint32_t airMaxUs, uint32_t thinned, uint32_t skipped, uint3
     n += waitMs[i] != 0;
     if (waitMs[i] > worst) worst = waitMs[i];
   }
+  // Радио дважды за пять минут вставало на одном канале — канал для него плохой: 09.10 на занятом канале 6 оно
+  // вставало каждые 1–2 минуты, на свободных 7 и 10 — раз за 19 минут. Уходим, как при заторе (когда радио уже ожило).
+  static uint32_t deathsSeen, deathMs;
+  static uint8_t deathCh;
+  static bool stallHop;
+  if (bbDeaths != deathsSeen) {
+    deathsSeen = bbDeaths;
+    if (deathMs && now - deathMs < 300000 && deathCh == cfg.channel && cfg.autoHop) stallHop = true;
+    deathMs = now ? now : 1;
+    deathCh = cfg.channel;
+  }
   bool force = hopForce;
   hopForce = false;
+  bool byStall = false;
+  if (stallHop && !rReviveStep && msSince(rLastDoneMs) < 100 && now > 30000) {
+    stallHop = false;
+    force = byStall = true;
+  }
   if (txHopDone) {   // переход без паузы сделан задачей передачи: записать канал, сказать в порт и на экран
     txHopDone = false;
     hopTo = cfg.channel;
@@ -135,7 +152,11 @@ static void hopTick(uint32_t airMaxUs, uint32_t thinned, uint32_t skipped, uint3
     settingsSave();
     Serial.printf("канал змінено без паузи: %u → %u (за виміром зайнятість була %u %%, там %u %%)\n", hopFrom, hopTo, scanBusy[hopFrom - 1], scanBusy[hopTo - 1]);
   }
-  if (scanRunning || txHold || txPause || txHopCh) {
+  // Радио встало (драйвер молчит, отправки отклоняются) — это не затор: его оживляет radioSend, а уходить с канала
+  // незачем и некуда. 09.10 передатчик со вставшим радио девять минут «скакал по каналам» (7 → 11 → 3), объявляя
+  // переходы в эфир, которого не было, и каждый раз записывал новый канал в настройки.
+  bool dead = rReviveStep || (refused && msSince(rLastDoneMs) > 300);
+  if (scanRunning || txHold || txPause || txHopCh || dead) {
     // Эфир стоит не из-за затора (замер каналов, выключение, раздача прошивки приёмникам): секунды этого времени
     // «плохими» не считать. 07.10 после раздачи прошивки передатчик тут же «ушёл с занятого канала» — затора не было.
     memset(waitMs, 0, sizeof(waitMs));
@@ -145,14 +166,16 @@ static void hopTick(uint32_t airMaxUs, uint32_t thinned, uint32_t skipped, uint3
   if (!force && (!cfg.autoHop || n < 5 || now < 30000 || (int32_t)(now - hopQuietUntil) < 0)) return;
   hopFrom = cfg.channel;
   hopTo = cfg.channel;
-  hopWaitMs = worst;
+  hopWaitMs = byStall ? 1 : worst;   // (0 экран понимает как «проверка с порта»)
   hopSecs = n;
+  hopStall = byStall;
   memset(waitMs, 0, sizeof(waitMs));
   chBadUntil[cfg.channel - 1] = (now + 600000) ? now + 600000 : 1;   // сюда десять минут не возвращаться
   int pick = scanDone ? hopPick() : 0;
   if (pick) {   // есть замер — переходим без паузы
     hopQuietUntil = now + 20000;
-    Serial.printf("ЗАТОР на каналі %u: %d поганих секунд із 8, пакети чекали до %d мс — переходжу на канал %d без паузи\n", cfg.channel, n, worst, pick);
+    if (byStall) Serial.printf("РАДІО ДВІЧІ СТАВАЛО на каналі %u за п'ять хвилин — переходжу на канал %d без паузи\n", cfg.channel, pick);
+    else Serial.printf("ЗАТОР на каналі %u: %d поганих секунд із 8, пакети чекали до %d мс — переходжу на канал %d без паузи\n", cfg.channel, n, worst, pick);
     txHopCh = pick;
     return;
   }
@@ -161,7 +184,8 @@ static void hopTick(uint32_t airMaxUs, uint32_t thinned, uint32_t skipped, uint3
   hopSeq = hopSeq + 1;
   hopQuietUntil = now + 180000;   // если перейдём — сократится до полутора минут (см. scanTask)
   memset(chBadUntil, 0, sizeof(chBadUntil));
-  Serial.printf("ЗАТОР на каналі %u: %d поганих секунд із 8, пакети чекали до %d мс — шукаю вільніший канал\n", cfg.channel, n, worst);
+  if (byStall) Serial.printf("РАДІО ДВІЧІ СТАВАЛО на каналі %u за п'ять хвилин — шукаю вільніший канал\n", cfg.channel);
+  else Serial.printf("ЗАТОР на каналі %u: %d поганих секунд із 8, пакети чекали до %d мс — шукаю вільніший канал\n", cfg.channel, n, worst);
   scanAuto = true;
   scanStart();
 }

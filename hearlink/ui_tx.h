@@ -236,9 +236,9 @@ static void report() {
     Serial.printf("  у русі: порцій %u, сер. %u мкс, найдовша %u мкс, довших за крок розгортки %u, навздогін %u; у спокої з минулого звіту: довших за крок %u, навздогін %u; спосіб %u\n",
                   (unsigned)lcdSlFills, (unsigned)(lcdSlFills ? lcdSlSumUs / lcdSlFills : 0), (unsigned)lcdSlMaxUs, (unsigned)lcdSlOver, (unsigned)lcdSlChase,
                   (unsigned)lcdIdleOver, (unsigned)lcdIdleChase, lcdSlideMode);
-    Serial.printf("  черга буферів: драйвер збивався %u разів (зараз %s), порцій він велів покласти не в той буфер %u; покладено в буфер, що саме передається, %u; буфер вибирає %s\n",
-                  (unsigned)lcdBbFlips, lcdBbFlipped ? "ЗБИТИЙ" : "у черзі", (unsigned)lcdBbWrong, (unsigned)lcdBbHit,
-                  lcdBbTrustDriver ? "ДРАЙВЕР (дослід Y10)" : !lcdBb[1] ? "драйвер (свій вивід не запущено)" : "прошивка — за місцем порції");
+    // (каждая печать — одной строкой: проверка перевода tools/make_lang.py пропускает только строки с Serial.print)
+    Serial.printf("  черга буферів: драйвер збивався %u разів (зараз %s), порцій він велів покласти не в той буфер %u; ", (unsigned)lcdBbFlips, lcdBbFlipped ? "ЗБИТИЙ" : "у черзі", (unsigned)lcdBbWrong);
+    Serial.printf("покладено в буфер, що саме передається, %u; буфер вибирає %s\n", (unsigned)lcdBbHit, lcdBbTrustDriver ? "ДРАЙВЕР (дослід Y10)" : !lcdBb[1] ? "драйвер (свій вивід не запущено)" : "прошивка — за місцем порції");
     lcdIdleOver = 0;
     lcdIdleChase = 0;
     lf = f;
@@ -318,7 +318,7 @@ static void task(void *) {
   lcdBacklight(cfg.brightness);
   splashShownMs = splashMs;
   txHold = false;   // заставку сменило меню — теперь передача
-  if (updatedBoot) {
+  if (updatedBoot || fwChangedBoot) {
     static char ut[64];
     snprintf(ut, sizeof(ut), tr("Передавач оновлено: версія %s"), FW_VERSION);
     ui::toast(ut);
@@ -327,6 +327,7 @@ static void task(void *) {
 
   float shown = -60, hold = -60, light = cfg.brightness;
   uint32_t holdUntil = 0, lastLoud = millis(), lastTouch = millis(), saveAt = 0, lastSec = 0;
+  uint32_t userTouchMs = 0;   // настоящее касание (lastTouch двигают и сообщения, которым нужен непогашенный экран)
   uint32_t sentPrev = 0;
   bool asleep = false, swallow = false;
   TickType_t tick = xTaskGetTickCount();
@@ -352,6 +353,7 @@ static void task(void *) {
     v.hopTo = hopTo;
     v.hopSecs = hopSecs;
     v.hopWaitMs = hopWaitMs;
+    v.hopStall = hopStall;
     v.hopAgoS = hopAtMs ? (now - hopAtMs) / 1000 : 0;
     ui::stereoNow = txStNow;
     {   // названия мелодий для списка — один раз, когда раздел со звуками прочитан
@@ -540,6 +542,32 @@ static void task(void *) {
         if (ui::out.otaAuto < 0) ov.autoUpd = cfg.autoUpd;
         uint8_t st = otaTx.stage;
         if (st != OT_IDLE || ov.stage != 1) ov.stage = st;   // «1» ставит сама кнопка «Почати» — до ответа задачи
+        // Передатчик пишет прошивку в себя или перезапускается после записи: крупный экран «ОНОВЛЕННЯ ПРОШИВКИ —
+        // НЕ ВИМИКАЙТЕ ЖИВЛЕННЯ» обязан быть на виду всегда. До 2.51 его рисовало только открытое окно «Оновлення»:
+        // при запуске с порта (M2) или закрытом окне передатчик писал себя молча, с пригашенным экраном — владелец
+        // 09.10: «при обновлении экран передатчика черный и не сообщает об обновлении, как это было сделано ранее».
+        if ((st == OT_SELF || st == OT_RESTART) && ui::modal != ui::M_OTA) {
+          ui::modal = ui::M_OTA;
+          ui::drawModal();
+        }
+        if (st == OT_SELF || st == OT_RESTART || (st >= OT_PREP && st <= OT_WRITE)) lastTouch = now;   // идёт обновление — экран не гасить
+        // Команда M8 с компьютера: сейчас зальют по кабелю — предупреждение на весь экран, пока плату не сбросят.
+        // Не сбросили за 25 с — вернуть меню.
+        static bool cableShown;
+        if (cableNoteMs && msSince(cableNoteMs, now) < 25000) {
+          ov.stage = 13;
+          lastTouch = now;   // пригашенный экран — на полную яркость
+          if (!cableShown || ui::modal != ui::M_OTA) {
+            cableShown = true;
+            ui::modal = ui::M_OTA;
+            ui::drawModal();
+          }
+        } else if (cableShown) {
+          cableShown = false;
+          cableNoteMs = 0;
+          ui::modal = ui::M_NONE;
+          ui::drawAll();
+        }
         ov.secs = otaTxActive() ? (now - otaTx.startMs) / 1000 : (otaTx.endMs - otaTx.startMs) / 1000;
         int k = 0, more = 0, minPct = 101;
         OtaCount c = otaTxCount(st == OT_WRITE || st >= OT_DONE ? 12000 : 8000);
@@ -583,7 +611,37 @@ static void task(void *) {
           ui::drawModal();
         }
         static uint8_t stWas = OT_IDLE;   // закончилось, а окно закрыто — сказать итог сообщением
+        // Окно, открытое самим передатчиком, он сам и закрывает через 15 с после конца (итог — сообщением), если его
+        // никто не трогал: передатчик без присмотра не должен остаться с окном поверх главной страницы.
+        static bool otaAutoOpen;
+        static uint32_t otaOpenMs, otaEndMs;
+        if (otaAutoOpen) {
+          if (ui::modal != ui::M_OTA || (userTouchMs && (int32_t)(userTouchMs - otaOpenMs) > 0)) otaAutoOpen = false;
+          else if (st >= OT_DONE && st <= OT_ERROR) {
+            if (!otaEndMs) otaEndMs = now ? now : 1;
+            else if (now - otaEndMs > 15000) {
+              otaAutoOpen = false;
+              ui::modal = ui::M_NONE;
+              ui::drawAll();
+              char t[96];
+              if (st == OT_DONE) snprintf(t, sizeof(t), tr("Оновлення приймачів: оновлено %d, не вдалося %d"), c.done, c.fail + c.lost);
+              else snprintf(t, sizeof(t), "%s", st == OT_NOBODY ? tr("Оновлення приймачів: оновлювати нікого") : tr("Оновлення приймачів не завершено"));
+              ui::toast(t);
+            }
+          }
+        }
         if (st != stWas) {
+          // Началось само (автообновление приёмника со старой прошивкой), а окно закрыто: сказать и об этом. До 2.50
+          // передатчик раздавал прошивку молча — в приёмнике на две минуты пропадал звук, а экран ничего не объяснял.
+          if (st >= OT_PREP && st <= OT_SEND && stWas != OT_PREP && stWas != OT_ANNOUNCE && stWas != OT_SEND && ui::modal != ui::M_OTA) {
+            if (ui::modal == ui::M_NONE) {   // экран свободен — показать окно «Оновлення» с ходом по каждому приёмнику
+              ui::modal = ui::M_OTA;
+              ui::drawModal();
+              otaAutoOpen = true;
+              otaOpenMs = now;
+              otaEndMs = 0;
+            } else ui::toast2(tr("Оновлюю прошивку приймачів"), tr("близько хвилини — звук повернеться сам"), 8000);
+          }
           if (st >= OT_DONE && st <= OT_ERROR && stWas >= OT_PREP && stWas <= OT_WRITE && ui::modal != ui::M_OTA) {
             char t[96];
             if (st == OT_DONE) snprintf(t, sizeof(t), tr("Оновлення приймачів: оновлено %d, не вдалося %d"), c.done, c.fail + c.lost);
@@ -646,6 +704,7 @@ static void task(void *) {
         if (down) {
           if (asleep && !was) swallow = true;   // первое касание только будит экран
           lastTouch = now;
+          userTouchMs = now ? now : 1;
           if (lastX != tx || lastY != ty) {
             lastX = tx;
             lastY = ty;

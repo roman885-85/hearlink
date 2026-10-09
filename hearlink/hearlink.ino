@@ -49,6 +49,12 @@
 //   Ux…          — передатчик: «касание» экрана без пальца: Ux<x>,<y>,<мс>[,<сдвиг>] или серия
 //                  Ux<пауза мс>:<x>,<y>,<мс>;<x>,<y>,<мс>;…  (проверка клавиатуры: скорость, уход пальца при отрыве)
 //   G1 / G0 / G  — передатчик: отладка по радио; «@884A94 ?» — команда другому устройству набора
+extern "C" {   // закрытая библиотека радиочасти: только чтение её показаний (опыты, команда Qn)
+int phy_get_noise_floor(void);
+int read_hw_noisefloor(void);
+uint8_t phy_get_cca(void);
+uint32_t phy_get_cca_cnt(uint32_t *out);
+}
 #include "soc/gpio_struct.h"   // для проверки настройки вывода кнопки (команда n8)
 #include "hal/gpio_ll.h"       // сброс прерываний выводов при запуске
 #include "driver/gpio.h"
@@ -126,6 +132,13 @@ static void settingsLoad() {
     }
   }
   if (cfg.channel < 1 || cfg.channel > 13) cfg.channel = 6;
+  {   // первая загрузка с другой версией прошивки — сказать на экране «оновлено» (после заливки по кабелю тоже)
+    String seen = prefs.getString("fwseen", "");
+    if (seen != FW_VERSION) {
+      fwChangedBoot = seen.length() > 0;
+      prefs.putString("fwseen", FW_VERSION);
+    }
+  }
   cfg.name[sizeof(cfg.name) - 1] = 0;   // имена, записанные до 2.19, могли кончаться половиной буквы (ошибка стирания
   cfg.nameLong[sizeof(cfg.nameLong) - 1] = 0;   // на клавиатуре передатчика) — обрывки убрать
   cfg.srcName[sizeof(cfg.srcName) - 1] = 0;
@@ -509,6 +522,45 @@ static void bbPrint(bool live) {
   if (!t) return;
   Serial.printf("радіо: ставало %u разів, оживлено без перезапуску плати %u, швидких перезапусків плати %u; оживляти до ступеня %u, починати з %u\n",
                 (unsigned)bbDeaths, (unsigned)rRevived, (unsigned)quickBootCount, rReviveMax, rReviveFrom);
+  Serial.printf("надсилання: %s; у своїй черзі зараз %u, пакет у драйвера: %s; (старий спосіб) надсилань поверх попереднього пакета %u\n", rSerial && rq ? "по одному" : "як до 2.52",
+                (unsigned)(rqHead - rqTail), rqInFlight ? "так" : "ні", (unsigned)rBusySends);
+  {
+    static uint32_t g0[4], bs0, sn0, ss0;
+    uint32_t g[4], bs = rBusySends, sn = rSoloN, ss = rSoloSumUs, mx = rSoloMaxUs, tot = 0;
+    rSoloMaxUs = 0;
+    for (int i = 0; i < 4; i++) {
+      g[i] = rGapHist[i] - g0[i];
+      g0[i] += g[i];
+      tot += g[i];
+    }
+    if (tot)
+      Serial.printf("заміри з минулого Q: проміжки між надсиланнями <1 мс %u %%, 1–1,6 мс %u %%, 1,6–2,4 мс %u %%, довші %u %%; поверх попереднього %u %%; пакет «наодинці» (драйвер був вільний): %u шт., сер. %u мкс, найдовше %u мкс\n",
+                    (unsigned)(g[0] * 100 / tot), (unsigned)(g[1] * 100 / tot), (unsigned)(g[2] * 100 / tot), (unsigned)(g[3] * 100 / tot), (unsigned)((bs - bs0) * 100 / tot),
+                    (unsigned)(sn - sn0), sn != sn0 ? (unsigned)((ss - ss0) / (sn - sn0)) : 0, (unsigned)mx);
+    bs0 = bs;
+    sn0 = sn;
+    ss0 = ss;
+    static uint32_t pn0, ps0, po0;
+    uint32_t pn = txProcN, ps = txProcSumUs, po = txProcOver, pm = txProcMaxUs;
+    txProcMaxUs = 0;
+    if (pn != pn0)
+      Serial.printf("обробка кадру задачею передачі з минулого Q: сер. %u мкс, найдовше %u мкс, довших за 2000 мкс %u із %u; перевантажень (задача сама віддала ядро) від запуску %u\n",
+                    (unsigned)((ps - ps0) / (pn - pn0)), (unsigned)pm, (unsigned)(po - po0), (unsigned)(pn - pn0), (unsigned)txYields);
+    if (pn != pn0) {
+      static uint32_t s0[7];
+      static const char *const NM[7] = { "джерело", "рівні", "стиснення", "складання", "шифр", "радіо", "решта" };
+      Serial.print("  за етапами, мкс на кадр:");
+      for (int i = 0; i < 7; i++) {
+        uint32_t v = txSec[i];
+        Serial.printf(" %s %u", NM[i], (unsigned)((v - s0[i]) / (pn - pn0)));
+        s0[i] = v;
+      }
+      Serial.println();
+    }
+    pn0 = pn;
+    ps0 = ps;
+    po0 = po;
+  }
   if (bbSnapMagic == BB_MAGIC) {
     bbFormat(bbSnap, t, 2048, false);
     Serial.print(t);
@@ -1102,6 +1154,11 @@ static void command(String s) {
         } else if (arg.length() && (v == 2 || v == 5))   // M5 — то же, но и когда прошивка в файле старше работающей (возврат на прежнюю)
           Serial.println((upd.state == UPD_READY || (v == 5 && upd.state == UPD_OLDER)) && otaTxStart(false, false, upd.img, upd.len, upd.version, upd.sha) ? "оновлення з картки розпочато" : "на картці немає придатної нової прошивки");
         else if (arg.length() && v == 3) upd.scanAsk = true;
+        else if (arg.length() && v == 8) {   // M8 — сейчас зальют по кабелю: предупреждение на весь экран (шлёт build.sh)
+          cableNoteMs = millis() ? millis() : 1;
+          Serial.println("екран: попередження про оновлення кабелем (25 с або до скидання плати)");
+          return;
+        }
         else if (arg.length() && (v == 6 || v == 7)) {   // M6 / M7 — автообновление приёмников включить / выключить
           cfg.autoUpd = v == 6;
           settingsSave();
@@ -1115,8 +1172,44 @@ static void command(String s) {
     case 'Q':   // передатчик: «чёрный ящик» радио. Q — показать; Q0…Q3 — до какой ступени оживлять радио (обычно 3);
                 // Q5 — начинать оживление со 2-й ступени, Q4 — с 1-й; Q7/Q8/Q9 — проверить ступень 1/2/3 на здоровом радио, Q6 — сброс поглубже (через сон)
       if (cfg.isTx) {
+        if (arg.length() >= 1 && arg[0] == 'n') {   // Qn — что слышит радио: уровень шума и доля времени «эфир занят»
+          // (только чтение: запись в регистр счётчика занятости, phy_set_cca_cnt, 09.10 ломала работу радио)
+          for (int i = 0; i < 6; i++) {
+            uint32_t c[2] = { 0, 0 };
+            uint32_t st = phy_get_cca_cnt(c);
+            Serial.printf("радіо чує: шум %d / %d, поріг-стан %u; лічильник зайнятості: стан %u, %u із %u (%.1f %%)\n", phy_get_noise_floor(), read_hw_noisefloor(), phy_get_cca(),
+                          (unsigned)st, (unsigned)c[0], (unsigned)c[1], c[1] ? c[0] * 100.0f / c[1] : 0.0f);
+            delay(150);
+          }
+          return;
+        }
+        if (arg.length() >= 2 && arg[0] == 's') {   // Qs1 / Qs0 — отправка по одному / как до 2.52 (для сравнения)
+          rSerial = arg[1] != '0';
+          Serial.printf("надсилання: %s\n", rSerial && rq ? "по одному — наступний пакет після відповіді на попередній" : "як до 2.52 — не чекаючи відповіді");
+          return;
+        }
+        if (arg.length() >= 2 && arg[0] == 'p') {   // Qp<число> — опыт: режимы радио (1 b, 2 g, 4 n, 8 LR; 15 — как обычно)
+          int bits = atoi(arg.c_str() + 1) & 15;
+          rProtoKeep = PROTO_MAGIC | (bits ? bits : 15);
+          esp_err_t e = esp_wifi_set_protocol(WIFI_IF_STA, radioProto());
+          uint8_t got = 0;
+          esp_wifi_get_protocol(WIFI_IF_STA, &got);
+          Serial.printf("режими радіо: задано %u, стало %u (код %d); лишиться й після швидкого перезапуску плати; Qp15 — як звичайно\n", radioProto(), got, (int)e);
+          return;
+        }
         if (arg.length() && v >= 0 && v <= 3) rReviveMax = v;
         else if (v == 4 || v == 5) rReviveFrom = v - 3;
+        else if (v == 10) {   // Q10 — драйвер «будто встал» (проверка оживления и того, что канал при этом не меняется)
+          rFakeDead = true;
+          Serial.println("дослід: драйвер радіо ніби став — ефіру немає, доки не спрацює друга ступінь оживлення");
+        }
+        if (arg.length() && v >= 0 && v <= 5) {
+          bool limited = rReviveMax != 3 || rReviveFrom != REVIVE_FROM;
+          rReviveLimitMs = limited ? (millis() ? millis() : 1) : 0;
+          if (limited)
+            Serial.printf("УВАГА: оживлення радіо обмежено (до ступеня %u, починати з %u) — лише на 60 с або до 5 с без ефіру, далі повернеться саме; Q3 і Q5 — зняти зараз\n",
+                          rReviveMax, rReviveFrom);
+        }
         else if (v >= 7 && v <= 9) bbTestStep = v - 6;
         else if (v == 6) {   // проверить «сброс поглубже»
           quickBootMagic = QUICK_BOOT;
@@ -1143,6 +1236,7 @@ static void command(String s) {
   }
   settingsSave();
   if (restart) {
+    rRebooting = true;   // радио и задача передачи замолкают: иначе их печать может не дать дойти до перезапуска
     Serial.println("перезапуск…");
     delay(100);
     ESP.restart();
@@ -1373,6 +1467,7 @@ void setup() {
     else rOnAudio = rxOnPacket;
   }
   if (!radioBegin()) Serial.println("радіо не запустилось");
+  // (отправка «по одному», radioSerialBegin, не запускается: драйвер так не успевает — см. radio.h)
   esp_register_shutdown_handler([]() { rRebooting = true; });   // после запуска радио: вызовется раньше, чем его остановят
   secBegin();
   if (cfg.isTx) {
@@ -1450,8 +1545,10 @@ void loop() {
   if (cfg.isTx && cfg.board == BOARD_4848) {   // драйвер экрана сбился с очереди буферов (panel4848.h): отметить, когда
     static uint32_t seenFlips;
     uint32_t f = lcdBbFlips;
-    if (f != seenFlips) {
-      seenFlips = f;
+    static uint32_t saidMs;
+    if (f != seenFlips && (!saidMs || millis() - saidMs > 5000)) {   // не чаще раза в 5 с: при записи во флеш сбоев десятки в секунду,
+      seenFlips = f;                                                  // и они вытесняли из «чёрного ящика» всё остальное
+      saidMs = millis() ? millis() : 1;
       bbMark(BB_LCDFLIP, f > 255 ? 255 : f);
       Serial.printf("екран: драйвер збився з черги буферів (%u-й раз від запуску) — порції кладемо по-своєму, картинка ціла\n", (unsigned)f);
     }

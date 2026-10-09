@@ -7,6 +7,10 @@
 #include "radio.h"
 #include "esp_adc/adc_continuous.h"
 #include "driver/i2s_std.h"
+#include "driver/uart.h"
+#include "driver/gpio.h"
+#include "soc/gpio_sig_map.h"
+#include "esp_rom_gpio.h"
 #include "assets.h"
 #include "txmp3.h"
 
@@ -36,6 +40,14 @@ static volatile uint32_t txFrames;         // кадров за секунду
 static volatile uint32_t txRawSamples;     // отсчётов входа за секунду — проверка настоящей частоты
 static volatile uint32_t txRawMin = 4095, txRawMax;  // края сырых отсчётов АЦП за секунду
 static volatile uint32_t txAdcRestarts;    // сколько раз пришлось перезапускать встроенный АЦП
+// Сколько задача передачи тратит на кадр (от конца чтения входа до начала следующего чтения): на «найвищій» кадр идёт
+// каждые 2000 мкс — дольше нельзя. Печатает Q.
+static volatile uint32_t txProcSumUs, txProcN, txProcMaxUs, txProcOver;
+static volatile uint32_t txYields;   // сколько раз задаче пришлось самой отдать ядро из-за перегрузки (см. txTask)
+// То же по этапам: 0 источник звука, 1 уровни и «тишина», 2 сжатие, 3 сборка пакета, 4 шифр и подпись, 5 отдача радио,
+// 6 остальное (команды приёмникам, конец круга).
+static volatile uint32_t txSec[7];
+#define TXP(i) { uint32_t n_ = (uint32_t)esp_timer_get_time(); txSec[i] = txSec[i] + (n_ - tsec); tsec = n_; }
 static volatile uint16_t txRawLast;        // последний сырой отсчёт АЦП (для проверки выводов)
 
 static bool txAdcBegin() {
@@ -101,6 +113,31 @@ static bool txI2sBegin() {
   sc.gpio_cfg.din = (gpio_num_t)(m ? PIN_I2S_DIN_4848 : PIN_I2S_DIN);
   if (i2s_channel_init_std_mode(txI2s, &sc) != ESP_OK) return false;
   return i2s_channel_enable(txI2s) == ESP_OK;
+}
+
+// ---- вывод 43 модуля: главный такт PCM1808 или порт
+// Свободных выводов у модуля не хватает, и главный такт внешнего АЦП идёт выводом 43 — это же TXD порта: пока такт
+// на выводе, передатчик в порт не печатает (команды принимает). Из-за этого для работы с портом вход приходилось
+// переводить на встроенный АЦП, а с ним радио передатчика встаёт (см. radio.h; владелец 09.10: «при включенном pcm
+// не будет связи с машиной»). Но такт нужен PCM1808 только тогда, когда звук со входа действительно идёт в эфир.
+// С 2.55 вывод делится по надобности: в эфире проверочный звук или файл с карты — вывод отдан порту (передатчик
+// печатает как обычно, PCM1808 в это время молчит); в эфире вход — выводу возвращается такт. Сам I2S не
+// перезапускается: его такт внутри идёт всегда, меняется только то, что подключено к выводу.
+static volatile bool txMclkOnPin = true;   // что сейчас на выводе 43: такт (так его ставит запуск I2S) или порт
+static void txMclkPin(bool mclk) {
+  if (cfg.input != IN_I2S || txI2sProbe || cfg.board != BOARD_4848 || !txI2s || mclk == txMclkOnPin) return;
+  if (mclk) {
+    Serial.println("порт замовкає: в ефір іде вхід PCM1808 — вивід порту потрібен його такту (перевірочний звук або файл повернуть порт)");
+    vTaskDelay(pdMS_TO_TICKS(30));   // строка успевает уйти
+    gpio_reset_pin((gpio_num_t)PIN_I2S_MCLK_4848);
+    gpio_set_direction((gpio_num_t)PIN_I2S_MCLK_4848, GPIO_MODE_OUTPUT);
+    esp_rom_gpio_connect_out_signal(PIN_I2S_MCLK_4848, I2S0_MCLK_OUT_IDX, false, false);
+    txMclkOnPin = true;
+  } else {
+    uart_set_pin(UART_NUM_0, PIN_I2S_MCLK_4848, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    txMclkOnPin = false;
+    Serial.println("порт знову працює: в ефірі не вхід PCM1808 (його такт з виводу порту знято)");
+  }
 }
 
 // Прочитать кадр со встроенного АЦП: 128 отсчётов → 64, без постоянной составляющей, в шкале 16 бит.
@@ -257,11 +294,29 @@ static void txTestDuck(int16_t *pcm, int16_t *sd, AssetPlay &mus, AssetPlay &voc
     voc.item = -1;
   }
   uint32_t period = (uint32_t)cfg.duckS * SRATE;
-  float gm = dbGain(cfg.musicDb), gv = dbGain(cfg.voiceDb);
+  // Громкости считаются степенной функцией; до 2.56 — три раза на каждом кадре (500 раз в секунду), хотя меняются
+  // они лишь при смене настроек и во время ухода/возврата музыки. Задаче передачи на кадр отведено 2 мс, уходило
+  // 1,8–1,9 — с голосом она не успевала (кадров 470–489 в секунду вместо 500).
+  static int8_t gmDb = 127, gvDb = 127, dkDb = 127;
+  static float gm = 1, gv = 1, smWas = -1, duckK = 1;
+  if (gmDb != cfg.musicDb) {
+    gmDb = cfg.musicDb;
+    gm = dbGain(gmDb);
+  }
+  if (gvDb != cfg.voiceDb) {
+    gvDb = cfg.voiceDb;
+    gv = dbGain(gvDb);
+  }
   // положение уходит и возвращается равномерно, громкость по нему — в децибелах и со сглаженными краями
   float step = low ? (float)FRAME / DUCK_LEAD : -(float)FRAME / DUCK_BACK;
   pos = pos + step < 0 ? 0 : pos + step > 1 ? 1 : pos + step;
-  float sm = pos * pos * (3 - 2 * pos), g1 = gm * powf(10.0f, cfg.duckDb * sm / 20.0f), dg = (g1 - gain) / FRAME;
+  float sm = pos * pos * (3 - 2 * pos);
+  if (sm != smWas || dkDb != cfg.duckDb) {
+    smWas = sm;
+    dkDb = cfg.duckDb;
+    duckK = powf(10.0f, dkDb * sm / 20.0f);
+  }
+  float g1 = gm * duckK, dg = (g1 - gain) / FRAME;
   for (int i = 0; i < FRAME; i++) {
     int16_t ml = 0, mr = 0, v = 0;
     if (!mus.get2(ml, mr)) {      // мелодия кончилась — следующая
@@ -428,20 +483,53 @@ static void txTask(void *) {
   bool ok = cfg.input == IN_I2S ? txI2sBegin() : txAdcBegin();
   if (!ok) Serial.println("вхід звуку не запустився — передаю тишу");
   TickType_t tick = xTaskGetTickCount();
+  const uint8_t inMode = cfg.input;   // вход — тот, с которым задача запущена: команда смены входа меняет cfg.input сразу,
+                                      // а перезапуск следует позже — до 2.56 задача в этот промежуток читала вход, которого нет
+  uint32_t tpAfter = 0, tsec = 0;
   for (;;) {
     uint32_t clipsBefore = txClips;
     memset(side, 0, sizeof(side));
-    bool got = ok && (cfg.input == IN_I2S ? txReadI2s(pcm, side) : txReadAdc(pcm));
+    if (tpAfter) {   // сколько длилась обработка прошлого кадра (от конца чтения входа до начала следующего чтения)
+      uint32_t p = (uint32_t)esp_timer_get_time() - tpAfter;
+      txProcSumUs = txProcSumUs + p;
+      txProcN = txProcN + 1;
+      if (p > txProcMaxUs) txProcMaxUs = p;
+      if (p > 2000) txProcOver = txProcOver + 1;
+      txSec[6] = txSec[6] + ((uint32_t)esp_timer_get_time() - tsec);
+    }
+    uint32_t tRead = (uint32_t)esp_timer_get_time();
+    bool got = ok && (inMode == IN_I2S ? txReadI2s(pcm, side) : txReadAdc(pcm));
+    tpAfter = (uint32_t)esp_timer_get_time();
+    tsec = tpAfter;
+    // Перегрузка: если кадры обрабатываются дольше, чем приходят, чтение входа перестаёт ждать, задача крутится без
+    // единой паузы, ядру радио не достаётся «холостого» времени — и через 5 с сторож задач перезапускает плату (так
+    // было 09.10 во время голосовых объявлений: кадр в среднем 1,8 мс из 2, с голосом — больше; владелец:
+    // «периодически на передатчике кратковременно гаснет экран»). Потеря миллисекунды звука лучше перезапуска:
+    // после секунды без единого ожидания задача сама отдаёт ядро на один тик.
+    {
+      static uint16_t noWait;
+      if (tpAfter - tRead > 250) noWait = 0;
+      else if (++noWait >= 500) {
+        noWait = 0;
+        txYields = txYields + 1;
+        vTaskDelay(1);
+      }
+    }
     if (!got) {
       static uint8_t fails;
       memset(pcm, 0, sizeof(pcm));
       memset(side, 0, sizeof(side));
-      if (ok && cfg.input == IN_ADC && ++fails >= 2) {   // АЦП замолчал — перезапустить
+      if (ok && inMode == IN_ADC && ++fails >= 2) {   // АЦП замолчал — перезапустить
         fails = 0;
         txAdcRestart();
         tick = xTaskGetTickCount();
-      } else vTaskDelayUntil(&tick, 2);   // входа нет — держим темп по часам
+      } else {   // входа нет — держим темп по часам. Отметка времени могла отстать (пока вход работал, её не двигали):
+        TickType_t nowT = xTaskGetTickCount();   // тогда vTaskDelayUntil возвращается сразу, цикл крутится без пауз и
+        if (nowT - tick > 20) tick = nowT;       // сторож роняет плату (так было 09.10, когда опыт отнял у I2S вывод)
+        vTaskDelayUntil(&tick, 2);
+      }
     }
+    txMclkPin(!cfg.tone && !txCardOn);   // вывод 43: такт PCM1808 — только когда в эфир идёт сам вход
     if (txHold) {   // заставка ещё на экране: в эфир ничего не идёт, проверочный звук не начинается
       rLastDoneMs = millis();
       continue;
@@ -487,6 +575,7 @@ static void txTask(void *) {
         side[i] = u > 32767 ? 32767 : u < -32768 ? -32768 : (int16_t)u;
       }
     }
+    TXP(0)
     int pk = 0, pkS = 0;
     float sq = 0;
     for (int i = 0; i < FRAME; i++) {
@@ -561,6 +650,7 @@ static void txTask(void *) {
           side[i] = (int16_t)(side[i] * sg);
         }
     }
+    TXP(1)
     memcpy(acc + accN * FRAME, pcm, sizeof(pcm));
     memcpy(accS + accN * FRAME, side, sizeof(side));
     accFlags |= (plainTone && !txMute ? FLAG_TONE : 0) | (txMute ? FLAG_MUTE : 0) | (!cfg.tone && !card && (pk >= 32000 || txClips != clipsBefore) ? FLAG_CLIP : 0);
@@ -583,6 +673,7 @@ static void txTask(void *) {
     if (st && q == Q_HI) scEncode(srcS, scNow, idxCarrySc);
     else memset(scNow, 0, SC_LEN);
 
+    TXP(2)
     {   // переход на другой канал вместе с приёмниками
       static bool armed;
       static uint8_t tick;
@@ -659,16 +750,19 @@ static void txTask(void *) {
         if (pend >= hardAt) send = false;                        // этот звук уже опоздал бы
         else if (pend >= thinAt && run < copies) send = false;   // затор: один пакет из (копий + 1)
       }
-      if (!send && msSince(rLastDoneMs) > 250) send = true;      // драйвер молчит совсем — пусть сторож в radioSend это увидит
       if (send) {
         if (run) h->flags |= FLAG_THIN;
         run = 0;
+        TXP(3)
         secSeal(SEC_AUDIO, h->boot, h->seq, NULL, pkt, sizeof(Hdr), pkt + sizeof(Hdr), (w - pkt) - sizeof(Hdr), w);   // шифр и подпись
+        TXP(4)
         w += SEC_TAG;
         if (secShadow & 1) secShadowRun(pkt + sizeof(Hdr), (w - pkt) - sizeof(Hdr) - SEC_TAG);
         radioSend(pkt, w - pkt);
+        TXP(5)
         if (txAfterSend) txAfterSend();
       } else {
+        radioSend(NULL, 0);   // пакета нет, но сторож радио должен видеть и это время (см. radioSend)
         if (run < copies) txThinned = txThinned + 1;
         else txSkipped = txSkipped + 1;
         if (run < 255) run++;

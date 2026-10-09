@@ -128,6 +128,7 @@ struct View {
   uint8_t hopResult = 0;               // 1 — перешёл, 2 — свободнее не нашлось, 3 — ищу
   uint8_t hopFrom = 0, hopTo = 0, hopSecs = 0;
   uint16_t hopWaitMs = 0;
+  bool hopStall = false;               // причина ухода — радио на том канале вставало
   uint32_t hopAgoS = 0;                // сколько секунд назад
   // обновление прошивки приёмников по радио (ota.h): что делает передатчик и каждый приёмник
   struct Ota {
@@ -1505,7 +1506,7 @@ static bool otaBusy() {   // идёт передача: закрыть окно 
   return view.ota.stage >= 1 && view.ota.stage <= 4;
 }
 static bool otaSelf() {   // передатчик пишет прошивку в себя или перезапускается: кнопок нет
-  return view.ota.stage == 10 || view.ota.stage == 11;
+  return view.ota.stage == 10 || view.ota.stage == 11 || view.ota.stage == 13;
 }
 static Box otaBtn(int id) {
   if (id == ID_OTA_AUTO) return Box{ (int16_t)(mBox.x + 20), (int16_t)(mBox.y + 312), (int16_t)(mBox.w - 40), 38 };
@@ -1576,6 +1577,22 @@ static void drawSelfUpdate() {
     g.text(W / 2, 378, t, F_CAP, C_MUTED_FG, AL_C);
     snprintf(t, sizeof(t), tr("початок через %d с"), o.selfWait);
     g.text(W / 2, 440, t, F_H2, C_PRIMARY, AL_C);
+    return;
+  }
+  if (o.stage == 13) {
+    // Прошивку сейчас зальют по кабелю с компьютера. Пока идёт такая заливка, процессор стоит в загрузчике и рисовать
+    // не может: экран чёрный около минуты. Владелец 09.10: «при обновлении экран передатчика черный и не сообщает об
+    // обновлении, как это было сделано ранее» — поэтому перед заливкой компьютер шлёт команду M8, и экран успевает
+    // сказать, что будет дальше.
+    bigLine(64, tr("ОНОВЛЕННЯ"), C_FG);
+    bigLine(116, tr("ПРОШИВКИ"), C_FG);
+    g.fill(60, 140, W - 120, 3, C_PRIMARY);
+    bigLine(200, tr("ЕКРАН ЗГАСНЕ"), C_WARN);
+    bigLine(252, tr("НА ХВИЛИНУ"), C_WARN);
+    bigLine(326, tr("НЕ ВИМИКАЙТЕ"), C_LAMP_RED);
+    bigLine(378, tr("ЖИВЛЕННЯ!!!"), C_LAMP_RED);
+    g.text(W / 2, 430, tr("Прошивку записує комп'ютер кабелем — так має бути."), F_CAP, C_MUTED_FG, AL_C);
+    g.text(W / 2, 454, tr("Звук в ефір повернеться після перезапуску передавача."), F_CAP, C_MUTED_FG, AL_C);
     return;
   }
   bool done = o.stage == 11;
@@ -3130,7 +3147,8 @@ static void hopNotice() {
     toast2(a, b, 5000);
   } else if (view.hopResult == 1) {
     snprintf(a, sizeof(a), tr("Канал змінено: з %u на %u"), view.hopFrom, view.hopTo);
-    if (view.hopWaitMs) snprintf(b, sizeof(b), tr("Причина: ефір був зайнятий, пакети чекали до %u мс"), view.hopWaitMs);
+    if (view.hopStall) snprintf(b, sizeof(b), "%s", tr("Причина: на тому каналі радіо зупинялось"));
+    else if (view.hopWaitMs) snprintf(b, sizeof(b), tr("Причина: ефір був зайнятий, пакети чекали до %u мс"), view.hopWaitMs);
     else snprintf(b, sizeof(b), tr("Причина: перевірка з порту"));
     toast2(a, b, 12000);
     if (page == PG_AIR || page == PG_HOME) needFull = true;   // номер канала на странице — новый

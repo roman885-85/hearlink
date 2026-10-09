@@ -24,6 +24,14 @@ rm -f "$OUT/$SKETCH.ino.bin"   # иначе при ошибке сборки в 
   | grep -E "Sketch uses|Global variables|warning|rror" || true
 [ -f "$OUT/$SKETCH.ino.bin" ] || { echo "сборка не удалась"; exit 1; }
 if [ -n "$3" ]; then
+  # Заливка по кабелю: процессор на это время стоит в загрузчике и рисовать не может — экран передатчика около минуты
+  # чёрный. Поэтому сначала команда M8 (прошивка 2.50+): на экране крупно «ОНОВЛЕННЯ ПРОШИВКИ… ЕКРАН ЗГАСНЕ НА ХВИЛИНУ…
+  # НЕ ВИМИКАЙТЕ ЖИВЛЕННЯ». Приёмник и старая прошивка эту команду просто не поймут. NOTE=0 — без предупреждения.
+  # Когда порт передатчика «говорит» (вход — встроенный АЦП), лучше обновлять его же средствами, с ходом на экране:
+  #   python3 tools/sendfile.py <порт> build/hearlink-s3/hearlink.ino.bin /UPDATE/hearlink-<версия>.bin, затем M3 и M2.
+  if [ "$SKETCH" = hearlink ] && [ "${NOTE:-1}" != 0 ]; then
+    python3 tools/port.py "$3" 6 M8 >/dev/null 2>&1 || true
+  fi
   # SPEED=115200 ./build.sh … — для плат, где мост USB сбоит на большой скорости (модуль 4848S040 с CH340)
   "$IDECLI" --config-file "$CFG" upload -b $FQBN -p "$3" --input-dir "$OUT" ${SPEED:+--upload-property upload.speed=$SPEED} 2>&1 \
     | grep -E -i "Chip is|Wrote|verified|error|fatal|Hard resetting" | cut -c1-200

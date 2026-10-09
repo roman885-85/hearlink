@@ -68,6 +68,18 @@ sensor (I2C), microSD card (SPI), CH340 USB bridge, a relay and a speaker amplif
 - While the transmitter's own firmware is being written, the cache is turned off for a long time — so the writing
   goes in cycles: backlight off → 1.7 s of writing → backlight on for 1.5 s. The screen warns about the blinking in
   advance.
+- **The transmitter radio and the built-in ADC.** The Wi-Fi driver (ESP-IDF 5.5.1) sometimes stops transmitting:
+  frames stay in it forever, reception works, `esp_wifi_stop/start` does not help, only `esp_wifi_deinit/init` does
+  (the buffers of the stuck frames are lost — about 0.4 KB per frame). It happens only with the built-in ADC in
+  continuous mode: a test on one build gave 4–7 stalls in 8 min with the ADC and 0 with the I2S input; with the ADC
+  every packet takes 0.5 ms longer to get on air. The watchdog (`radioSend` in `radio.h`): 200 ms without a driver
+  reply while packets are queued → full driver reload (16 ms); low memory → board restart.
+- **Pin 43: PCM1808 clock or the port.** The I2S clock always runs inside; it is connected to the pin (`txMclkPin`
+  in `txaudio.h`) only while the input itself is on air, otherwise the pin belongs to the UART.
+- **Time budget of the radio core.** A “highest” quality frame is 2 ms; the transmit task spends 1.4 ms with the live
+  input and 1.8 ms with the test music, about 0.7 ms of it in the `esp_now_send` call itself (Wi-Fi code runs from
+  flash through a small cache). The `Q` command prints the breakdown by stages. Under overload the task yields the
+  core by itself so that the task watchdog does not restart the board.
 - Page flipping is a slide lasting 284 ms (12 steps); MP3 decoding is paused for this time.
 
 ### Transmitter radio: resilience

@@ -120,6 +120,17 @@ switched off or asleep during the update, or it is a new one), the transmitter s
 after about 10 s. The sound on air stops for ~20 s for everyone; at most two attempts per receiver per power-on of
 the transmitter. Switch off / on: the **«Автооновлення: увімкнено / вимкнено» (Auto-update: on / off)** button in the
 “Update” window (since 2.46) or the port commands `M7` / `M6`.
+Since 2.56 the transmitter screen says so by itself: the “Update” window with the progress opens without a touch and
+closes 15 s after the end (the result stays as a message); if another window is open at that moment, a short message
+is shown instead.
+
+**Over the cable from a computer** (the `build.sh` script): while the computer writes the firmware, the transmitter's
+processor sits in its loader and cannot draw — the screen is black for about a minute. So before the writing starts
+(since 2.50) the screen shows the warning “FIRMWARE UPDATE — THE SCREEN GOES DARK FOR A MINUTE — DO NOT SWITCH THE
+POWER OFF!!!”, and after the first start with the new version — “Transmitter updated: version …”. If you need the
+progress on the screen, update through the card.
+
+![Cable update](../img/tx-17k-onovlennya-kabelem.png)
 
 **Receivers only** (the transmitter already has the new version): "Receivers" → "Update" → **«Почати» (Start)**.
 **«Пробне» (Trial)** — shows what it looks like: the receivers receive and verify everything but write nothing.

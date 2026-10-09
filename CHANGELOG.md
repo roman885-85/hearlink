@@ -1,5 +1,65 @@
 # Changelog / Історія версій
 
+## 2.56 — 2026-10-10 (includes 2.50–2.55, which were not released / містить 2.50–2.55, які не випускались)
+- EN: **why the sound dropped for fractions of a second, and what is done about it.** The transmitter's radio driver
+  sometimes stops transmitting (reception keeps working) and only a full driver reload revives it. A controlled test
+  on one and the same firmware build: 4–7 stalls in 8 minutes with the **built-in ADC** as the input, none with the
+  I2S input; the card logs say the same (13 stalls in 4.6 h with the built-in ADC, 0 in 2 h with the PCM1808). In the
+  ESP32-S3 the built-in ADC in continuous mode and the Wi-Fi radio share hardware. So: **use the PCM1808 input for
+  real work**; with the built-in ADC a stall is now closed in 0.22 s instead of 0.62 s (revival starts with the full
+  driver reload — the lighter step never helped; a stall is noticed after 0.2 s; the driver is no longer stuffed with
+  packets while silent, so a stall costs 4 KB of memory instead of 13 KB; when memory runs low the board restarts
+  cleanly; two stalls on one channel within five minutes — the transmitter moves to a freer channel).
+- UK: **чому звук пропадав на частки секунди і що з цим зроблено.** Драйвер радіо передавача часом перестає
+  передавати (приймання при цьому працює), і оживляє його лише повне перезавантаження драйвера. Дослід на одній і
+  тій самій збірці: 4–7 зупинок за 8 хвилин, коли вхід — **вбудований АЦП**, і жодної зі входом I2S; те саме в
+  журналах на картці (13 зупинок за 4,6 год із вбудованим АЦП, 0 за 2 год із PCM1808). В ESP32-S3 вбудований АЦП у
+  безперервному режимі та радіо Wi-Fi ділять один вузол мікросхеми. Тому: **для роботи — вхід PCM1808**; із
+  вбудованим АЦП зупинка тепер закривається за 0,22 с замість 0,62 с (оживлення одразу з повного перезавантаження
+  драйвера — легший ступінь не допоміг жодного разу; зупинку видно за 0,2 с; мовчазний драйвер більше не
+  закидається пакетами, тож зупинка коштує 4 КБ пам'яті замість 13 КБ; коли пам'яті мало — плата чисто
+  перезапускається; дві зупинки на одному каналі за п'ять хвилин — передавач іде на вільніший канал).
+- EN: **the port works with the PCM1808.** The ADC master clock shares pin 43 with the port's TXD. It is now put on
+  the pin only while the PCM1808 input is actually on air; with the test sound or a card file on air the pin belongs
+  to the port and the transmitter prints as usual. No more switching to the built-in ADC just to talk to the port.
+- UK: **порт працює і з PCM1808.** Головний такт АЦП ділить вивід 43 із TXD порту. Тепер такт подається на вивід
+  лише тоді, коли вхід PCM1808 справді йде в ефір; коли в ефірі перевірочний звук чи файл із картки — вивід
+  належить порту, і передавач друкує як звичайно. Перемикатися на вбудований АЦП заради порту більше не треба.
+- EN: fixed: **false “busy channel” moves.** The send time of a packet was recorded after the driver call, while the
+  driver could answer earlier; the answer then picked a 64-packets-old record, and “the packet waited 129 ms” went
+  into the reports, the log and the congestion count. A stalled radio is not counted as congestion either (the
+  transmitter used to announce channel changes into air that did not exist).
+- UK: виправлено: **хибні переходи «з зайнятого каналу».** Час надсилання пакета записувався після виклику драйвера,
+  а драйвер встигав відповісти раніше; відповідь брала запис 64-пакетної давності, і «пакет чекав 129 мс» потрапляло
+  у звіти, журнал і лік затору. Радіо, що стало, теж більше не рахується затором (передавач оголошував переходи в
+  ефір, якого не було).
+- EN: **every firmware update is announced on the transmitter screen.** While the transmitter writes itself, the big
+  “FIRMWARE UPDATE — DO NOT SWITCH THE POWER OFF” screen is always shown (before, only an open “Update” window drew
+  it); an automatic update of a receiver opens the “Update” window by itself and closes it 15 s after the end;
+  before a cable update the computer sends `M8` and the screen warns “THE SCREEN GOES DARK FOR A MINUTE”; after the
+  first start with a new version — “Transmitter updated: version …”.
+- UK: **про кожне оновлення прошивки екран передавача повідомляє.** Поки передавач записує себе, великий екран
+  «ОНОВЛЕННЯ ПРОШИВКИ — НЕ ВИМИКАЙТЕ ЖИВЛЕННЯ» показується завжди (раніше його малювало лише відкрите вікно
+  «Оновлення»); автооновлення приймача саме відкриває вікно «Оновлення» і закриває його через 15 с після кінця;
+  перед оновленням кабелем комп'ютер надсилає `M8`, і екран попереджає «ЕКРАН ЗГАСНЕ НА ХВИЛИНУ»; після першого
+  запуску з новою версією — «Передавач оновлено: версія …».
+- EN: fixed: **restarts of the transmitter by the task watchdog** (“the screen goes dark for a moment”). The transmit
+  task spends 1.4 ms of the 2 ms frame with the live input and 1.8 ms with the test music; with the voice
+  announcement it did not keep up, never slept, and the watchdog restarted the board. The three loudness powers are
+  no longer recomputed on every frame, and under overload the task yields the core by itself. A debug limit on radio
+  revival now expires by itself (a forgotten `Q1` cost nine minutes of silence on 2026-10-09). `Q` prints where the
+  frame time goes; `tools/kicktest.py`, `Q10`, `Qn`, `Qp` are the test tools used.
+- UK: виправлено: **перезапуски передавача сторожем задач** («екран на мить гасне»). Задача передачі витрачає 1,4 мс
+  із 2 мс кадру зі звуком із входу й 1,8 мс із перевірочною музикою; з голосовим оголошенням вона не встигала, не
+  спала, і сторож перезапускав плату. Три степеневі гучності більше не рахуються на кожному кадрі, а за
+  перевантаження задача сама віддає ядро. Налагоджувальне обмеження оживлення радіо тепер знімається саме (забуте
+  `Q1` 09.10.2026 коштувало дев'яти хвилин тиші). `Q` друкує, куди йде час кадру; `tools/kicktest.py`, `Q10`, `Qn`,
+  `Qp` — використані засоби перевірки.
+- EN: known limits: with the built-in ADC the radio still stalls a few times an hour (0.2 s gaps); the radio core is
+  about 90 % busy with the test music on air — halving the packet rate (two frames per packet) is the planned cure.
+- UK: відомі межі: із вбудованим АЦП радіо все ще стає кілька разів на годину (провали 0,2 с); ядро радіо зайняте
+  приблизно на 90 %, коли в ефірі перевірочна музика, — заплановані ліки: удвічі рідші пакети (два кадри в пакеті).
+
 ## 2.49 — 2026-10-09
 - EN: fixed: **the transmitter picture breaking up “until the power is switched off”**. The display driver (ESP-IDF
   5.5.1 inside Arduino core 3.3.3) chooses which of the two frame-output buffers to refill by the parity of an

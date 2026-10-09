@@ -92,14 +92,55 @@ static volatile uint32_t rAudioCount;                        // сколько �
 static volatile uint8_t rReviveStep;       // какая ступень оживления радио сделана последней (0 — радио отвечает)
 static volatile uint32_t rDeadSinceMs;     // с какого времени драйвер молчит
 static volatile uint32_t rRevived;         // сколько раз радио удалось оживить без перезапуска платы
+// ---- отправка по одному (с 2.52)
+// До 2.52 задача передачи отдавала драйверу пакет каждые 2 мс, не глядя, ушёл ли предыдущий: в среднем пакет ждёт
+// эфира 1,5–3 мс, так что у драйвера почти всегда лежал ещё и прошлый. Драйвер при этом изредка «терял» ответ на
+// пакет: его передающая часть вставала насовсем (приём при этом работал), и оживляла её только полная перезагрузка
+// драйвера. По журналам на карте — от 1 до 33 остановок в час в зависимости от сборки прошивки (то есть от мелких
+// сдвигов по времени), владелец 09.10: «периодически на приемниках на доли секунды пропадает звук».
+// Теперь пакеты ждут в своей очереди, и драйверу отдаётся следующий только после ответа на предыдущий — драйвер ни
+// разу не получает новый пакет в миг, когда ещё занят прошлым. Отдаёт одна задача (rqTask); она же под общим замком
+// с «оживлением» — чтобы отправка не попала на перезагрузку драйвера.
+#define RQ_N 16
+#define RQ_MAX 252
+struct RqSlot {
+  uint16_t len;
+  uint8_t d[RQ_MAX];
+};
+static RqSlot *rq;                          // очередь на отправку (внутренняя память); только у передатчика
+static volatile uint32_t rqHead, rqTail;    // сколько положено / сколько отдано драйверу
+static volatile bool rqInFlight;            // пакет у драйвера, ответа ещё нет
+static SemaphoreHandle_t rqSem, rqDrv;      // «есть работа» и замок «кто говорит с драйвером»
+static portMUX_TYPE rqMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool rSerial = false;       // опыт (порт: Qs1 — по одному, Qs0 — как обычно). По одному драйвер НЕ успевает:
+                                            // сам вызов отправки сразу после ответа длится до 6,5 мс, очередь переполняется
+                                            // (замер 09.10: 7 % пакетов отброшено) — поэтому выключено
+static volatile uint32_t rBusySends;        // (прежний способ) отправок, когда прошлый пакет ещё был у драйвера
+// Замеры (печатает Q): промежутки между соседними отправками (короче 1 мс / 1–1,6 / 1,6–2,4 / длиннее) — не идут ли
+// пакеты парами; и сколько длится путь одного пакета, отданного свободному драйверу (без очереди за предыдущим).
+static volatile uint32_t rGapHist[4], rLastSendUs;
+static volatile uint32_t rSoloSumUs, rSoloN, rSoloMaxUs;
+static volatile uint64_t rSoloMask;         // у каких из последних 64 пакетов драйвер при отправке был свободен
+static volatile bool rFakeDead;             // отладка (порт: Q10): драйвер «будто встал» — ничего не отправляем, пока не
+                                            // сработает вторая ступень оживления (так было 09.10: первая не помогает)
+
 static void radioOnSent(const esp_now_send_info_t *, esp_now_send_status_t status) {
   rLastDoneMs = millis();
+  if (rqInFlight) {
+    rqInFlight = false;
+    if (rqSem) xSemaphoreGive(rqSem);
+  }
   if (rReviveStep) {
     bbMark(BB_ALIVE, rReviveStep, (millis() - rDeadSinceMs) / 10);
     rReviveStep = 0;
     rRevived = rRevived + 1;
   }
   uint32_t dt = (uint32_t)esp_timer_get_time() - rSendUs[rGot & 63];
+  if (((rSoloMask >> (rGot & 63)) & 1) && dt < 200000) {
+    rSoloSumUs = rSoloSumUs + dt;
+    rSoloN = rSoloN + 1;
+    if (dt > rSoloMaxUs) rSoloMaxUs = dt;
+  }
   rGot = rGot + 1;
   if (dt < 200000) {
     rAirSumUs = rAirSumUs + dt;
@@ -220,6 +261,15 @@ static void radioSetParams() {
   esp_now_set_peer_rate_config(BCAST, &rc);
 }
 
+// Какие режимы Wi-Fi включены у радио: 1 — 802.11b, 2 — g, 4 — n, 8 — «дальний» Espressif (LR). Обычно все (15).
+// Опыт с порта (Qp<число>, переживает быстрый перезапуск платы): не из-за ли приёма лишних режимов встаёт драйвер.
+#define PROTO_MAGIC 0x50524F00u
+RTC_NOINIT_ATTR static uint32_t rProtoKeep;
+static uint8_t radioProto() {
+  if ((rProtoKeep & 0xFFFFFF00u) == PROTO_MAGIC && (rProtoKeep & 15)) return rProtoKeep & 15;
+  return WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR;
+}
+
 static bool radioStartEspNow() {
   if (esp_now_init() != ESP_OK) return false;
   esp_now_peer_info_t peer = {};
@@ -248,7 +298,7 @@ static bool radioBegin() {
   WiFi.setSleep(WIFI_PS_NONE);
   esp_wifi_set_ps(WIFI_PS_NONE);
   // «дальний» режим Espressif (0,5 Мбит/с) включён всегда и у всех: обычные пакеты он принимать не мешает
-  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
+  esp_wifi_set_protocol(WIFI_IF_STA, radioProto());
   return radioStartEspNow();
 }
 
@@ -292,7 +342,7 @@ static bool radioReinit() {
   esp_wifi_set_country(&cc);
   if (esp_wifi_start() != ESP_OK) return false;
   esp_wifi_set_ps(WIFI_PS_NONE);
-  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
+  esp_wifi_set_protocol(WIFI_IF_STA, radioProto());
   return radioStartEspNow();
 }
 
@@ -308,20 +358,96 @@ static void (*rOnDead)();
 static volatile bool rRebooting;
 static bool quickBoot;                     // этот запуск — быстрый перезапуск после вставшего радио (без заставки)
 static bool updatedBoot;                   // этот запуск — после того как передатчик обновил сам себя с карты
+static bool fwChangedBoot;                 // этот запуск — первый с новой версией прошивки (в том числе залитой по кабелю)
+static volatile uint32_t cableNoteMs;      // команда M8: сейчас зальют по кабелю — когда пришла (0 — нет)
 static volatile uint8_t bbTestStep;        // отладка (порт: Q7…Q9): выполнить ступень оживления 1…3 на здоровом радио
 static volatile uint8_t rReviveMax = 3;    // отладка (порт: Q0…Q3): до какой ступени доходить (0 — не оживлять вовсе)
-static volatile uint8_t rReviveFrom = 1;   // отладка: с какой ступени начинать
+// Начинаем со второй ступени: первая (ESP-NOW и радио заново) не оживила драйвер ни разу — ни 07.10, ни в двенадцати
+// остановках 09.10 (занятые буфера драйвера переживают esp_wifi_stop), а 0,3 с тишины стоила каждый раз.
+#define REVIVE_FROM 2
+#define RADIO_QUIET_MS 200                 // драйвер столько молчит при ждущих пакетах — он встал (в настоящем заторе
+                                           // пакеты ждали эфира до 155 мс; до 2.51 порог был 300 мс)
+static volatile uint8_t rReviveFrom = REVIVE_FROM;   // отладка (Q4 — с первой, Q5 — со второй): с какой ступени начинать
+// Отладочное ограничение ступеней живёт минуту и снимается само, а при вставшем радио — через 5 с. 09.10 забытое «Q1»
+// (я принял его за «показать события») оставило передатчик без эфира на 9 минут: радио встало, первая ступень его не
+// оживляла, а выше идти было запрещено; вторая ступень потом оживила за 16 мс. Отладка не должна уметь выключить набор.
+static volatile uint32_t rReviveLimitMs;   // когда ограничение поставлено (0 — ограничений нет)
+static void rqTask(void *) {
+  for (;;) {
+    xSemaphoreTake(rqSem, pdMS_TO_TICKS(50));
+    while (!rqInFlight && rqTail != rqHead && !rRebooting) {
+      xSemaphoreTake(rqDrv, portMAX_DELAY);
+      if (rqTail == rqHead) {   // очередь сбросили, пока ждали замок (радио оживляли)
+        xSemaphoreGive(rqDrv);
+        break;
+      }
+      RqSlot &s = rq[rqTail % RQ_N];
+      rqInFlight = true;        // до вызова: ответ может прийти раньше, чем вызов вернётся
+      uint32_t s0 = (uint32_t)esp_timer_get_time();
+      esp_err_t err = rFakeDead ? ESP_ERR_ESPNOW_NO_MEM : esp_now_send(BCAST, s.d, s.len);
+      uint32_t sd = (uint32_t)esp_timer_get_time() - s0;
+      if (sd > dgSendMaxUs) dgSendMaxUs = sd;
+      rqTail = rqTail + 1;
+      if (err != ESP_OK) {      // драйвер не взял: ответа не будет — пакет считаем пропавшим и идём дальше
+        rqInFlight = false;
+        rGot = rGot + 1;
+        rRefused = rRefused + 1;
+        rRefusedTotal = rRefusedTotal + 1;
+        rLastErr = err;
+      }
+      xSemaphoreGive(rqDrv);
+    }
+  }
+}
+
+// pkt == NULL — пакета в этот раз нет (очередь драйвера и так длинна): только сторож. До 2.51 сторож жил внутри
+// отправки, и, чтобы он заметил вставший драйвер, задача передачи через 250 мс тишины слала пакеты «насильно» — они
+// забивали все 32 буфера драйвера, а вставший драйвер их память уже не отдаёт (13 КБ за остановку). Теперь при
+// остановке у драйвера не больше десятка пакетов.
 static void radioSend(const uint8_t *pkt, size_t len) {
   static bool refusing;
   if (rRebooting) return;
   radioApplyIfAsked();
   uint32_t s0 = (uint32_t)esp_timer_get_time();
-  esp_err_t err = esp_now_send(BCAST, pkt, len);
-  uint32_t sd = (uint32_t)esp_timer_get_time() - s0;
-  if (sd > dgSendMaxUs) dgSendMaxUs = sd;
-  if (err == ESP_OK) {
-    rSendUs[rPut & 63] = (uint32_t)esp_timer_get_time();
+  bool serial = rSerial && cfg.isTx && rq && len <= RQ_MAX;
+  esp_err_t err = ESP_OK;
+  if (pkt && serial) {   // по одному: пакет — в свою очередь, драйверу его отдаст rqTask после ответа на предыдущий
+    portENTER_CRITICAL(&rqMux);
+    bool full = rqHead - rqTail >= RQ_N;
+    if (!full) {
+      RqSlot &q = rq[rqHead % RQ_N];
+      q.len = len;
+      memcpy(q.d, pkt, len);
+      rSendUs[rPut & 63] = s0;   // счёт — здесь же, под замком: ответ драйвера может прийти раньше, чем мы вернёмся
+      rPut = rPut + 1;
+      rqHead = rqHead + 1;
+    }
+    portEXIT_CRITICAL(&rqMux);
+    if (full) err = ESP_ERR_ESPNOW_NO_MEM;
+    else xSemaphoreGive(rqSem);
+  } else if (pkt) {
+    bool busy = rPut != rGot;
+    if (cfg.isTx) {
+      if (busy) rBusySends = rBusySends + 1;
+      uint32_t gap = s0 - rLastSendUs;
+      rLastSendUs = s0;
+      rGapHist[gap < 1000 ? 0 : gap < 1600 ? 1 : gap < 2400 ? 2 : 3] = rGapHist[gap < 1000 ? 0 : gap < 1600 ? 1 : gap < 2400 ? 2 : 3] + 1;
+    }
+    // Счёт — ДО вызова: драйвер успевает передать пакет и ответить раньше, чем вызов вернётся в эту задачу. До 2.53
+    // время отправки записывалось после вызова, ответ брал из таблицы запись 64-пакетной давности, и «пакет ждал
+    // эфира 129 мс» (64 × 2 мс) попадало в отчёты, в журнал и в счёт затора — отсюда часть «уходов с занятого канала».
+    uint32_t slot = rPut & 63;
+    rSendUs[slot] = s0;
+    if (busy) rSoloMask = rSoloMask & ~(1ull << slot);
+    else rSoloMask = rSoloMask | (1ull << slot);
     rPut = rPut + 1;
+    err = rFakeDead ? ESP_ERR_ESPNOW_NO_MEM : esp_now_send(BCAST, pkt, len);
+    if (err != ESP_OK) rPut = rPut - 1;
+    uint32_t sd = (uint32_t)esp_timer_get_time() - s0;
+    if (sd > dgSendMaxUs) dgSendMaxUs = sd;
+  }
+  if (!pkt) {
+  } else if (err == ESP_OK) {
     rSent = rSent + 1;
     rSentTotal = rSentTotal + 1;
     refusing = false;
@@ -332,24 +458,41 @@ static void radioSend(const uint8_t *pkt, size_t len) {
     if (!refusing) {   // первая отказанная отправка: запомнить, что было перед ней
       refusing = true;
       bbMark(BB_REFUSE, cfg.channel, (uint32_t)err & 0xFFFF);
-      if (!rReviveStep) bbFreeze((int32_t)(rPut - rGot), msSince(rLastDoneMs), err, cfg.channel);
     }
   }
+  if (!cfg.isTx) return;   // сторож — дело передатчика: приёмник ответов на свои отправки не считает
   uint32_t quiet = msSince(rLastDoneMs);
+  // (quiet после каждой попытки оживления считается заново — поэтому «5 с без эфира» меряем от начала отказа: в 2.50
+  // здесь стояло quiet > 5000, и проверка 09.10 показала, что ограничение так не снимается никогда)
+  if (rReviveLimitMs && (msSince(rReviveLimitMs) > 60000 || (err != ESP_OK && (quiet > 5000 || (rReviveStep && msSince(rDeadSinceMs) > 5000))))) {
+    rReviveMax = 3;
+    rReviveFrom = REVIVE_FROM;
+    rReviveLimitMs = 0;
+  }
   uint8_t step;
   if (bbTestStep) {
     step = bbTestStep;
     bbTestStep = 0;
     if (!rReviveStep) rDeadSinceMs = millis();
   } else {
-    if (quiet <= 300 || !rReviveMax) return;
-    if (!rReviveStep) rDeadSinceMs = rLastDoneMs;
+    if (quiet <= RADIO_QUIET_MS || !rReviveMax) return;
+    if (!rReviveStep) {   // драйвер встал: запомнить, что было перед этим (слепок «чёрного ящика»)
+      rDeadSinceMs = rLastDoneMs;
+      bbFreeze((int32_t)(rPut - rGot), quiet, rFakeDead ? ESP_ERR_ESPNOW_NO_MEM : err, cfg.channel);
+    }
     step = rReviveStep ? rReviveStep + 1 : rReviveFrom;
     if (step > rReviveMax) step = rReviveMax;                    // выше не идём (отладка): повторять последнюю разрешённую
     if (rReviveStep == 2 && step == 3 && quiet <= 500) return;   // после полной перезагрузки драйвера дать ему полсекунды
+    // Вставший драйвер не отдаёт память своих 32 пакетов и после перезагрузки (замер 09.10: свободно 61 → 48 → 34 КБ
+    // за две остановки). Когда памяти уже мало, вторую ступень пропускаем: перезапуск платы (2–3 с без звука вместо
+    // 0,6 с) возвращает её всю. Проверочную «остановку» (Q10) это не касается — там память не теряется.
+    if (step == 2 && rReviveMax >= 3 && !rFakeDead && heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 30 * 1024) step = 3;
   }
   uint32_t t0 = millis();
   rRestarts++;
+  if (rqDrv) xSemaphoreTake(rqDrv, portMAX_DELAY);   // отправитель в это время к драйверу не ходит
+  rqTail = rqHead;                                   // что ждало отправки — устарело
+  rqInFlight = false;
   if (step <= 1) {
     esp_now_deinit();
     esp_wifi_stop();
@@ -357,6 +500,7 @@ static void radioSend(const uint8_t *pkt, size_t len) {
     esp_wifi_set_ps(WIFI_PS_NONE);
     radioStartEspNow();
   } else if (step == 2) {
+    rFakeDead = false;
     radioReinit();
     rPut = 0;
     rGot = 0;
@@ -366,7 +510,21 @@ static void radioSend(const uint8_t *pkt, size_t len) {
   }
   rReviveStep = step;
   rLastDoneMs = millis();
+  if (rqDrv) xSemaphoreGive(rqDrv);
   bbMark(BB_REVIVE, step, millis() - t0);
+}
+
+// Запустить отправку «по одному» (передатчик; после запуска радио).
+static void radioSerialBegin() {
+  if (rq) return;
+  rq = (RqSlot *)heap_caps_malloc(sizeof(RqSlot) * RQ_N, MALLOC_CAP_INTERNAL);
+  rqSem = xSemaphoreCreateBinary();
+  rqDrv = xSemaphoreCreateMutex();
+  if (!rq || !rqSem || !rqDrv) {
+    rq = nullptr;
+    return;
+  }
+  xTaskCreatePinnedToCore(rqTask, "rq", 4096, NULL, 21, NULL, 0);
 }
 
 // Приёмник: если своего передатчика не слышно, обойти каналы по кругу.

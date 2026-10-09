@@ -234,6 +234,10 @@ int main() {
     view.ota.stage = 11;
     for (int k = 0; k < 10; k++) frame(false, 0, 0);
     save("17j-onovlennya-perezapusk");
+    view.ota.stage = 13;   // сейчас зальют по кабелю (команда M8)
+    needFull = true;
+    for (int k = 0; k < 4; k++) frame(false, 0, 0);
+    save("17k-onovlennya-kabelem");
     view.ota.stage = 6; view.ota.fromCard = false;
     { Box c = otaBtn(ID_OTA_CLOSE); tap(c.x + 30, c.y + 20); }
     view.ota = View::Ota();
