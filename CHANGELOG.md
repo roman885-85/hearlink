@@ -1,6 +1,8 @@
 # Changelog / Історія версій
 
 ## 2.48 — 2026-10-09 (not yet released / ще не випущено)
+- EN: fixed: the “Equalizer” button on the “Sound” page lost its two bottom pixel rows when the spectrum bars redrew.
+- UK: виправлено: кнопка «Еквалайзер» на сторінці «Звук» втрачала два нижні рядки точок, коли перемальовувався спектр.
 - EN: **receiver volume boost** (menu “Boost”, or from the transmitter: receiver window → “Settings” → “Equalizer” →
   “Volume boost”): 0…+24 dB of digital gain above “audio as it is”, for a weak headphone amplifier. The boost only
   uses the room left below full scale: quiet audio gets all of it, loud audio as much as fits, so it does not bring

@@ -768,7 +768,10 @@ static Box itemBox(int id) {
     case ID_OTA_OPEN: return Box{ 168, 364, 144, 40 };
     case ID_POWEROFF: return Box{ 16, 332, 448, 52 };
     case ID_ROW + P_LANG: return rowBox(3, 76, 46, 6);
-    case ID_TXEQ_OPEN: return Box{ 312, 80, 144, 34 };   // в шапке плитки спектра, над рисками
+    // В шапке плитки спектра, над рисками. Низ кнопки — не ниже 110: столбик спектра при перерисовке очищает свою
+    // колонку начиная с y = 112 (drawSpectrum: y1 − hmax − 2), и кнопка высотой до 114 теряла две нижние строки
+    // (владелец 09.10: «кнопка еквалайзер срезана снизу»; в имитаторе не видно — там столбики не перерисовываются).
+    case ID_TXEQ_OPEN: return Box{ 312, 79, 144, 31 };
     case ID_ROW + P_GAIN: return Box{ 16, 218, 218, 54 };
     case ID_ROW + P_INPUT: return Box{ 246, 218, 218, 54 };
     case ID_ROW + P_TONE: return Box{ 332, 280, 132, 54 };   // «який звук» — открывает окно настроек проверки

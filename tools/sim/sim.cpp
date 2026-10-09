@@ -321,6 +321,21 @@ int main() {
   frame(false, 0, 0);
   tap(40 + 160, 450);
   save("03-zvuk");
+  {   // столбики спектра во весь рост и «дёргаются» — кнопка «Еквалайзер» над ними должна остаться целой
+    uint8_t keep[SPEC_BARS];
+    memcpy(keep, view.spec, sizeof(keep));
+    for (int k = 0; k < 40; k++) {
+      fakeMs += 20;
+      for (int b = 0; b < SPEC_BARS; b++) view.spec[b] = (k & 1) ? 200 : (uint8_t)(20 + (b * 37 + k * 11) % 180);
+      frame(false, 0, 0);
+    }
+    for (int b = 0; b < SPEC_BARS; b++) view.spec[b] = 200;
+    frame(false, 0, 0);
+    save("03-zvuk-spektr-na-ves-zrist");
+    memcpy(view.spec, keep, sizeof(keep));
+    needFull = true;
+    frame(false, 0, 0);
+  }
   { Box b = itemBox(ID_TXEQ_OPEN); tap(b.x + 20, b.y + 10); }
   save("03a-ekvalaizer-vkhodu");
   { Box b = txeqBox(ID_TXEQ_MINUS + 0); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }   // низ: −6 дБ
