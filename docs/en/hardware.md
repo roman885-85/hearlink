@@ -134,12 +134,47 @@ output — which is why headphones can be plugged straight into the jack).
 | LCK (LRCK) | **12** | word clock, 32 kHz |
 | DIN | **13** | I2S data, 16 bit |
 | SCK | **GND** (or pin 10 — the receiver holds it low) | no master clock is supplied: the DAC recovers it from BCK |
-| XSMT | **14** (or 3V3) | “sound on”: the receiver keeps it high while the output is running |
+| XSMT | **14** (or 3V3) | “sound on”. Since 2.63 the receiver holds it at ground from the first line of its start-up and raises it only when sound is actually playing (see “No pops” below) |
 | FLT | **GND** or 3V3 — just not floating | digital filter: GND — normal, 3V3 — low latency |
 | DEMP | **GND** or 3V3 — just not floating | de-emphasis: GND — off, 3V3 — on (softer treble) |
 | FMT | **GND** | I2S format |
 
 ![Receiver with PCM5102](../skhema-priemnik-s3-pcm5102.png)
+
+**No pops in the headphones.** For the DAC to stay silent while the receiver boots, XSMT must be wired to pin 14
+(not to 3V3 and not bridged to “H” with H3L). Since version 2.63 the firmware: (1) drives pin 14 to ground in the
+very first line of its start-up; (2) raises it only when the receiver is running and sound is playing (the splash
+and the beginning of “start-up” pass with the DAC muted) and lowers it as soon as work ends; (3) before any restart
+of the board mutes the DAC first and holds the pin at ground across the restart. One thing the firmware cannot do:
+between power-up and its own start (fractions of a second) the processor pin is not driven at all. If a pop **at
+power-up** remains, put a 10–47 kΩ resistor between XSMT and ground: it keeps the DAC muted until the firmware
+takes the pin over.
+
+### MAX97220 headphone amplifier after the DAC
+
+From the jack of the PCM5102 module only about 6 % of the DAC voltage reaches 32 Ω headphones: the module has 470 Ω
+resistors on its outputs. That is why “full volume” with headphones plugged in directly is quiet, and the digital
+«Підсилення» (Boost) cannot help here — nothing digital is louder than the DAC's full scale. The headroom comes from
+a headphone amplifier: the MAX97220 module (“HYT”) gives the headphones the whole DAC voltage.
+
+| Module pad | Where to |
+|---|---|
+| L+, R+ | left and right DAC output |
+| L−, R− | DAC ground (AGND) |
+| VCC, GND | power; 5 V is better — from 3.3 V the loudest passages may be clipped |
+| CTRL | to “plus” — the amplifier is on (according to the chip's data sheet) |
+| R, G, L | headphones |
+
+- **The gain of the module is one.** All resistors around the chip are 10 kΩ. The marking “E01” on some of them is
+  the same “103” soldered upside down.
+- **To raise the gain**, the resistor at the “+” input is reduced: gain = 2 · 10 kΩ / (10 kΩ + R). With 470 Ω it is
+  1.9 (+5.6 dB), with a jumper — 2 (+6 dB). But into 32 Ω headphones the chip delivers about 2 V at most from a
+  5 V supply, while the DAC gives 2.1 V at full scale — so with a gain of 2 it clips the peaks at high volume. In
+  that case set «Межа гучності» (Volume limit) in the receiver to about 85 % (5 V) or 70 % (3.3 V).
+- **With the amplifier, keep «Підсилення» (Boost) in the receiver menu at zero** and set the loudness with the
+  knob; for listeners it makes sense to restrict «Межа гучності» — 100 % is really loud now.
+
+The figures about voltage and clipping are calculated from the chip's data sheet, not measured on the board.
 
 **The key point: no control pin of the chip may be left floating.** According to the module schematic, four pins
 (FLT, DEMP, XSMT, FMT) are set by the solder jumpers H1L–H4L on the back, and the module normally ships with them

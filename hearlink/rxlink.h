@@ -106,7 +106,7 @@ static void rxOnCommand(const uint8_t *data, int len) {
       if (left < 0) left = 0;
       if (left > 2000) return;
       rxHopSeq = at;
-      rxHopDeadline = millis() + (uint32_t)(left * rxFrameMs) + 40;
+      rxHopDeadline = millis() + (uint32_t)(left * rxSeqMs) + 40;   // left — в кадрах (в двойном пакете их два)
       rxHopNow = left == 0;
       rxHopCh = c->arg;
     }
@@ -231,7 +231,7 @@ static void rxPairTick() {
       secHwOn();
       secHwTag(secDev.mac, nn, (const uint8_t *)&q, KEYREQ_CLEAR, NULL, 0, q.tag);
       secHwOff();
-      esp_now_send(BCAST, (const uint8_t *)&q, sizeof(q));
+      rxSend((const uint8_t *)&q, sizeof(q));
       rxKeyAsked = rxKeyAsked + 1;
     }
     return;
@@ -275,15 +275,114 @@ static void rxPairTick() {
   memcpy(q.id, rxId, 3);
   memcpy(q.pub, rxPair.pub, PAIR_PUB);
   utf8Copy(q.name, rxName(), NAME_LEN);   // в просьбе о доступе имя прежней длины: передатчик покажет начало
-  esp_now_send(BCAST, (const uint8_t *)&q, sizeof(q));
+  rxSend((const uint8_t *)&q, sizeof(q));
   rLastAskMs = now ? now : 1;
   rxPairAsked = rxPairAsked + 1;
+}
+
+static volatile uint32_t rxStatusSent;   // сколько раз приёмник сообщил о себе
+// ---- «кого слышу» (proto.h, TxSeen): слышит ли нас передатчик
+static volatile uint32_t rxSeenMs;       // когда мы последний раз были в списке передатчика (0 — ни разу)
+static volatile uint32_t rxRosterMs;     // когда пришло последнее объявление (0 — ни разу: передатчик до 2.59)
+static volatile uint32_t rxRosterN;      // сколько объявлений принято
+static volatile bool rxRosterFull;       // у передатчика список приёмников полон — нас в нём может не быть законно
+// из задачи Wi-Fi
+static void rxOnSeen(const uint8_t *data, int len) {
+  static uint32_t lastEpoch, lastCtr;
+  static bool have;
+  const TxSeen *raw = (const TxSeen *)data;
+  uint8_t body[SEEN_BODY];
+  if (!secOpen(SEC_SEEN, raw->epoch, raw->ctr, NULL, data, SEEN_CLEAR, data + SEEN_CLEAR, SEEN_BODY, data + SEEN_CLEAR + SEEN_BODY, body)) {
+    if (secHave) secBadTag = secBadTag + 1;
+    return;
+  }
+  // только из нынешнего включения передатчика и новее прежних: записанное и повторённое объявление не примем
+  if (raw->epoch != secEpoch || (have && raw->epoch == lastEpoch && (int32_t)(raw->ctr - lastCtr) <= 0)) {
+    secReplay = secReplay + 1;
+    return;
+  }
+  have = true;
+  lastEpoch = raw->epoch;
+  lastCtr = raw->ctr;
+  uint8_t n = body[0] & 0x7F;
+  if (n > SEEN_MAX) n = SEEN_MAX;
+  bool me = false;
+  for (uint8_t i = 0; i < n; i++)
+    if (!memcmp(body + 1 + i * 3, rxId, 3)) me = true;
+  uint32_t now = millis();
+  rxRosterFull = body[0] & 0x80;
+  rxRosterMs = now ? now : 1;
+  rxRosterN = rxRosterN + 1;
+  if (me) rxSeenMs = now ? now : 1;
+}
+
+// Сверка (главный цикл, приёмник в работе). Передатчик слышен и объявляет, кого слышит; мы за это время не меньше
+// четырёх раз сообщили о себе — а нас в списке нет дольше RX_UNSEEN_MS. Значит, наши сообщения до него не доходят:
+//   1) перезагрузить радио (около 20 мс без приёма);
+//   2) не помогло за следующие RX_UNSEEN_MS — перезапустить плату без заставки (2–3 с без звука). Один раз: если и
+//      после перезапуска нас не слышат, дело не в нас (например, передатчик дальше, чем достаёт приёмник), и снова
+//      перезапускаться — только рвать звук; остаётся изредка перезагружать радио (через 1, 2, 4, 8, потом по 10 минут).
+// Всё забывается, когда нас слышат десять минут подряд. Повторный перезапуск — не раньше чем через полчаса работы и
+// только если после прошлого нас хоть раз услышали.
+#define RX_UNSEEN_MS 12000
+#define RX_HEAL_BOOT 0x52584842u
+RTC_NOINIT_ATTR static uint32_t rxHealBootMagic;   // плата перезапущена оттого, что передатчик не слышал приёмник
+RTC_NOINIT_ATTR static uint32_t rxHealBootCount;   // сколько таких перезапусков с включения питания
+RTC_NOINIT_ATTR static uint32_t rxFakeKeep;        // проверка n12=4: «неисправность» переживает перезапуск платы
+static bool rxHealBoot;                            // этот запуск — после такого перезапуска
+static bool rxQuietBoot;                           // и потому без заставки и «запуска» (до первого выхода в работу)
+static void (*rxSelfRestart)();                    // перезапустить плату (ставит hearlink.ino); не возвращается
+static volatile uint8_t rxUnseenStage;             // для отчёта: 0 — порядок, 1 — радио перезагружали, 2 — плату перезапускали
+static void rxSeenTick() {
+  static uint32_t since, statusAt, seenSince, backoffMs = 60000;
+  static bool everSeen, reinitDone;
+  uint32_t now = millis();
+  if (rxSeenMs && msSince(rxSeenMs, now) < 9000) {   // нас слышат (передатчик помнит приёмник 7 с, объявляет раз в 2 с)
+    since = 0;
+    everSeen = true;
+    if (!seenSince) seenSince = now ? now : 1;
+    else if (now - seenSince > 600000) {
+      reinitDone = false;
+      backoffMs = 60000;
+      rxUnseenStage = 0;
+    }
+    return;
+  }
+  seenSince = 0;
+  bool roster = rxRosterMs && msSince(rxRosterMs, now) < 5000;
+  if (rxPower != PW_RUN || !secHave || cfg.off || rxOtaMute || !roster || rxRosterFull || msSince(rLastRxMs, now) > 400) {
+    since = 0;
+    return;
+  }
+  if (!since) {
+    since = now ? now : 1;
+    statusAt = rxStatusSent;
+    return;
+  }
+  if (now - since < RX_UNSEEN_MS || rxStatusSent - statusAt < 4) return;
+  since = 0;
+  if (!reinitDone) {
+    reinitDone = true;
+    rxUnseenStage = 1;
+    rxRadioHeal(2);
+    return;
+  }
+  if (rxSelfRestart && (!rxHealBoot || (everSeen && now > 1800000))) {
+    rxUnseenStage = 2;
+    rxSelfRestart();
+    return;
+  }
+  if (rxHealMs && msSince(rxHealMs, now) > backoffMs) {
+    backoffMs = backoffMs >= 300000 ? 600000 : backoffMs * 2;
+    rxRadioHeal(2);
+  }
 }
 
 static void rxLinkBegin() {
   uint8_t mac[6];
   esp_wifi_get_mac(WIFI_IF_STA, mac);
   memcpy(rxId, mac + 3, 3);
+  rOnSeen = rxOnSeen;
   rOnCommand = rxOnCommand;
   rOnPairRsp = rxOnPairRsp;
   rOnKeyMsg = rxOnKeyMsg;
@@ -334,7 +433,6 @@ static void rxKeyPinsClean() {
 
 static volatile uint32_t rxWakes;   // сколько раз вышли из ожидания (для отчёта)
 static volatile uint32_t rxSleeps;  // сколько кругов сна прошло (для отчёта)
-static volatile uint32_t rxStatusSent;
 static void rxLinkTick();
 
 // Один круг сна в ожидании. Радио выключается, процессор засыпает на полсекунды (его будит таймер или кнопка),
@@ -349,6 +447,7 @@ static bool rxSleepCycle() {
     return false;
   }
   Serial.flush();
+  for (int i = 0; i < 30 && rxTxBusy(); i++) delay(1);   // свой пакет ещё у драйвера — дать ему уйти
   esp_now_deinit();
   esp_wifi_stop();
   esp_sleep_enable_timer_wakeup(500000);
@@ -420,6 +519,11 @@ static void rxPowerTick() {
   if (!rxScreenProbed && cfg.board == BOARD_DEVKIT && now < 1500) return;
   // без экрана показывать нечего — заставку и сообщения не выдерживаем
   uint32_t splashMs = rxScreenFound ? RX_SPLASH_MS : 0, startMs = rxScreenFound ? RX_START_MS : 0, goingMs = rxScreenFound || rxPowerWhy == WHY_NOSIGNAL ? RX_GOING_MS : 300;   // «передатчик не найден» держим и без экрана: светодиод 4 с мигает красным
+  if (rxQuietBoot) {   // плата перезапущена сама, чтобы её снова услышал передатчик (rxSeenTick): звук вернуть сразу
+    splashMs = 0;
+    startMs = 0;
+    if (rxPower == PW_RUN || now > 20000) rxQuietBoot = false;
+  }
   if (!secHave) {   // не подключён к набору: в ожидание не уходим — приёмник просит доступ, на экране код
     if (rxPower == PW_STANDBY) {
       rxAudioOn = true;
@@ -508,7 +612,10 @@ static void rxLinkTick() {
     }
   }
   static uint32_t lastEcho = 0xFFFFFFFF;
-  if (now < nextMs || msSince(rLastRxMs, now) > 1000 || !secHave) return;   // передатчика не слышно — молчим
+  // Передатчика не слышно — молчим. Порог 400 мс (до 2.59 — секунда): через 600 мс тишины приёмник начинает обходить
+  // каналы, и сведения, отправленные между 600-й и 1000-й миллисекундой, попадали под смену канала.
+  if (now < nextMs || msSince(rLastRxMs, now) > 400 || !secHave) return;
+  if (rxHopCh) return;                 // объявлен переход на другой канал — сообщим о себе уже там
   if (rHeardSeq == lastEcho) return;   // одноразовое число сведений — номер услышанного пакета: дважды одно не используем
   nextMs = now + 2000 + (esp_random() % 300);   // и в ожидании так же: иначе передатчик сочтёт приёмник пропавшим
   RxStatus2 st = {};   // длинного вида: передатчик по длине узнаёт, что этому приёмнику можно слать длинное имя
@@ -535,8 +642,11 @@ static void rxLinkTick() {
   utf8Copy(st.name, rxName(), NAME_LONG);
   lkFrames = lkRecovered = lkLost = lkUnder = 0;
   if (!secSeal(SEC_STATUS, st.echoEpoch, st.echoSeq, st.id, (const uint8_t *)&st, ST_CLEAR, &st.volume, ST2_BODY, st.tag)) return;
-  esp_now_send(BCAST, (const uint8_t *)&st, sizeof(st));
+  if (rxSend((const uint8_t *)&st, sizeof(st)) != ESP_OK) return;   // драйвер не взял — сторож отправок разберётся (radio.h)
   rxStatusSent = rxStatusSent + 1;
+  // Второй пакет — только когда первый ушёл (ждём ответа драйвера, обычно 2–4 мс, не дольше 25): до 2.59 оба шли
+  // подряд, и второй всегда ложился драйверу поверх ещё не ушедшего первого.
+  for (int i = 0; i < 25 && rxTxBusy(); i++) delay(1);
   // и вслед — настройки «для слуха и удобства»: по ним окно приёмника на передатчике показывает, что сейчас выбрано
   RxInfo in = {};
   in.magic = MAGIC_STATUS;
@@ -548,9 +658,14 @@ static void rxLinkTick() {
   for (uint8_t p = 0; p < RXP_COUNT; p++) in.p[p] = rxParamWire(p);
   in.earTest = rxEarTest ? 1 : 0;
   fwParts(in.spare[0], in.spare[1]);
+  if (rxOldSim == 2) {   // проверка: назваться прошивкой 2.56 (см. rxOldSim в radio.h)
+    in.spare[0] = 2;
+    in.spare[1] = 56;
+  }
   in.spare[0] = (uint8_t)((in.spare[0] & 15) | ((cfg.rxBoost > 12 ? 0 : cfg.rxBoost) << 4));   // версия и усиление
   in.spare[2] = (uint8_t)(cfg.rxEq[0] | (cfg.rxEq[1] << 4));
   in.spare[3] = (uint8_t)(cfg.rxEq[2] | (cfg.rxEq[3] << 4));
   in.spare[4] = (uint8_t)(cfg.rxEq[4] | (cfg.rxLowCut ? 0x10 : 0) | ((cfg.rxLock & 3) << 5) | 0x80);   // старший бит — «эквалайзер есть»
-  if (secSeal(SEC_RXINFO, in.echoEpoch, in.echoSeq, in.id, (const uint8_t *)&in, ST_CLEAR, in.p, INFO_BODY, in.tag)) esp_now_send(BCAST, (const uint8_t *)&in, sizeof(in));
+  if (secSeal(SEC_RXINFO, in.echoEpoch, in.echoSeq, in.id, (const uint8_t *)&in, ST_CLEAR, in.p, INFO_BODY, in.tag)) rxSend((const uint8_t *)&in, sizeof(in));
+  for (int i = 0; i < 25 && rxTxBusy(); i++) delay(1);   // и его дождаться: следом может идти смена канала или сон
 }

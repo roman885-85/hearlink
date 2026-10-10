@@ -68,13 +68,13 @@ headphones), **«Перейменувати» (Rename)** (up to 32 letters), **�
 
 ![Receiver settings](../img/tx-18d-pryimach-nalashtuvannya.png) ![Receiver equalizer](../img/tx-18g-ekvalaizer.png)
 
-**Settings** of a receiver from the transmitter: audio output, speech clarity, balance, volume limit, screen view,
-LED, interface language, the button **«Перевірка навушників» (Headphone test)**. The **«Еквалайзер» (Equalizer)**
+**Settings** of a receiver from the transmitter: audio output, speech clarity, balance, volume limit, **volume
+boost** («Підсилення гучності», 0…+24 dB; in this list since 2.63 — it used to be on the equalizer sheet), screen
+view, LED, knob lock, the button **«Перевірка навушників» (Headphone test)**. The **«Еквалайзер» (Equalizer)**
 button to the right of the name (receivers with 2.45+) opens the second sheet of the same window — the equalizer of
-this receiver: the same five bands, a low cut below 100 Hz (on by default in a receiver) and, since 2.48, the
-**«Підсилення гучності» (Volume boost)** (0…+24 dB); the same button
-(«Налаштування», Settings) goes back. This is how the sound is fitted to one person's hearing, while the input
-equalizer works for everybody at once.
+this receiver: the same five bands, a low cut below 100 Hz (on by default in a receiver) and the receiver's
+interface language; the same button («Налаштування», Settings) goes back. This is how the sound is fitted to one
+person's hearing, while the input equalizer works for everybody at once.
 
 The last row is **«Блокування ручки» (Knob lock)** (receivers with 2.46+): *none* / *menu* (a long press does not open
 the menu) / *volume* (turning and mute-by-press do nothing) / *all*. The receiver shows «Заблоковано» (Locked) when
@@ -201,7 +201,7 @@ was changed from the transmitter) and so on.
 | **«Мова» (Language)** | as transmitter / українська / English |
 | **«Чіткість» (Clarity)** | off / light (+4 dB) / medium (+8) / strong (+12) — a boost above 2 kHz, where the consonants are |
 | **«Баланс» (Balance)** | left +1…+5 / center / right +1…+5 (3 dB each); only with the «2 канали» (2 channels) output |
-| **«Підсилення» (Boost)** | off / +2…+24 dB — digital gain above “audio as it is” for a weak headphone amplifier. Quiet audio gets the whole boost, loud audio as much as fits below full scale (since 2.48) |
+| **«Підсилення» (Boost)** | off / +2…+24 dB — digital gain above “audio as it is”, like the trim on a mixing console: the sound is amplified by exactly what is set (since 2.63; in 2.48–2.56 it acted only within the headroom below full scale and was barely noticeable on loud music). If the amplified sound does not fit the DAC's scale — a loud source at a high volume — the limiter holds the peaks: no crackle, but music becomes denser. Nothing digital can make it louder than full scale: headroom above it comes only from the headphone amplifier |
 | **«Межа гучн.» (Volume limit)** | 20…100 % — the loudness ceiling: the knob scale stays 0…100 %, but 100 % sounds like this limit (since 2.41) |
 | **«Навушники → тест» (Headphones → test)** | a tone alternately in the left and the right ear |
 | **«Зв'язок» (Link)** | signal in dBm, loss, buffer, a one-minute graph |

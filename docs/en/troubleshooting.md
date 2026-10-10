@@ -17,6 +17,7 @@
 | What you see | Cause | What to do |
 |---|---|---|
 | the transmitter port is silent or pours out “garbage”, no replies to commands | mixer audio from the PCM1808 input is on air: its master clock occupies TXD, the pin the transmitter prints with | switch the test sound on («Перевірка» (Test) or `g5` blind) — the port comes back (since 2.56); or switch the input to the built-in ADC (`a0`) — for debugging only |
+| `?` says «два кадри в пакеті поки не можна: приймач … зі списку не повідомляв версію 2.60 або новішу» (two frames per packet not possible yet) | the list of receivers contains a receiver with old firmware, or one the transmitter has not heard since its update | switch that receiver on nearby — it updates by itself; if it no longer exists — delete it from the list («Приймачі» → the receiver → «Видалити з набору»). Until then the transmitter works with single packets, as before |
 | the sound in the receivers drops for fractions of a second, “no signal” flashes | the transmitter input is the built-in ADC: with it the transmitter radio stalls now and then and is revived in 0.2 s (the port prints “# РАДІО СТАЛО…”) | use the PCM1808 input («Звук» (Sound) → «Вхід» (Input)); with the built-in ADC this is unavoidable |
 | «ТИХО НА ВХОДІ» (INPUT SILENT), the level is at zero | no signal from the mixer; the wrong output | check the cable and the level; «Перевірка» (Test) → if the receivers hear the test sound, the problem is in the input |
 | «ПЕРЕВАНТАЖЕННЯ» (OVERLOAD), on the receivers «Гучно на вході!» (Input too loud!) | the level from the mixer is too high | reduce it on the mixer or set «Підсилення входу» (Input gain) to a negative value |
@@ -36,6 +37,8 @@
 | What you see | Cause | What to do |
 |---|---|---|
 | the screen is dark, there is sound | the display was not found (power, SDA/SCL); the screen was turned off from the menu | VCC on 3V3, SDA=8, SCL=9; move the knob |
+| the receiver plays, but in the transmitter's list it is «не на зв'язку» (not in touch) | the transmitting part of the receiver's radio has stalled (reception keeps working); before 2.63 only a restart of the receiver cured it | since 2.63 nothing: the receiver notices it by itself within 0.5–25 s and reloads its radio (a 20 ms break in the sound), as a last resort it restarts once (a second of silence). A record of the case is in the log on the transmitter's card (`# [number] приймач: …`); the counters are in the receiver's `?` report |
+| a pop in the headphones when the receiver is switched on or restarts | the DAC opened before the receiver had finished booting | firmware 2.63 (XSMT wired to pin 14); if a pop at power-up remains — a 10–47 kΩ resistor between XSMT and ground ([hardware](hardware.md)) |
 | «НЕ ПІДКЛЮЧЕНО» (NOT CONNECTED), no code, «увімкніть передавач» (switch transmitter on) | the transmitter is not heard | switch the transmitter on, bring the receiver closer |
 | there is a code, but there is no request on the transmitter | the adding window is closed | «Приймачі» (Receivers) → «+ Додати» (+ Add) |
 | «ПОШУК ПЕРЕДАВАЧА» (SEARCHING), then sleep | the transmitter is off or on another channel («Тиша» (Mute) on the transmitter has nothing to do with it: with mute on, packets are still sent) | switch the transmitter on; in the receiver menu set «Канал» (Channel) to "auto" |

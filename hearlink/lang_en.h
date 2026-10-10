@@ -321,6 +321,7 @@ static const char *const LANG_EN[][2] = {
   { "два канали (навушники)", "two channels (headphones)" },
   { "протифаза (підсилювач)", "antiphase (amplifier)" },
   { "%u год %02u хв, версія %.1f", "%u h %02u min, version %.1f" },
+  { "%u год %02u хв, версія %u.%u", "%u h %02u min, version %u.%u" },
   { "Показати себе", "Identify" },
   { "Перейменувати", "Rename" },
   { "Тихіше", "Quieter" },

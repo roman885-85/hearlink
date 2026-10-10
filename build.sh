@@ -19,6 +19,15 @@ IDECLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resourc
 [ -x "$IDECLI" ] || IDECLI=arduino-cli
 CFG=$HOME/.arduinoIDE/arduino-cli.yaml
 OUT=build/$SKETCH-$2
+# Ядро Arduino. Выпуски с 2.59 собираются ядром esp32 3.3.12 (ESP-IDF 5.5.5); до 2.58 — 3.3.3 (ESP-IDF 5.5.1).
+# Если ядро для этого проекта поставлено в отдельную папку ~/Library/Arduino15-hearlink (так у автора: общим ядром
+# 3.3.3 в ~/Library/Arduino15 собираются другие проекты, и трогать его нельзя) — берётся оно. Иначе — то ядро, что
+# стоит в Arduino IDE. CORE=old ./build.sh … — нарочно собрать общим ядром; результат ляжет рядом, в
+# build/<набросок>-<плата>-old, чтобы сборки можно было сравнить и залить любую.
+OWNCFG=$HOME/Library/Arduino15-hearlink/arduino-cli.yaml
+if [ "${CORE:-}" = old ]; then OUT=build/$SKETCH-$2-old
+elif [ -f "$OWNCFG" ]; then CFG=$OWNCFG
+fi
 rm -f "$OUT/$SKETCH.ino.bin"   # иначе при ошибке сборки в плату ушла бы прежняя прошивка
 "$IDECLI" --config-file "$CFG" compile -b $FQBN --build-path "$OUT" --warnings default "$SKETCH" 2>&1 \
   | grep -E "Sketch uses|Global variables|warning|rror" || true

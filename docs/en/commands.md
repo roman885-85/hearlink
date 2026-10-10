@@ -61,6 +61,7 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `Q` | the radio "black box"; `Q0…Q3` — up to which step to revive (an experiment only: the limit expires by itself after 60 s, or after 5 s without air); `Q7 Q8 Q9 Q6` — perform a step on a healthy radio; `Q10` — an imitated stalled driver; `Qn` — what the radio hears (noise level); `Qp<bits>` — radio protocol experiment (1 b, 2 g, 4 n, 8 LR; `Qp15` — as usual). `Q` also prints measurements: gaps between sends, the path of a lone packet, frame processing time by stages |
 | `Y1`/`Y0`, `Y3`/`Y4`, `Y5…Y8` | experiments with display frame output |
 | `M8` | full-screen warning “cable update — the screen goes dark for a minute” (25 s or until the board is reset) |
+| `Qd0` / `Qd1` / `Qd2` | two frames per packet on «найвища»: never / automatically, when all receivers in touch can take it (the default) / always (an experiment). Lasts until a restart. `?` says «ДВА кадри в пакеті» (two frames) or «один кадр у пакеті» (one frame) |
 | `Y9`, `Y10`/`Y11` | knock the display driver out of its buffer order on purpose; put frame portions where the driver says (as before 2.49) / the firmware's own way |
 
 ### Receivers from the transmitter
@@ -74,7 +75,7 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `N<name>` | give a name |
 | `X` | output check by ear (five states of 6 s each) |
 | `i<no.>=<value>[@number]` | settings: 0 clarity 0–3, 1 balance −5…5, 2 volume limit 1–20, 3 view 0–2, 4 LED 0–3, 5 language 0–2; `i9=1` / `i9=0` — headphone test. Example: `i0=2@884A94` |
-| `i7=<dB 0…24>[@number]` | digital boost of a receiver (on the receiver itself — `n10=<dB>`); the `n7=3` reply shows “boost +N dB (now …)” |
+| `i7=<dB 0…24>[@number]` | digital boost of a receiver, a “trim” (on the receiver itself — `n10=<dB>`); the `n7=3` reply shows “boost +N dB (now …)” |
 | `i6=<0…3>[@number]` | receiver knob lock: 0 none, 1 menu, 2 volume, 3 all (on the receiver itself — `n6=<0…3>`) |
 | `i20…i24=<dB>[@number]`, `i25=<0/1>[@number]` | receiver equalizer: bands 125 Hz, 400 Hz, 1 kHz, 2.5 kHz, 6 kHz (−12…12 dB) and the low cut; the state and the level before/after are in the `n7=3` reply |
 | `e`, `e<0…4>=<dB>`, `e5=<0/1>` | transmitter input equalizer: show / band / low cut; `e9=1` — probe: apply it to the 1 kHz tone too (for measuring) |
@@ -108,6 +109,13 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `n<no.>=<value>` | change one (numbers as in `i`) |
 | `n9=1` / `n9=0` | headphone test |
 | `n7=1` / `n7=2` / `n7=3` | open the menu / the «Зв'язок» (Link) screen / the main screen |
+| `n11=1` / `n11=2` / `n11=0` | compatibility check without an old firmware at hand: do not understand double packets / also call itself version 2.56 (the transmitter goes back to single packets) / as is. Until a restart |
+| `n12=1…4` / `n12=0` | check of the receiver radio self-repair without a real fault: 1 — the driver “took the packet and stays silent”; 2 — packets “go nowhere” (until the radio is reloaded); 3 — the same until the board restarts; 4 — and after the restart too; 0 — off |
+
+The receiver's `?` report (since 2.63) has two lines about its radio: how many packets were sent and how many the
+driver answered, the longest wait for an answer, how many times the radio was reloaded (did not answer + the
+transmitter did not hear) and whether the transmitter hears the receiver: «передавач мене чує: ТАК / НІ / невідомо»
+(yes / no / unknown).
 
 ### Knob hands-free
 The pin shorts itself to ground — exactly what the button or the encoder contact does.
@@ -173,6 +181,8 @@ screen: 62 frames per second, frame transfer avg 2.7 ms, longest 6.7 ms, bus 800
 | `watch.py`, `watch2.py` | transmitter (and receiver) side by side: a summary over N seconds — waiting for air, refusals, dropouts |
 | `duo.py`, `trio.py`, `kwatch.py` | measurements from two or three sides, a check of the key change |
 | `sleeptest.py` | sleep and wake-up of receivers on a schedule of commands: `sleeptest.py ПОРТ 4:z1 26:z0 конец:42` (`конец` is Russian for "end") |
+| `stallrun.sh` | a “does the transmitter radio stall” run: one line a minute — uptime, input, one or two frames per packet, radio stalls, frame processing time: `caffeinate -i tools/stallrun.sh PORT <a0\|a1\|-> <Qd0\|Qd1\|-> MINUTES` |
+| `getlogs.py`, `logstat.py` | pull the `/LOG/` files from the card through the port and count radio stalls and receiver links |
 | `qsweep.py` | comparison of qualities and rates: `qsweep.py ПОРТ СЕКУНД quality:rate[:power] …` |
 | `sweep.py`, `hoptest.py` | comparison of channels, a check of the channel move |
 | `fliptest.py`, `idletest.py` | smoothness of page flipping and steadiness of the transmitter screen |

@@ -99,7 +99,7 @@ b1
 
 ## Збирання з вихідних текстів
 
-1. Arduino IDE 2.x (або `arduino-cli`), у «Менеджері плат» — **esp32 by Espressif 3.3.3** (ESP-IDF 5.5).
+1. Arduino IDE 2.x (або `arduino-cli`), у «Менеджері плат» — **esp32 by Espressif 3.3.12** (ESP-IDF 5.5.5; випуски до 2.56 збиралися 3.3.3).
    З іншими версіями ядра не перевірялося.
 2. Бібліотека **U8g2** (olikraus) через «Менеджер бібліотек». Більше нічого ставити не треба.
 3. Відкрити `hearlink/hearlink.ino`. Плата: *ESP32S3 Dev Module*; **PSRAM: OPI PSRAM**; **Flash Size: 16MB**.

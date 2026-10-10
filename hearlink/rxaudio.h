@@ -139,7 +139,9 @@ static inline void rxPush(const int16_t *x, const int16_t *sd, int n) {   // sd 
 }
 
 static volatile uint8_t rxQ = 255;            // вид пакетов, в котором сейчас идёт передача (качество и признак стерео)
-static volatile float rxFrameMs = 2;          // длительность кадра в пакете — от неё зависит наименьший запас
+static volatile uint32_t rxDblCount;         // сколько принято «двойных» пакетов (два кадра в пакете, с 2.60)
+static volatile float rxFrameMs = 2;          // сколько звука в пакете, мс — от этого зависит наименьший запас
+static volatile float rxSeqMs = 2;            // длительность одного кадра (одного номера), мс: в двойном пакете их два
 static Interp2 rxUp, rxUpS;
 
 // Положить кадр в запас: 16 кГц перед этим переводятся в 32. sd — разность каналов или NULL.
@@ -179,7 +181,8 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
   bool st = h->q & Q_STEREO;
   const QDef &d = QDEF[q];
   int outN = d.n * (SRATE / d.sr);   // отсчётов на выходе за кадр
-  if (rxHopCh && (int32_t)(h->seq + 1 - rxHopSeq) >= 0) rxHopNow = true;   // последний пакет на прежнем канале — переходим
+  bool dbl = h->q & Q_DOUBLE;   // два кадра в пакете: номер пакета — номер первого, второй кадр — следующий
+  if (rxHopCh && (int32_t)(h->seq + (dbl ? 1 : 0) + 1 - rxHopSeq) >= 0) rxHopNow = true;   // последний пакет на прежнем канале — переходим
   {   // язык надписей — как у передатчика (если в меню приёмника не выбран свой: cfg.rxLang)
     uint8_t lg = (h->q & Q_LANG_EN) ? 1 : 0;
     if (lg != cfg.lang) {
@@ -188,7 +191,7 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
       rxLangDirty = true;
     }
   }
-  uint8_t hq = h->q & ~Q_LANG_EN;   // вид пакета без признака языка
+  uint8_t hq = h->q & ~(Q_LANG_EN | Q_DOUBLE);   // вид пакета без признака языка и без «упаковки по два» (кадры те же)
   int32_t gap = (int32_t)(h->seq - rxLastSeq);
   bool fresh = !rxHave || h->boot != rxBoot;   // начало приёма или новое включение передатчика
   if (!fresh && gap <= 0) return;              // повтор или пакет из прошлого (в том числе записанный и подсунутый снова)
@@ -197,7 +200,6 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
     rxBoot = h->boot;
     rxQ = hq;
     rxAirStereo = st;
-    rxFrameMs = d.n * 1000.0f / d.sr;
     rxUp.reset();
     rxUpS.reset();
     rxNeedPrime = true;
@@ -206,10 +208,13 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
   }
   if (gap <= 0) return;   // повтор или старый пакет
   rxFlags = h->flags & 0x0F;
+  rxSeqMs = d.n * 1000.0f / d.sr;
+  rxFrameMs = (dbl ? 2 : 1) * rxSeqMs;   // звука в пакете (от этого зависит наименьший запас)
   bool fadeIn = false;
-  int copies = qCopies(q, st);
-  const uint8_t *sideBlk = st ? payload + qMainLen(q) : NULL;
-  const uint8_t *cp = payload + qMainLen(q) + (st ? qBlock(q) : 0);
+  int copies = dbl ? DBL_COPIES : qCopies(q, st);
+  int fl = qMainLen(q) + (st ? qBlock(q) : 0);        // один кадр в пакете: середина и, в стерео, разность
+  const uint8_t *cp = payload + (dbl ? 2 : 1) * fl;   // запасные копии: от ближнего кадра к дальнему
+  const uint8_t *scp = cp + copies * qBlock(q);       // копии разности (двойной пакет — всех тех же кадров; одиночный — одного)
   if (gap >= 2) {
     // пропали кадры: последние есть в запасных копиях, остальные заменить тишиной
     // (за вычетом того, что выход уже сыграл впустую)
@@ -238,9 +243,9 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
     }
     for (int k = rec; k >= 1; k--) {   // от давнего кадра к недавнему; копии несут только середину — кадр выйдет в моно
       adpcmDecodeBlock(cp + (k - 1) * qBlock(q), d.n, tmp);
-      bool sc = st && rPktSc && k == 1 && q == Q_HI;   // у прошлого кадра есть и копия разности — он выйдет в стерео
+      bool sc = st && q == Q_HI && (dbl || (rPktSc && k == 1));   // у кадра есть и копия разности — он выйдет в стерео
       if (sc) {
-        scDecode(cp + copies * qBlock(q), tmpS);
+        scDecode(scp + (dbl ? (k - 1) * SC_LEN : 0), tmpS);
         rxScCount = rxScCount + 1;
       } else if (st) rxMonoRec = rxMonoRec + 1;
       rxEmit(tmp, sc ? tmpS : NULL, d, fadeIn);
@@ -249,31 +254,63 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
       else sRecovered = sRecovered + 1;
     }
   }
-  if (d.pcm) memcpy(tmp, payload, d.n * 2);
-  else adpcmDecodeBlock(payload, d.n, tmp);
-  if (st) adpcmDecodeBlock(sideBlk, d.n, tmpS);
-  rxEmit(tmp, st ? tmpS : NULL, d, fadeIn);
+  for (int f = 0; f < (dbl ? 2 : 1); f++) {   // кадр пакета (в двойном — оба подряд)
+    const uint8_t *fp = payload + f * fl;
+    if (d.pcm) memcpy(tmp, fp, d.n * 2);
+    else adpcmDecodeBlock(fp, d.n, tmp);
+    if (st) adpcmDecodeBlock(fp + qMainLen(q), d.n, tmpS);
+    rxEmit(tmp, st ? tmpS : NULL, d, fadeIn);
+    fadeIn = false;
+  }
+  if (dbl) {
+    gap++;   // второй кадр пакета — тоже принят
+    rxDblCount = rxDblCount + 1;
+  }
   rxInSamples = rxInSamples + (uint32_t)gap * outN;   // вместе с пропавшими: счёт идёт по номерам пакетов, то есть по часам передатчика
-  rxLastSeq = h->seq;
-  sFrames = sFrames + 1;
+  rxLastSeq = h->seq + (dbl ? 1 : 0);
+  sFrames = sFrames + (dbl ? 2 : 1);
 }
 
 // Вывод XSMT модуля PCM5102 («звук включён»). У модулей GY-PCM5102 он заводится перемычкой H3L на обороте, и у части
 // модулей перемычки не запаяны — ЦАП молчит при исправных тактах и данных (владелец 08.10: «если замкнуть H3L так,
 // чтобы соединить центральный контакт с контактом H — звук появляется»; «сделай, чтобы звук был без замыкания h3»).
-// Приёмник сам держит XSMT высоким, пока выход работает: провод от вывода XSMT модуля — на вывод 14. Перед остановкой
-// тактов (сон) сначала глушим ЦАП — без щелчка. Если перемычка H3L запаяна на «H», вывод 14 к XSMT НЕ подключать.
-static void rxDacUnmute(bool on) {
-  if (cfg.output != OUT_I2S) return;
-  static bool ready;
-  if (!ready) {
-    pinMode(PIN_DAC_XSMT, OUTPUT);
-    gpio_input_enable((gpio_num_t)PIN_DAC_XSMT);   // чтобы уровень вывода можно было прочесть проверкой n8=7
-    ready = true;
+// Приёмник сам управляет XSMT: провод от вывода XSMT модуля — на вывод 14. Если перемычка H3L запаяна на «H», вывод 14
+// к XSMT НЕ подключать.
+// С 2.59 (владелец 10.10: «при запуске приемников, чтобы не было хлопков в наушниках… pcm должен быть в mute, пока
+// полностью не загрузится (вывод esp32 для xsmt выдает минус или землю пока не выполнена загрузка)»):
+//  — вывод ставится в «землю» первой же строкой запуска платы (rxDacPinInit из setup), а не при запуске выхода звука;
+//  — поднимается, только когда приёмник в работе и звук действительно пошёл (rxSoundOn), и опускается, как только
+//    работа кончилась (ожидание, поиск передатчика, сообщения на экране) — до 2.59 он поднимался через 30 мс после
+//    появления тактов, то есть на всё время заставки и «запуска»;
+//  — перед любым перезапуском платы ЦАП сначала глушится, и «земля» на выводе удерживается сквозь перезапуск
+//    (rxDacBeforeRestart), пока прошивка не запустится снова.
+// Чего прошивка сделать не может: от подачи питания до её запуска (доли секунды) вывод процессора ничем не управляется.
+// Если хлопок при ВКЛЮЧЕНИИ ПИТАНИЯ остаётся — резистор 10–47 кОм с XSMT на «землю» (см. описание, hardware).
+static volatile bool rxDacOpen;   // XSMT высокий: ЦАП открыт
+static void rxDacPinInit() {
+  if (cfg.isTx || cfg.output != OUT_I2S) {
+    gpio_hold_dis((gpio_num_t)PIN_DAC_XSMT);   // плата сменила роль или выход — вывод больше не держим
+    return;
   }
-  if (on) vTaskDelay(pdMS_TO_TICKS(30));   // такты уже идут — дать ЦАП их поймать, потом открыть звук
+  gpio_set_level((gpio_num_t)PIN_DAC_XSMT, 0);     // сначала уровень, потом «выход»: ни на миг не единица
+  pinMode(PIN_DAC_XSMT, OUTPUT);
+  digitalWrite(PIN_DAC_XSMT, LOW);
+  gpio_hold_dis((gpio_num_t)PIN_DAC_XSMT);         // уровень уже задан — удержание после перезапуска можно снять
+  gpio_input_enable((gpio_num_t)PIN_DAC_XSMT);     // чтобы уровень вывода можно было прочесть проверкой n8=7
+}
+static void rxDacSet(bool on) {
+  if (cfg.output != OUT_I2S) return;
   digitalWrite(PIN_DAC_XSMT, on ? HIGH : LOW);
-  if (!on) vTaskDelay(pdMS_TO_TICKS(30));  // ЦАП плавно глушит звук сам — подождать, потом можно снимать такты
+  rxDacOpen = on;
+}
+// Перед перезапуском платы (обработчик выключения, см. setup): заглушить ЦАП, дать ему плавно убрать звук и удержать
+// «землю» на выводе до следующего запуска — иначе на время загрузки вывод остаётся «в воздухе».
+static void rxDacBeforeRestart() {
+  if (cfg.isTx || cfg.output != OUT_I2S) return;
+  digitalWrite(PIN_DAC_XSMT, LOW);
+  rxDacOpen = false;
+  esp_rom_delay_us(30000);
+  gpio_hold_en((gpio_num_t)PIN_DAC_XSMT);
 }
 
 // Сколько раз выход остался без данных: порция в очереди выхода кончилась раньше, чем задача звука положила следующую
@@ -344,8 +381,7 @@ static bool rxOutBegin() {
     i2s_channel_register_event_callback(rxI2s, &cb, NULL);
   }
   if (i2s_channel_enable(rxI2s) != ESP_OK) return false;
-  rxDacUnmute(true);
-  return true;
+  return true;   // ЦАП пока заглушён (XSMT в «земле»): откроется, когда пойдёт звук, — см. rxDacSet в задаче звука
 }
 
 // ---- Проверка выхода на слух: откуда шум в тишине (06.10: при нулях на входе преобразователя шум остаётся).
@@ -483,7 +519,7 @@ static inline float rxVolumeScaled(int step) {
 // Шесть звеньев второго порядка подряд: срез низов 100 Гц (12 дБ на октаву) и пять полос — «полка» 125 Гц, колокола
 // 400 Гц, 1 и 2,5 кГц (добротность 1), «полка» 6 кГц; каждая −12…+12 дБ шагом 2. Стоит после подгонки темпа и перед
 // «чёткостью», громкостью и ограничителем: подъём полос ограничитель удержит в шкале.
-static volatile float rxBoostNow = 1;   // во сколько раз усиление действует сейчас (после придержки) — для отчёта
+static volatile float rxBoostNow = 1;   // во сколько раз усиление действует сейчас (оно меняется плавно) — для отчёта
 static bool rxQuietToSave(uint32_t dueMs, uint32_t maxMs);   // можно ли сейчас писать настройки (пауза в звуке) — см. ниже
 static volatile int rxEqPkIn, rxEqPkOut;   // наибольший отсчёт середины до и после эквалайзера с прошлого запроса n7=3
 static volatile uint32_t rxEqGen = 1;   // растёт при каждой смене настройки — задача звука пересчитывает звенья
@@ -535,18 +571,16 @@ static void rxTask(void *) {
   static int16_t out[OUT_BLOCK * 2];
   static Eq6 eq;
   uint32_t eqGen = 0;
-  // Усиление сверх «звука как есть» (с 2.48) — с придержкой. Усилить «в лоб» значит то же, что было до 2.40: на музыке,
-  // записанной во всю шкалу, ограничитель работает почти всё время и на каждом басе «заваливает» остальное (счёт на
-  // проверочной мелодии, +12 дБ: ограничитель глубже 1 дБ — 56 % времени, усиление качается на 3,1 дБ за 0,1 с).
-  // Поэтому усиление идёт только в то место, что осталось до полной шкалы: помним наибольший отсчёт (после громкости),
-  // держим его 0,7 с, потом отпускаем с постоянной 2,5 с, и усиливаем не больше, чем 29 500 / этот отсчёт. Тихий звук
-  // (речь с пульта на −12…−24 дБ) получает всё усиление, громкий — сколько помещается; после громкого места усиление
-  // возвращается за 2–3 с. Тот же счёт с придержкой: ограничитель глубже 1 дБ — 5,9 % времени, качание 0,4 дБ.
-  // Внезапный громкий звук ловит быстрый ограничитель (он стоит дальше), придержка подхватывает следом.
-  const int BOOST_HOLD = (int)(SRATE * 0.7f);
-  const float BOOST_REL = 1 - expf(-1.0f / (SRATE * 2.5f));
-  float bEnv = 0, bK = 1, boostWant = 1;
-  int bHold = 0;
+  // Усиление сверх «звука как есть» — настоящее, как «trim» на пульте (с 2.62): сколько выставлено, на столько звук и
+  // усиливается, всегда. Владелец 10.10: «на приемнике перестала работать настройка буста… при изменении параметра
+  // ничего не изменяется»; «нужен реальный цифровой буст усиления, на микшерном пульте данная функция называется trim».
+  // В 2.48–2.61 усиление шло «с придержкой» — только в запас, оставшийся до полной шкалы (чтобы на музыке во всю шкалу
+  // ограничитель не работал без остановки): на громкости 20 из 20 с проверочной музыкой из выставленных +14 дБ
+  // действовало +0,2 дБ (замер на 4C3B10), на громкости 6 — все +14. Для слушателя это «настройка не работает».
+  // Теперь всё, что после усиления не помещается в шкалу, придерживает ограничитель (он стоит дальше и заглядывает
+  // на 1,5 мс вперёд): треска нет, но на сильном усилении с громкой музыкой звук становится плотнее и «дышит» —
+  // расплата за громкость, и убавить её может сам слушатель той же настройкой.
+  float bK = 1, boostWant = 1;
   uint8_t boostStep = 255;
   bool rsOk = rsBegin();   // памяти не нашлось — останется прежняя, кубическая
   if (!rxOutBegin()) {
@@ -634,7 +668,8 @@ static void rxTask(void *) {
         rxPinsStatic(0);
         rxOutProbe();
       } else {
-        rxDacUnmute(false);
+        rxDacSet(false);
+        vTaskDelay(pdMS_TO_TICKS(30));   // ЦАП плавно глушит звук сам — подождать, потом можно снимать такты
         i2s_channel_disable(rxI2s);   // у PCM5102 без тактов выход глушится сам
         rxOutProbe();                 // такты встали — передатчик увидит «вихід СТОЇТЬ»
       }
@@ -645,10 +680,7 @@ static void rxTask(void *) {
       rxAudioStopped = true;
       while (!rxAudioOn) vTaskDelay(pdMS_TO_TICKS(20));
       if (cfg.output == OUT_PDM) rxPinsPdm();
-      else {
-        i2s_channel_enable(rxI2s);
-        rxDacUnmute(true);
-      }
+      else i2s_channel_enable(rxI2s);   // ЦАП откроется, когда пойдёт звук (ниже, по rxSoundOn)
       rxAudioStopped = false;
       rxDacTestAsk = false;
       dcStart = -32768.0f;   // и так же плавно поднять
@@ -695,14 +727,25 @@ static void rxTask(void *) {
         fadeStep = FADE_SLOW;
       }
       wasRun = run;
+      if (run != rxDacOpen && !rxPattern) rxDacSet(run);   // ЦАП открыт, только пока идёт работа; звук при этом входит с нуля
     }
     if (rxHopCh && (rxHopNow || (int32_t)(millis() - rxHopDeadline) >= 0)) {   // переход на новый канал вместе с передатчиком
-      uint8_t ch = rxHopCh;
-      rxHopCh = 0;
-      rxHopNow = false;
-      cfg.channel = ch;
-      esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-      rxHops = rxHops + 1;
+      // Свой пакет (сведения о себе) ещё у драйвера — подождать его, но не дольше 12 мс: смена канала под неушедшим
+      // пакетом — подозреваемая причина «приёмник играет, а передатчик его не слышит» (см. rxSend в radio.h).
+      static uint32_t hold;
+      bool mine = rxTxBusy();
+      if (mine && !hold) hold = millis() | 1;
+      if (!mine || millis() - hold >= 12) {
+        hold = 0;
+        uint8_t ch = rxHopCh;
+        rxHopCh = 0;
+        rxHopNow = false;
+        cfg.channel = ch;
+        rLastChanMs = millis();
+        esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+        bbMark(BB_HOP, ch, mine ? 1 : 0);
+        rxHops = rxHops + 1;
+      }
     }
     if (!priming) {
       if (fill > target + SRATE * 25 / 1000) {   // накопилось слишком много — вернуться к заданному запасу
@@ -892,18 +935,8 @@ static void rxTask(void *) {
       float yc = y + clK * (shM.run(y) - y), ysc = stOut ? ys + clK * (shS.run(ys) - ys) : 0;
       // левый и правый; в моно оба равны середине. Ограничитель общий — по большему из двух, чтобы не сдвигать звук вбок
       float vl = (yc + ysc) * gain, vr = (yc - ysc) * gain, av = fabsf(vl) > fabsf(vr) ? fabsf(vl) : fabsf(vr);
-      {   // усиление с придержкой (см. выше): av здесь — отсчёт после громкости, до усиления
-        if (av >= bEnv) {
-          bEnv = av;
-          bHold = BOOST_HOLD;
-        } else if (bHold) bHold--;
-        else bEnv += (av - bEnv) * BOOST_REL;
-        float bt = boostWant;
-        if (bt > 1) {
-          float room = 29500.0f / (bEnv + 1.0f);
-          if (bt > room) bt = room < 1 ? 1 : room;
-        }
-        bK += (bt - bK) * 0.002f;
+      {   // усиление («trim», см. выше): меняется плавно — около 15 мс на шаг, без щелчка
+        bK += (boostWant - bK) * 0.002f;
         vl *= bK;
         vr *= bK;
         av *= bK;

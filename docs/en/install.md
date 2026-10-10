@@ -106,7 +106,7 @@ transmitter and press «Оновити» (Update) — see [User guide → Firmwa
 
 ## Building from source
 
-1. Arduino IDE 2.x (or `arduino-cli`), in the Boards Manager — **esp32 by Espressif 3.3.3** (ESP-IDF 5.5).
+1. Arduino IDE 2.x (or `arduino-cli`), in the Boards Manager — **esp32 by Espressif 3.3.12** (ESP-IDF 5.5.5; releases up to 2.56 were built with 3.3.3).
    It has not been tested with other core versions.
 2. The **U8g2** library (olikraus) via the Library Manager. Nothing else needs to be installed.
 3. Open `hearlink/hearlink.ino`. Board: *ESP32S3 Dev Module*; **PSRAM: OPI PSRAM**; **Flash Size: 16MB**.

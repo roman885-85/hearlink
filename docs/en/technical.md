@@ -74,12 +74,18 @@ sensor (I2C), microSD card (SPI), CH340 USB bridge, a relay and a speaker amplif
   continuous mode: a test on one build gave 4–7 stalls in 8 min with the ADC and 0 with the I2S input; with the ADC
   every packet takes 0.5 ms longer to get on air. The watchdog (`radioSend` in `radio.h`): 200 ms without a driver
   reply while packets are queued → full driver reload (16 ms); low memory → board restart.
+  Since 2.63 the main cure is **two frames per packet** (below): on one and the same build with the built-in ADC,
+  single packets gave 7 stalls in 3 min and double packets none in 14 min. The newer core (ESP-IDF 5.5.5, since
+  2.63) stalls about five times less often in the worst mode, but it still stalls; the cause inside the driver has
+  not been found.
 - **Pin 43: PCM1808 clock or the port.** The I2S clock always runs inside; it is connected to the pin (`txMclkPin`
   in `txaudio.h`) only while the input itself is on air, otherwise the pin belongs to the UART.
-- **Time budget of the radio core.** A “highest” quality frame is 2 ms; the transmit task spends 1.4 ms with the live
-  input and 1.8 ms with the test music, about 0.7 ms of it in the `esp_now_send` call itself (Wi-Fi code runs from
-  flash through a small cache). The `Q` command prints the breakdown by stages. Under overload the task yields the
-  core by itself so that the task watchdog does not restart the board.
+- **Time budget of the radio core.** A “highest” quality frame is 2 ms. Before 2.63 the transmit task spent 1.4 ms
+  per frame with the live input and 1.85 ms with the test music, 0.7–0.78 ms of it in the `esp_now_send` call itself
+  (Wi-Fi code runs from flash through a small cache), and that call costs the same whatever the packet length.
+  Since 2.63 two frames go in one packet: half as many calls, about 1.1–1.2 ms per frame (the “radio” stage
+  0.33–0.38 ms). The `Q` command prints the breakdown by stages. Under overload the task yields the core by itself
+  so that the task watchdog does not restart the board.
 - Page flipping is a slide lasting 284 ms (12 steps); MP3 decoding is paused for this time.
 
 ### Transmitter radio: resilience
@@ -126,10 +132,15 @@ encoder, on-board WS2812 RGB LED. The audio output is one-bit (PDM) on two pins 
    “sagged” on every bass note. A quiet source is amplified at the transmitter: «Звук» (Sound) → «Підсилення входу»
    (Input gain). The volume changes smoothly. After an update from an older version the stored volume and its limit
    are converted once (+8 steps, not above 100 %), so that it sounds as before.
+   Separately there is **«Підсилення» (Boost)** (0…+24 dB in 2 dB steps, since 2.48). Since 2.63 it is a plain
+   multiplication after the volume (a “trim”): whatever does not fit the scale after it is held by the limiter (the
+   next item). In 2.48–2.56 the boost was applied “with a hold” — only within the headroom left below full scale: at
+   100 % volume with full-scale music only +0.2 dB of a +14 dB setting acted, and that looked like “the setting does
+   not work”.
 8. **Look-ahead limiter** (since 2.37) — common to both channels. The audio passes through a 1.5 ms delay
    (48 samples) and the gain is computed from the largest sample in that window: it goes down smoothly BEFORE the
    peak arrives and comes back slowly (a quarter of a second). When there is nothing to limit, the audio passes
-   unchanged. Since 2.40 the threshold is full scale, so without “Clarity” the limiter does not work at all (the
+   unchanged. Since 2.40 the threshold is full scale, so without “Clarity” and “Boost” the limiter does not work at all (the
    one-bit output still gets no more than 30 000 of 32 767). The previous limiter (instant attack, 80 ms release) clipped the top of each peak and its gain
    wandered by 1–2 dB within one bass period — with the DAC this was heard as overload in the bass, especially
    with “Clarity” switched on.
@@ -147,6 +158,31 @@ any ─"turn off" from the transmitter─► LEAVING ─► STANDBY (woken only 
 The sleep cycle: radio off, light sleep of the processor for 0.5 s (woken by the timer or the knob button), then
 70 ms of listening to its own channel; every fourth cycle — another 12 channels at 25 ms each. If the transmitter is
 heard — once every ~2 s the receiver reports "I am asleep" and waits 80 ms for a command in reply.
+
+### The receiver radio: staying alive (since 2.63)
+A receiver transmits little — two short packets about itself every two seconds — but the transmitting part of its
+Wi-Fi driver can stall too while reception keeps working: the sound plays, commands are executed, and the
+transmitter does not “see” such a receiver (twice within 24 hours on 2026-10-09/10; only a restart of the receiver
+cured it). Before 2.63 the receiver did not watch its own transmissions at all. Now:
+- **Send watchdog** (`rxSend`, `rxTxWatchTick` in `radio.h`). Every transmission is counted and the receiver waits
+  for the driver's “packet sent” reply. A packet in the driver without a reply for more than 0.5 s (or four
+  refusals in a row) — the Wi-Fi driver is reloaded completely (20–30 ms without reception, 16–24 ms of sound from
+  the spare copies or silence).
+- **The channel is never changed under the receiver's own packet.** The channel search, the “adjacent channel”
+  correction, the hop after the transmitter and the sleep cycle wait until the packet is gone (the hop — no longer
+  than 12 ms). The second status packet goes only after the driver has answered the first; no status is sent while
+  a hop is announced or when the transmitter has not been heard for more than 0.4 s.
+- **Check against the “whom I hear” list** (`TxSeen`, below; `rxSeenTick` in `rxlink.h`) — catches what the
+  watchdog cannot see. The transmitter is heard, it announces whom it hears, the receiver has reported itself four
+  times — and it is not in the list for 12 s: reload the radio; another 12 s — restart the board once, without the
+  splash (about a second without sound). If it is still not heard after that, the receiver is not the cause (for
+  example, the transmitter is farther than the receiver can reach): no more restarts, only rare radio reloads
+  (after 1, 2, 4, 8 and then every 10 min). Everything is forgotten once the receiver has been heard for ten
+  minutes in a row. If the transmitter's list of receivers is full, the receiver does nothing.
+- **The receiver reports every such case to the transmitter** with a line (the “event” kind of the radio debug
+  channel, always sent): the transmitter prints it to the port and appends it to the log on the card —
+  `# [4C3B10] приймач: радіо не відповідало…`.
+- A check without a real fault — the receiver port command `n12` (see [commands](commands.md)).
 
 ### Tasks
 | Task | Core | Priority | What it does |
@@ -186,19 +222,47 @@ Header (14 bytes, sent in the clear but signed):
 | `boot` | 4 | "epoch" — the number of the transmitter's power-on |
 | `seq` | 4 | packet number |
 | `flags` | 1 | low bits: tone, overload, silence, thinning; high 4 — the transmitter's channel number |
-| `q` | 1 | quality (0–3), `0x80` — stereo, `0x40` — the interface language is English |
+| `q` | 1 | quality (0–3), `0x80` — stereo, `0x40` — the interface language is English, `0x10` — two frames in the packet (since 2.63) |
 
 Then, encrypted: the current frame (uncompressed or an ADPCM block: first sample 2 bytes, step 1 byte, 4 bits per
 sample), in stereo — a block of the channel difference, then the spare copies, and at the end — an 8-byte signature.
 
 | Quality | Frame | Copies (mono/stereo) | Packet | Packets/s | Stream |
 |---|---|---|---|---|---|
-| «найвища» (highest) | 64 samples, 2 ms | 2 / 1 | ~220 bytes | 500 | ~850 kbit/s |
+| «найвища» (highest, since 2.63) | 64 samples, 2 ms; **two frames per packet** | copies of the four previous frames (the two previous packets) | 418 / 564 bytes (mono / stereo) | 250 | ~840 / ~1130 kbit/s |
+| «найвища» (before 2.63 and for old receivers) | 64 samples, 2 ms | 2 / 1 | ~220 bytes | 500 | ~850 kbit/s |
 | «стандартна» (standard) | 128, 4 ms | 2 / 1 | ~223 | 250 | ~430 |
 | «мова» (speech) | 128 @16 kHz, 8 ms | 2 / 1 | ~223 | 125 | ~215 |
 | «дальня» (far) | 192 @16 kHz, 12 ms | 1 / — | ~220 | 83 | ~141 |
 
-An ESP-NOW packet is no longer than 250 bytes — hence the frame lengths and the number of copies.
+A single packet is no longer than 250 bytes (the limit of ESP-NOW version 1) — hence the frame lengths and the
+number of copies.
+
+**Two frames per packet (since 2.63, «найвища» only).** ESP-NOW version 2 (ESP-IDF 5.4+) carries up to 1470 bytes.
+A double packet: header 14 · frame A (mid 128 and, in stereo, difference 35) · frame B · compressed copies of the
+**four previous frames** — the two previous packets, from the nearest to the farthest (35 each) · in stereo — copies
+of their difference (19 each) · signature 8. 564 bytes in stereo, 418 in mono. The packet number is the number of
+the first frame and the second frame is the next number, so frames and numbers are the same as in single packets.
+Why: a send call costs the radio core 0.7 ms whatever the packet length, and 500 calls a second kept the core
+70–93 % busy; now it is 250. On air a packet takes 633 µs out of 4000 (15 %) instead of 383 out of 2000 (19 %).
+The price: +2 ms of delay.
+Loss resistance: two lost packets in a row (8 ms of sound) are recovered completely and in stereo. A calculation on
+the computer (`tools/host/dbl.cpp`, 8 s of sound, random packet loss) — sound lost:
+
+| Packet loss | Single, stereo | Double, stereo | Single, mono | Double, mono |
+|---|---|---|---|---|
+| 5 % | 18 ms | 0 | 0 | 0 |
+| 10 % | 68 ms | 0 | 0 | 0 |
+| 20 % | 302 ms | 76 ms | 64 ms | 76 ms |
+
+Compatibility: an old receiver drops a double packet as foreign, and an old receiver that is asleep or has just
+been switched on cannot find the transmitter by the rare single packets either. So (a) the transmitter **remembers
+the version of every receiver** of its list in flash and uses double packets only when **all** receivers of the
+list — in touch or not — have reported version 2.60 or newer (the first release with double packets is 2.63), and not while the “add a receiver” window is open;
+`?` names the receiver that is in the way; (b) after every 75 double packets (three times a second) an ordinary
+single packet with the number of the second frame follows: new receivers drop it as a repeat, and an old one that
+is awake stays in touch by it. A receiver that no longer exists but is still in the list keeps the transmitter on
+single packets — delete it from the list. A pause-free channel hop is scheduled on a pair boundary.
 
 **Stereo**: what goes on air is the "mid" (L+R)/2 — the same sound as in mono — and the "difference" (L−R)/2. A
 receiver in mono mode does not touch the difference; the spare copies carry only the mid (a recovered frame sounds
@@ -214,10 +278,11 @@ on an adjacent one; by this number it tunes exactly.
 | `RxStatus` / `RxStatus2` | `0x5348` | receiver → transmitter, once every 2 s | volume, flags (mute, turned off, screen, sound is playing, sleep, stereo, output alive), signal, buffer, loss, dropouts, uptime, version, name (13 or 32 letters) |
 | `RxInfo` (since 2.32) | `0x5348`, different length | receiver → transmitter | clarity, balance, volume limit, view, LED, language, whether a headphone test is running |
 | `TxCommand` / `TxCommand2` | `0x4348` | transmitter → receiver | command and argument (below) |
+| `TxSeen` (since 2.63) | `0x5648` | transmitter → all receivers, every 2 s | “whom I hear”: the numbers of the receivers in touch (up to 16) and a “list is full” flag; a receiver that does not find itself repairs its own radio |
 | `PairReq` / `PairRsp` | `0x5048` / `0x5148` | adding a receiver | X25519 public keys, the kit key under the shared secret |
 | `KeyMsg` / `KeyReq` | `0x4B48` / `0x5248` | kit key change | the new key under the receiver's personal key |
 | OTA | `0x4F48` | update | announcement, blocks, polling, status, cancellation |
-| debugging | `0x4748` | both ways | serial lines and commands over the radio |
+| debugging | `0x4748` | both ways | serial lines and commands over the radio; since 2.63 also a receiver “event” (it reloaded its radio or restarted by itself): always sent, the transmitter writes it to the port and to the log on the card |
 
 Transmitter commands: 1 "identify yourself", 2 name, 3 turn on/off, 4 volume, 5 mute, 6 output stereo/antiphase,
 7 output check by ear, 8 "forget the kit", 9 channel hop (to everyone), 10 setting (number × 32 + value:
@@ -313,11 +378,25 @@ Things that have already been stepped on — so as not to step on them again.
 - **`attachInterrupt` installs the handler through a service task with a 1 KB stack** — if an audio interrupt
   arrives at that moment, the stack overflows ("Stack canary watchpoint triggered (ipc1)"). The knob interrupts are
   attached directly (`esp_intr_alloc` from the screen task).
-- **The task watchdog watches only the idle task of core 0 (5 s)**: a high-priority task on core 0 must really
-  block, otherwise there is a restart.
+- **The task watchdog (5 s).** In a receiver it watches the idle task of core 0. In the transmitter, since 2.63,
+  it watches **the transmit task itself** (`esp_task_wdt_add` in `txTask`): with single packets the radio core is
+  93–100 % busy, and “the idle task got no time for five seconds” there is ordinary work with a background load,
+  not a hang; because of it the watchdog used to restart the transmitter while an update was being handed out (five
+  times in a row on 2026-10-10). The idle task must be taken off with `esp_task_wdt_reconfigure()` and
+  `idle_core_mask = 0`: `disableCore0WDT()` of the Arduino core leaves the idle hook behind, and it prints “task not
+  found” 500 times a second.
+- **Long computations do not belong on the radio core.** The preparation of an update hand-out (the fingerprint of
+  the 2.2 MB firmware) runs in a separate task on the display core: on the radio core with single packets it did
+  not finish even in 40 s.
 - **Flash operations turn the cache off on both cores** — the transmitter's picture jerks; read through `mmap`.
-- **ESP-NOW packets longer than 250 bytes** are formally possible, but the driver sent them 2.5 times slower and
-  went silent.
+- **ESP-NOW packets longer than 250 bytes** work (ESP-NOW version 2): since 2.63 «найвища» goes in 564-byte
+  packets. The old note “the driver sent them 2.5 times slower and went silent” was about a build with a slow cipher
+  and never disproved long packets.
+- **Do not change the radio channel while your own packet is still in the driver** (and do not put a second packet
+  on top of the first) — see “The receiver radio: staying alive”.
+- **The pin that drives the DAC's XSMT floats until the firmware starts**: the firmware holds it at ground from its
+  first line until the sound begins and across a software restart (`gpio_hold_en`), but the first fractions of a
+  second after power-up are covered only by a resistor to ground (see [hardware](hardware.md)).
 - **`WiFi.mode(WIFI_OFF)` in core 3.3.3 does not remove the driver**; the handler of the "station started" event
   turns power saving on by itself — it has to be turned off again.
 - **The clear part of the packet under the signature must be no longer than 16 bytes**: with 20 the cipher silently
@@ -340,3 +419,6 @@ Things that have already been stepped on — so as not to step on them again.
 - More than two receivers at the same time.
 - The cause of the rare stall of the transmitter's Wi-Fi driver (it revives itself; the details are written by the
   "black box").
+- The cause of a receiver playing while the transmitter does not hear it (since 2.63 the receiver repairs itself and
+  leaves a record in the log on the card — the cause is to be found from those records).
+- Double packets in really crowded air (a packet is longer, but there are half as many of them).

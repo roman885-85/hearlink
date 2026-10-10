@@ -6,6 +6,7 @@
 #pragma once
 #include "radio.h"
 #include "esp_adc/adc_continuous.h"
+#include "esp_task_wdt.h"
 #include "driver/i2s_std.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
@@ -43,6 +44,8 @@ static volatile uint32_t txAdcRestarts;    // сколько раз пришло
 // Сколько задача передачи тратит на кадр (от конца чтения входа до начала следующего чтения): на «найвищій» кадр идёт
 // каждые 2000 мкс — дольше нельзя. Печатает Q.
 static volatile uint32_t txProcSumUs, txProcN, txProcMaxUs, txProcOver;
+static bool txIdleWdtOff;             // сторож холостой задачи ядра радио снят (setup)
+static volatile int txWdtErr = -1;    // чем кончилась постановка задачи передачи под сторожа задач (0 — стоит; печатает ?)
 static volatile uint32_t txYields;   // сколько раз задаче пришлось самой отдать ядро из-за перегрузки (см. txTask)
 // То же по этапам: 0 источник звука, 1 уровни и «тишина», 2 сжатие, 3 сборка пакета, 4 шифр и подпись, 5 отдача радио,
 // 6 остальное (команды приёмникам, конец круга).
@@ -448,6 +451,13 @@ static volatile uint32_t txLoudMs;            // когда в эфир посл
 static bool txQuietToSave(uint32_t dueMs, uint32_t maxMs);
 static volatile bool txEqOnTone;              // проба (порт: e9=1): эквалайзер входа действует и на проверочный тон 1 кГц — для замера
 static volatile uint32_t txEqGen = 1;         // растёт при смене эквалайзера входа — задача передачи пересчитывает звенья
+// Два кадра в пакете (proto.h, Q_DOUBLE). Порт: Qd0 — никогда, Qd1 — когда все приёмники на связи умеют (2.60+),
+// Qd2 — всегда (проверка). txDoubleOk считает otaAutoTick по версиям приёмников на связи.
+static volatile uint8_t txDoubleMode = 1;
+static volatile bool txDoubleOk;
+static volatile uint8_t txDoubleWhy;         // почему двойные пакеты нельзя: 0 — можно, 1 — в списке есть приёмник без
+static uint8_t txDoubleWho[3];               // подтверждённой версии 2.60+ (его номер — здесь), 2 — открыто окно добавления
+static volatile bool txDblNow;               // сейчас в эфир идут двойные пакеты
 static volatile bool txSideCopyOn;            // слать копию разности каналов: её понимают все приёмники на связи (см. proto.h)
 static volatile uint32_t txThinMs;               // когда последний раз шёл затор (несколько пропусков подряд), а не одиночный пропуск
 // Переход на другой канал без паузы (см. txscan.h): главный цикл выбирает канал и ставит txHopCh; задача передачи
@@ -464,12 +474,18 @@ static volatile int16_t txPeakS;           // наибольший отсчёт 
 
 static void txTask(void *) {
   static uint8_t pkt[PKT_MAX];
-  static uint8_t hist[Q_MAX_COPIES][3 + Q_MAX_N / 2];   // сжатые кадры N−1 и N−2
+  static uint8_t hist[1 + DBL_COPIES][3 + Q_MAX_N / 2];   // сжатые прошлые кадры: [0] — N−1, [1] — N−2 … (двойному пакету нужны [1…DBL_COPIES])
+  static uint8_t pairMain[Q_MAX_N * 2], pairSide[3 + Q_MAX_N / 2];   // первый кадр пары ждёт второго
+  static uint8_t bcn[256];                   // одиночный пакет «для старых приёмников» три раза в секунду
+  static uint16_t bcnLen;                    // он собран и ждёт свободного кадра пары (0 — нет)
+  static bool dbl, pairHave;                 // идём двойными пакетами; первый кадр пары уже лежит
+  static uint32_t pairSeq;
+  static uint8_t pairFl;
   static uint8_t blk[3 + Q_MAX_N / 2];
   static uint8_t blkS[3 + Q_MAX_N / 2];
   static Eq6 inEq;                                // эквалайзер входа (см. eq.h)
   uint32_t inEqGen = 0;
-  static uint8_t scNow[SC_LEN], scHist[SC_LEN];   // копия разности: этого кадра и прошлого
+  static uint8_t scNow[SC_LEN], scHist[1 + DBL_COPIES][SC_LEN];   // копия разности: этого кадра и прошлых (как hist)
   static int16_t pcm[FRAME], side[FRAME];     // середина (Л+П)/2 и разность (Л−П)/2
   static int16_t acc[FRAME * 6], accS[FRAME * 6];   // набор на пакет, 32 кГц
   static int16_t frm[Q_MAX_N], frmS[Q_MAX_N];       // он же после перехода на 16 кГц
@@ -486,7 +502,16 @@ static void txTask(void *) {
   const uint8_t inMode = cfg.input;   // вход — тот, с которым задача запущена: команда смены входа меняет cfg.input сразу,
                                       // а перезапуск следует позже — до 2.56 задача в этот промежуток читала вход, которого нет
   uint32_t tpAfter = 0, tsec = 0;
+  // Сторож задач (5 с) следит за САМОЙ этой задачей, а не за холостой задачей ядра радио (её сторож снят в setup).
+  // Ядро радио при одиночных пакетах занято на 93–100 %, и «холостая задача пять секунд не получала времени» там —
+  // не зависание, а обычная работа с попутной фоновой нагрузкой; сторож же перезапускал из-за этого передатчик
+  // (10.10: пять раз подряд при раздаче обновления). Настоящее зависание — задача передачи перестала проходить
+  // свой круг (в том числе повисла внутри драйвера радио) — он ловит по-прежнему.
+  esp_err_t wdtAdd = esp_task_wdt_add(NULL);
+  bool wdtMine = wdtAdd == ESP_OK;
+  txWdtErr = wdtAdd;
   for (;;) {
+    if (wdtMine) esp_task_wdt_reset();
     uint32_t clipsBefore = txClips;
     memset(side, 0, sizeof(side));
     if (tpAfter) {   // сколько длилась обработка прошлого кадра (от конца чтения входа до начала следующего чтения)
@@ -637,8 +662,11 @@ static void txTask(void *) {
       idxCarry = 0;
       idxCarryS = 0;
       memset(hist, 0, sizeof(hist));
+      pairHave = false;
     }
     const QDef &d = QDEF[q];
+    if (!pairHave) dbl = q == Q_HI && (txDoubleMode == 2 || (txDoubleMode == 1 && txDoubleOk));   // упаковка меняется только между парами
+    txDblNow = dbl;
     if (st) {   // при заторе стерео плавно сводится в моно: кадры из копий несут только середину, и разность «через раз» дребезжала бы
       static float sg = 1;
       // (с 2.43 на «найвищій» копии несут и разность — сводить незачем; осталось для прочих качеств и старых приёмников)
@@ -681,6 +709,10 @@ static void txTask(void *) {
       if (hc && !armed) {   // назначить пакет: через ~0,2 с — чтобы объявление успело дойти до всех несколько раз
         uint32_t lead = 200000 / qFrameUs(q);
         txHopSeq = seq + (lead < 10 ? 10 : lead);
+        if (dbl) {   // двойные пакеты: переход — на границе пары (первый кадр пары уйдёт уже с нового канала)
+          uint32_t firstPar = pairHave ? ((seq ^ 1) & 1) : (seq & 1);
+          if ((txHopSeq & 1) != firstPar) txHopSeq = txHopSeq + 1;
+        }
         armed = true;
         tick = 0;
       }
@@ -698,17 +730,34 @@ static void txTask(void *) {
         }
       }
     }
+    uint32_t mySeq = seq++;   // у каждого кадра свой номер — и в одиночном пакете, и в двойном
+    txSeqNow = mySeq;
+    int bl = qBlock(q);
+    bool stash = dbl && !pairHave;   // первый кадр пары: запомнить и ждать второго
+    if (stash) {
+      pairSeq = mySeq;
+      pairFl = accFlags;
+      memcpy(pairMain, src, d.n * 2);
+      if (st) memcpy(pairSide, blkS, bl);
+      pairHave = true;
+    }
     h->magic = MAGIC;
     h->ver = PROTO_VER;
     h->kit = cfg.kit;
     h->boot = boot;
-    h->seq = seq++;
-    txSeqNow = h->seq;
-    h->flags = accFlags | (cfg.channel << 4);
-    h->q = q | (st ? Q_STEREO : 0) | (cfg.lang ? Q_LANG_EN : 0);
+    h->seq = dbl ? pairSeq : mySeq;
+    h->flags = accFlags | (dbl ? pairFl : 0) | (cfg.channel << 4);
+    h->q = q | (st ? Q_STEREO : 0) | (cfg.lang ? Q_LANG_EN : 0) | (dbl ? Q_DOUBLE : 0);
     accFlags = 0;
     uint8_t *w = pkt + sizeof(Hdr);
-    int bl = qBlock(q);
+    if (dbl && !stash) {   // первый кадр пары — из запомненного
+      memcpy(w, pairMain, d.n * 2);
+      w += d.n * 2;
+      if (st) {
+        memcpy(w, pairSide, bl);
+        w += bl;
+      }
+    }
     if (d.pcm) {
       memcpy(w, src, d.n * 2);
       w += d.n * 2;
@@ -720,13 +769,37 @@ static void txTask(void *) {
       memcpy(w, blkS, bl);
       w += bl;
     }
-    for (int k = 0; k < qCopies(q, st); k++, w += bl) memcpy(w, hist[k], bl);
-    if (st && q == Q_HI && txSideCopyOn && (seq & 63)) {   // копия разности прошлого кадра; каждый 64-й пакет — прежней длины
-      memcpy(w, scHist, SC_LEN);
-      w += SC_LEN;
+    if (dbl) {   // копии кадров двух прошлых пакетов, от ближнего (N−2) к дальнему; в стерео — и копии их разности
+      for (int k = 1; k <= DBL_COPIES; k++, w += bl) memcpy(w, hist[k], bl);
+      if (st)
+        for (int k = 1; k <= DBL_COPIES; k++, w += SC_LEN) memcpy(w, scHist[k], SC_LEN);
+    } else {
+      for (int k = 0; k < qCopies(q, st); k++, w += bl) memcpy(w, hist[k], bl);
+      if (st && q == Q_HI && txSideCopyOn && (seq & 63)) {   // копия разности прошлого кадра; каждый 64-й пакет — прежней длины
+        memcpy(w, scHist[0], SC_LEN);
+        w += SC_LEN;
+      }
     }
     txPaused = txPause;
-    if (!txPause) {
+    if (stash) {   // первый кадр пары: пакета звука в этот кадр нет — здесь место служебным пакетам
+      if (!txPause) {
+        radioSend(NULL, 0);
+        // Служебные пакеты (одиночный пакет для старых приёмников, «кого слышу», команды, строки отладки) идут в
+        // этом, свободном, кадре пары и только когда драйвер уже отдал в эфир пакет звука (с 2.63). До этого они
+        // клались драйверу сразу следом за пакетом звука, «поверх» него. Со встроенным АЦП остановки радио шли в ногу
+        // именно с долей таких отправок (64 % — 7 остановок за 3 минуты, 7–10 % — ни одной за 14), а 10.10 радио
+        // впервые встало и на входе PCM1808 — при двойных пакетах, когда «поверх» остались только служебные.
+        // Драйвер занят дольше 100 мс — отправляем всё равно: команда приёмнику важнее.
+        static uint8_t auxSkip;
+        if (rPut == rGot || ++auxSkip >= 25) {
+          auxSkip = 0;
+          if (bcnLen) {
+            radioSend(bcn, bcnLen);
+            bcnLen = 0;
+          } else if (txAfterSend) txAfterSend();
+        }
+      } else rLastDoneMs = millis();
+    } else if (!txPause) {
       static uint8_t run;   // сколько пакетов подряд пропущено
       // Очередь драйвера. Поправка ofs — на случай, если счёт всё же разойдётся с делом (ответ драйвера потерялся,
       // счётчики обнулили при не ушедшем пакете): настоящая очередь за секунду хоть раз да пустеет, поэтому
@@ -741,9 +814,10 @@ static void txTask(void *) {
         winLow = INT32_MAX;
         winCnt = 0;
       }
-      int copies = qCopies(q, st), pend = raw - ofs;
+      int copies = dbl ? 1 : qCopies(q, st), pend = raw - ofs;   // двойной пакет несёт копии двух прошлых пакетов, но
+                                                                 // нарочно пропускаем не больше одного из двух: запас от потерь остаётся
       if (pend > rPendMax) rPendMax = pend;
-      uint32_t fus = qFrameUs(q);
+      uint32_t fus = qFrameUs(q) * (dbl ? 2 : 1);
       int thinAt = TX_THIN_US / fus < 3 ? 3 : TX_THIN_US / fus, hardAt = TX_HARD_US / fus < 5 ? 5 : TX_HARD_US / fus;
       bool send = true;
       if (txThinOn) {
@@ -760,7 +834,29 @@ static void txTask(void *) {
         if (secShadow & 1) secShadowRun(pkt + sizeof(Hdr), (w - pkt) - sizeof(Hdr) - SEC_TAG);
         radioSend(pkt, w - pkt);
         TXP(5)
-        if (txAfterSend) txAfterSend();
+        if (dbl) {   // три раза в секунду — ещё и обычный одиночный пакет со вторым кадром пары (см. Q_DOUBLE в proto.h).
+          // Чаще, чем раз в 0,6 с: приёмник, 0,6 с не слышавший «своих» пакетов, уходит искать передатчик по каналам.
+          static uint16_t bc;
+          if (++bc >= 75) {
+            bc = 0;
+            Hdr *b = (Hdr *)bcn;
+            *b = *h;
+            b->seq = mySeq;
+            b->q = h->q & ~Q_DOUBLE;
+            uint8_t *v = bcn + sizeof(Hdr);
+            memcpy(v, src, d.n * 2);
+            v += d.n * 2;
+            if (st) {
+              memcpy(v, blkS, bl);
+              v += bl;
+            }
+            for (int k = 0; k < qCopies(q, st); k++, v += bl) memcpy(v, hist[k], bl);
+            bcnLen = secSeal(SEC_AUDIO, b->boot, b->seq, NULL, bcn, sizeof(Hdr), bcn + sizeof(Hdr), (v - bcn) - sizeof(Hdr), v) ? (uint16_t)((v - bcn) + SEC_TAG) : 0;   // уйдёт в следующем свободном кадре
+          }
+        } else {
+          bcnLen = 0;
+          if (txAfterSend) txAfterSend();   // одиночные пакеты: служебные — как раньше, следом за пакетом звука
+        }
       } else {
         radioSend(NULL, 0);   // пакета нет, но сторож радио должен видеть и это время (см. radioSend)
         if (run < copies) txThinned = txThinned + 1;
@@ -777,9 +873,13 @@ static void txTask(void *) {
         if (++winN >= 4) txThinMs = nowMs ? nowMs : 1;
       }
     } else rLastDoneMs = millis();   // сторож радио во время поиска канала молчит
-    memcpy(hist[1], hist[0], bl);     // копии сдвигаются: N−1 становится N−2
+    if (!stash) pairHave = false;     // пара ушла (или пропущена) — следующий кадр снова первый
+    for (int k = DBL_COPIES; k >= 1; k--) {   // копии сдвигаются: N−1 становится N−2 и так далее
+      memcpy(hist[k], hist[k - 1], bl);
+      memcpy(scHist[k], scHist[k - 1], SC_LEN);
+    }
     memcpy(hist[0], blk, bl);
-    memcpy(scHist, scNow, SC_LEN);
+    memcpy(scHist[0], scNow, SC_LEN);
     txFrames = txFrames + 1;
   }
 }

@@ -522,6 +522,8 @@ static void task(void *) {
         r.lossPm = p.lossPm;
         r.lostFrames = p.lostFrames;
         r.fw = p.fw;
+        r.fwMaj = p.fwMaj;
+        r.fwMin = p.fwMin;
         r.rssi = p.rssi;
         r.uptimeMin = p.uptimeMin;
         r.hasInfo = p.hasInfo;

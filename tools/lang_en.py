@@ -253,6 +253,7 @@ PAIRS = [
     (r"два канали (навушники)", r"two channels (headphones)"),
     (r"протифаза (підсилювач)", r"antiphase (amplifier)"),
     (r"%u год %02u хв, версія %.1f", r"%u h %02u min, version %.1f"),
+    (r"%u год %02u хв, версія %u.%u", r"%u h %02u min, version %u.%u"),
     (r"Показати себе", r"Identify"), (r"Перейменувати", r"Rename"), (r"Тихіше", r"Quieter"), (r"Гучніше", r"Louder"),
     (r"Увімкнути", r"Turn on"), (r"Вимкнути", r"Turn off"),
     (r"Вихід: протифаза", r"Output: antiphase"), (r"Вихід: два канали", r"Output: two channels"),

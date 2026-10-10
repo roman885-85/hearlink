@@ -107,6 +107,7 @@ struct View {
     bool online, off, mute, stereo;
     bool sleep = false;   // спит: выключен с передатчика (или только что проснулся и ещё не сообщил об этом)
     uint8_t volume, depthMs, lossPm, lostFrames, fw;
+    uint8_t fwMaj = 0, fwMin = 0;   // точная версия (приёмники с 2.42); нули — прошивка старше, тогда есть только fw (×10)
     int8_t rssi;
     uint16_t uptimeMin;
     // настройки «для слуха и удобства» (приёмники с 2.32): чёткость, баланс (+5), предел громкости, вид, светодиод, язык
@@ -1433,7 +1434,9 @@ static void drawRxLines() {
   snprintf(t, sizeof(t), tr("%u мс"), r.depthMs);
   line(tr("Запас (затримка)"), t);
   line(tr("Вихід звуку"), r.fw < 11 ? tr("протифаза (стара версія)") : r.stereo ? tr("два канали (навушники)") : tr("протифаза (підсилювач)"));
-  snprintf(t, sizeof(t), tr("%u год %02u хв, версія %.1f"), r.uptimeMin / 60, r.uptimeMin % 60, r.fw / 10.0f);
+  // версия — точная (до 2.59 здесь стояло округление до десятых из старого поля: приёмник 2.58 показывался как «2.6»)
+  if (r.fwMaj) snprintf(t, sizeof(t), tr("%u год %02u хв, версія %u.%u"), r.uptimeMin / 60, r.uptimeMin % 60, r.fwMaj, r.fwMin);
+  else snprintf(t, sizeof(t), tr("%u год %02u хв, версія %.1f"), r.uptimeMin / 60, r.uptimeMin % 60, r.fw / 10.0f);
   line(tr("Працює"), t);
 }
 
@@ -1750,23 +1753,30 @@ static void drawRxModal() {
 // и кнопки «меньше / больше»; нажатие сразу уходит приёмнику командой, он подтверждает следующим сообщением о себе.
 // (Владелец 06.10: функции должны быть парами — что меняется на приёмнике, меняется и отсюда.)
 constexpr int RXS_N = 8;
-static const char *const RXS_NAME[RXS_N] = { "Вихід звуку", "Чіткість мови", "Баланс", "Межа гучності", "Вигляд екрана", "Світлодіод", "Мова написів", "Блокування ручки" };
+// С 2.62 «Підсилення гучності» стоит здесь, в основном списке, сразу за пределом громкости (владелец 10.10: «в
+// передатчике этой настройки в пункте приемников вообще нет» — она была седьмой строкой листа «Еквалайзер»), а
+// «Мова написів» ушла на лист эквалайзера последней строкой.
+static const char *const RXS_NAME[RXS_N] = { "Вихід звуку", "Чіткість мови", "Баланс", "Межа гучності", "Підсилення гучності", "Вигляд екрана", "Світлодіод", "Блокування ручки" };
+// какая настройка приёмника (номер в RxInfo.p[]) стоит в строке основного листа; −1 — выход звука, −2 — усиление, −3 — блокировка
+static const int8_t RXS_PAR[RXS_N] = { -1, 0, 1, 2, -2, 3, 4, -3 };
 // Окно в два листа: настройки и эквалайзер (с 2.45) — строки и кнопки «−/+» те же, меняется их смысл.
-static int rxsPage;   // 0 — настройки, 1 — эквалайзер: строки 0…4 — полосы, 5 — срез низов, 6 — пусто
-static const char *const RXS_EQ_NAME[7] = { "Низ, 125 Гц", "400 Гц", "1 кГц", "2,5 кГц", "Верх, 6 кГц", "Зріз низів, 100 Гц", "Підсилення гучності" };
+static int rxsPage;   // 0 — настройки, 1 — эквалайзер: строки 0…4 — полосы, 5 — срез низов, 6 — язык надписей приёмника
+static const char *const RXS_EQ_NAME[7] = { "Низ, 125 Гц", "400 Гц", "1 кГц", "2,5 кГц", "Верх, 6 кГц", "Зріз низів, 100 Гц", "Мова написів" };
 static int rxsGet(const View::Rx &r, int row) {   // значение строки числом
-  if (rxsPage) return row < 5 ? (int)r.eq[row] - 6 : row == 5 ? r.lowCut : row == 6 ? r.boost : 0;
-  if (row == 7) return r.lock;
-  return row == 0 ? (r.stereo ? 1 : 0) : row == 2 ? (int)r.par[1] - 5 : r.par[row - 1];
+  if (rxsPage) return row < 5 ? (int)r.eq[row] - 6 : row == 5 ? r.lowCut : row == 6 ? r.par[5] : 0;
+  int p = RXS_PAR[row];
+  if (p == -3) return r.lock;
+  if (p == -2) return r.boost;
+  if (p == -1) return r.stereo ? 1 : 0;
+  return p == 1 ? (int)r.par[1] - 5 : r.par[p];
 }
 static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
   int v = rxsGet(r, row);
   if (rxsPage) {
     if (row < 5) snprintf(t, n, tr("%s%d дБ"), v > 0 ? "+" : "", v * 2);
     else if (row == 5) snprintf(t, n, "%s", v ? tr("увімкнено") : tr("вимкнено"));
-    else if (row == 6 && !r.hasBoost) snprintf(t, n, "—");
-    else if (row == 6 && v) snprintf(t, n, tr("%s%d дБ"), "+", v * 2);
-    else snprintf(t, n, "%s", row == 6 ? tr("вимкнено") : "");
+    else if (row == 6) snprintf(t, n, "%s", v == 1 ? "українська" : v == 2 ? "English" : tr("як у передавача"));
+    else t[0] = 0;
     return;
   }
   switch (row) {
@@ -1778,18 +1788,22 @@ static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
       else snprintf(t, n, v < 0 ? tr("ліве +%d") : tr("праве +%d"), v < 0 ? -v : v);
       break;
     case 3: snprintf(t, n, "%d %%", v * 5); break;
-    case 4: snprintf(t, n, "%s", v == 1 ? tr("стрілки") : v == 2 ? tr("гучність") : tr("спектр")); break;
-    case 5: snprintf(t, n, "%s", v == 0 ? tr("вимкнено") : v == 1 ? tr("тьмяно") : v == 3 ? tr("яскраво") : tr("норма")); break;
-    case 7: snprintf(t, n, "%s", !r.hasLock ? "—" : v == 1 ? tr("меню") : v == 2 ? tr("гучність") : v == 3 ? tr("усе") : tr("немає")); break;
-    default: snprintf(t, n, "%s", v == 1 ? "українська" : v == 2 ? "English" : tr("як у передавача"));
+    case 4:   // усиление понимают приёмники с 2.48
+      if (!r.hasBoost) snprintf(t, n, "—");
+      else if (v) snprintf(t, n, tr("%s%d дБ"), "+", v * 2);
+      else snprintf(t, n, "%s", tr("вимкнено"));
+      break;
+    case 5: snprintf(t, n, "%s", v == 1 ? tr("стрілки") : v == 2 ? tr("гучність") : tr("спектр")); break;
+    case 6: snprintf(t, n, "%s", v == 0 ? tr("вимкнено") : v == 1 ? tr("тьмяно") : v == 3 ? tr("яскраво") : tr("норма")); break;
+    default: snprintf(t, n, "%s", !r.hasLock ? "—" : v == 1 ? tr("меню") : v == 2 ? tr("гучність") : v == 3 ? tr("усе") : tr("немає"));
   }
 }
 // новое значение строки после нажатия «меньше» (d = −1) или «больше» (+1); вид экрана и язык идут по кругу
 static int rxsStep(const View::Rx &r, int row, int d) {
-  static const int8_t LO[RXS_N] = { 0, 0, -5, 4, 0, 0, 0, 0 }, HI[RXS_N] = { 1, 3, 5, 20, 2, 3, 2, 3 };
+  static const int8_t LO[RXS_N] = { 0, 0, -5, 4, 0, 0, 0, 0 }, HI[RXS_N] = { 1, 3, 5, 20, 12, 2, 3, 3 };
   int v = rxsGet(r, row) + d;
-  if (rxsPage) return row < 5 ? (v < -6 ? -6 : v > 6 ? 6 : v) : row == 5 ? (v & 1) : row == 6 ? (v < 0 ? 0 : v > 12 ? 12 : v) : 0;
-  if (row == 0 || row == 4 || row == 6) return v < LO[row] ? HI[row] : v > HI[row] ? LO[row] : v;
+  if (rxsPage) return row < 5 ? (v < -6 ? -6 : v > 6 ? 6 : v) : row == 5 ? (v & 1) : row == 6 ? (v < 0 ? 2 : v > 2 ? 0 : v) : 0;   // язык — по кругу
+  if (row == 0 || row == 5) return v < LO[row] ? HI[row] : v > HI[row] ? LO[row] : v;   // выход и вид экрана — по кругу
   return v < LO[row] ? LO[row] : v > HI[row] ? HI[row] : v;
 }
 static Box rxsBox(int id) {
@@ -1809,8 +1823,8 @@ static void drawRxSetButton(int id, bool pressed) {
   bool plus = id >= ID_RXS_PLUS;
   int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
   bool dead = i >= 0 && !rxsPage && ((row == 2 && !view.rx[i].stereo) ||   // баланс при одном канале не к чему приложить
+                                     (row == 4 && !view.rx[i].hasBoost) ||  // усиление понимают приёмники с 2.48
                                      (row == 7 && !view.rx[i].hasLock));    // блокировку понимают приёмники с 2.46
-  if (i >= 0 && rxsPage && row == 6 && !view.rx[i].hasBoost) dead = true;   // усиление понимают приёмники с 2.48
   if (rxsPage && row >= 7) return g.fill(b.x, b.y, b.w, b.h, C_CARD);   // на листе эквалайзера семь строк
   card(b, pressed && !dead ? m2::Gfx::blend(C_SECONDARY, C_FG, 40) : C_SECONDARY, C_BORDER);
   uint16_t ink = dead ? C_BORDER : C_FG;
@@ -2636,13 +2650,13 @@ static void activate(int id) {
       View::Rx &r = view.rx[i];
       bool plus = id >= ID_RXS_PLUS;
       int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
-      if (row > 6 || (row == 6 && !r.hasBoost)) return;
+      if (row > 6) return;
       int v = rxsStep(r, row, plus ? 1 : -1);
       if (v == rxsGet(r, row)) return;
-      if (row == 6) {   // усиление идёт командой настройки (RXP_X_BOOST), а не эквалайзера
-        r.boost = (uint8_t)v;
+      if (row == 6) {   // язык надписей идёт командой настройки (RXP_LANG), а не эквалайзера
+        r.par[5] = (uint8_t)v;
         out.rxCmd = RXC_SET;
-        out.rxArg = (7 << 5) | v;
+        out.rxArg = (5 << 5) | v;
       } else {
         if (row < 5) r.eq[row] = (uint8_t)(v + 6);
         else r.lowCut = (uint8_t)v;
@@ -2656,6 +2670,7 @@ static void activate(int id) {
       bool plus = id >= ID_RXS_PLUS;
       int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
       if (row == 2 && !r.stereo) return;   // баланс при одном канале
+      if (row == 4 && !r.hasBoost) return; // усиление понимают приёмники с 2.48
       if (row == 7 && !r.hasLock) return;  // блокировку понимают приёмники с 2.46
       int v = rxsStep(r, row, plus ? 1 : -1);
       if (v == rxsGet(r, row)) return;
@@ -2663,6 +2678,10 @@ static void activate(int id) {
         r.lock = (uint8_t)v;
         out.rxCmd = RXC_SET;
         out.rxArg = (6 << 5) | v;          // RXP_X_LOCK
+      } else if (row == 4) {
+        r.boost = (uint8_t)v;
+        out.rxCmd = RXC_SET;
+        out.rxArg = (7 << 5) | v;          // RXP_X_BOOST
       } else if (row == 0) {
         r.stereo = v;
         out.rxCmd = RXC_STEREO;
@@ -2671,9 +2690,10 @@ static void activate(int id) {
         drawRxSetButton(ID_RXS_MINUS + 2, false);
         drawRxSetButton(ID_RXS_PLUS + 2, false);
       } else {
-        r.par[row - 1] = (uint8_t)(row == 2 ? v + 5 : v);
+        int p = RXS_PAR[row];              // номер настройки в сообщении приёмника
+        r.par[p] = (uint8_t)(p == 1 ? v + 5 : v);
         out.rxCmd = RXC_SET;
-        out.rxArg = ((row - 1) << 5) | r.par[row - 1];
+        out.rxArg = (p << 5) | r.par[p];
       }
       drawRxSetRow(row);
       rxsShown = rxsSum();

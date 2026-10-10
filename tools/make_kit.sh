@@ -10,6 +10,7 @@ B=build/hearlink-s3
 VER=$(sed -n 's/^#define FW_VERSION "\(.*\)".*/\1/p' hearlink/config.h)
 strings -a $B/hearlink.ino.bin | grep -q "HEARLINK-FW:$VER" || { echo "в build/ лежит не версия $VER — пересобрать"; exit 1; }
 A=$HOME/Library/Arduino15/packages/esp32
+[ -d "$HOME/Library/Arduino15-hearlink/packages/esp32" ] && A=$HOME/Library/Arduino15-hearlink/packages/esp32   # ядро проекта (см. build.sh)
 E=$(ls -d $A/tools/esptool_py/*/ | tail -1)
 K=kit
 rm -rf $K

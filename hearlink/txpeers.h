@@ -50,6 +50,7 @@ struct CmdSlot {
 };
 static CmdSlot cmdQ[4];       // команды лежат открытыми; шифруются при отправке, в задаче передачи
 static uint32_t cmdCtr;
+static volatile uint32_t txSeenSent;   // сколько объявлений «кого слышу» ушло (для отчёта)
 
 // ---- подключение приёмников (см. sec.h). Просьбы слушаем, только пока открыто окно добавления.
 #define PAIR_ASKS 3
@@ -145,6 +146,40 @@ static void peersPump() {
   static uint8_t skip;
   if (++skip < 5) return;
   skip = 0;
+  {   // «кого слышу» — раз в две секунды (proto.h, TxSeen). Не во время объявленного перехода на другой канал:
+      // в эти 0,2 с эфир нужен объявлению о переходе.
+    static uint32_t seenAt, seenCtr;
+    uint32_t now = millis();
+    if (now - seenAt >= 2000 && !txHopCh && secHave) {
+      seenAt = now;
+      TxSeen s = {};
+      s.magic = MAGIC_SEEN;
+      s.ver = PROTO_VER;
+      s.kit = cfg.kit;
+      s.epoch = secEpoch;
+      s.ctr = ++seenCtr;
+      uint8_t n = 0;
+      bool full = true;
+      portENTER_CRITICAL(&peerMux);
+      for (auto &p : peers) {
+        if (!p.used) {
+          full = false;
+          continue;
+        }
+        if (peerOnline(p) && n < SEEN_MAX) {
+          memcpy(s.ids + n * 3, p.id, 3);
+          n++;
+        }
+      }
+      portEXIT_CRITICAL(&peerMux);
+      s.n = (uint8_t)(n | (full ? 0x80 : 0));
+      if (secSeal(SEC_SEEN, s.epoch, s.ctr, NULL, (const uint8_t *)&s, SEEN_CLEAR, &s.n, SEEN_BODY, s.tag)) {
+        radioSend((const uint8_t *)&s, sizeof(s));
+        txSeenSent = txSeenSent + 1;
+        return;
+      }
+    }
+  }
   for (auto &q : cmdQ)
     if (q.left) {
       TxCommand2 s = q.c;   // копия: повтор той же команды шифруется так же
@@ -378,8 +413,10 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
         peers[k].earTest = body[RXP_COUNT];
         peers[k].parSetMs = 0;
       }
-      peers[k].fwMaj = body[RXP_COUNT + 1] & 15;   // в старших битах — усиление (с 2.48)
-      peers[k].fwMin = body[RXP_COUNT + 2];
+      uint8_t fj = body[RXP_COUNT + 1] & 15, fn = body[RXP_COUNT + 2];   // в старших битах — усиление (с 2.48)
+      if (fj != peers[k].fwMaj || fn != peers[k].fwMin) peersDirty = true;    // версия запоминается (см. peersSave)
+      peers[k].fwMaj = fj;
+      peers[k].fwMin = fn;
       peers[k].hasEq = body[RXP_COUNT + 5] & 0x80;
       if (!peers[k].parSetMs || msSince(peers[k].parSetMs) > 2500) {
         const uint8_t *e = body + RXP_COUNT + 3;
@@ -540,6 +577,15 @@ struct __attribute__((packed)) PeerRec {      // запись «list3»: имя 
   uint8_t off, hasDev;
   uint8_t dev[32];
 };
+// Последняя известная версия прошивки каждого приёмника — отдельной записью «fw1» (запись «list3» не трогаем: её
+// читают и прежние прошивки). Нужна передатчику сразу при включении: двойные пакеты (proto.h, Q_DOUBLE) можно слать,
+// только если ВСЕ приёмники из списка — на связи они или нет — умеют их принимать. 10.10, первая проба 2.60: правило
+// было «все, кто на связи», а спящий приёмник со старой прошивкой на связи не бывает — он просыпается, только услышав
+// два пакета за 70 мс, одиночные же шли раз в 0,3 с; оба приёмника остались спать, и обновить их было нечем.
+struct __attribute__((packed)) PeerFw {
+  uint8_t id[3];
+  uint8_t maj, mn;
+};
 
 static void peersSave() {
   PeerRec *rec = (PeerRec *)heap_caps_calloc(PEERS_MAX, sizeof(PeerRec), MALLOC_CAP_SPIRAM);   // 1,6 КБ — не из внутренней памяти
@@ -556,6 +602,19 @@ static void peersSave() {
     }
   uint32_t t0 = millis();
   peerPrefs.putBytes("list3", rec, n * sizeof(PeerRec));
+  {
+    PeerFw fw[PEERS_MAX];
+    int k = 0;
+    for (int i = 0; i < PEERS_MAX; i++)
+      if (peers[i].used && peers[i].fwMaj) {
+        memcpy(fw[k].id, peers[i].id, 3);
+        fw[k].maj = peers[i].fwMaj;
+        fw[k].mn = peers[i].fwMin;
+        k++;
+      }
+    if (k) peerPrefs.putBytes("fw1", fw, k * sizeof(PeerFw));
+    else peerPrefs.remove("fw1");
+  }
   bbMark(BB_NVS, 1, millis() - t0);
   memset(rec, 0, PEERS_MAX * sizeof(PeerRec));   // в записях — личные ключи приёмников
   free(rec);
@@ -597,6 +656,17 @@ static void peersBegin() {
     memset(rec, 0, PEERS_MAX * sizeof(PeerRec));
     free(rec);
   }
+  {   // последние известные версии приёмников (см. PeerFw)
+    PeerFw fw[PEERS_MAX];
+    size_t fl = peerPrefs.getBytes("fw1", fw, sizeof(fw));
+    for (size_t i = 0; i < fl / sizeof(PeerFw); i++) {
+      int k = peerFind(fw[i].id);
+      if (k >= 0) {
+        peers[k].fwMaj = fw[i].maj;
+        peers[k].fwMin = fw[i].mn;
+      }
+    }
+  }
   rOnStatus = peerOnStatus;
   rOnPairReq = pairOnReq;
   rOnKeyReq = peerOnKeyReq;
@@ -625,9 +695,9 @@ static void peersPrint() {
     const Peer &p = peers[i];
     if (!p.used) continue;
     n++;
-    Serial.printf("  приймач %02X%02X%02X «%s»: %s%s%s, гучність %u, сигнал %d дБм (тут %d), запас %u мс, втрати %.1f %%, пропусків %u, провалів %u мс, версія %.1f, вихід %s%s%s\n",
+    Serial.printf("  приймач %02X%02X%02X «%s»: %s%s%s, гучність %u, сигнал %d дБм (тут %d), запас %u мс, втрати %.1f %%, пропусків %u, провалів %u мс, версія %s, вихід %s%s%s\n",
                   p.id[0], p.id[1], p.id[2], p.name, peerOnline(p) ? "на зв'язку" : "не на зв'язку", p.flags & ST_OFF ? ", ВИМКНЕНИЙ" : "",
-                  p.flags & ST_SLEEP ? ", СПИТЬ" : "", p.volume, p.rssi, p.rssiHere, p.depthMs, p.lossPm / 10.0f, p.lostFrames, p.underMs, p.fw / 10.0f,
+                  p.flags & ST_SLEEP ? ", СПИТЬ" : "", p.volume, p.rssi, p.rssiHere, p.depthMs, p.lossPm / 10.0f, p.lostFrames, p.underMs, (p.fwMaj ? String(p.fwMaj) + "." + String(p.fwMin) : String(p.fw / 10.0f, 1)).c_str(),
                   p.flags & ST_STEREO ? "два канали" : "протифаза", p.fw < 16 ? "" : p.flags & ST_OUTLIVE ? " (живий)" : " (СТОЇТЬ)",
                   p.flags & ST_MUTE ? ", тиша" : "");
     if (p.hasInfo)

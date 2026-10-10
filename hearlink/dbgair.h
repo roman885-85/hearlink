@@ -12,7 +12,9 @@
 #pragma once
 
 #define MAGIC_DEBUG 0x4748   // «HG»
-enum { DBG_TEXT = 0, DBG_CMD = 1, DBG_BEACON = 2, DBG_MORE = 0x80 };
+// DBG_EVENT (с 2.59) — редкая важная строка приёмника (сам перезагрузил радио, сам перезапустился): идёт передатчику
+// всегда, а не только при включённой отладке; передатчик печатает её в порт и дописывает в журнал на карте.
+enum { DBG_TEXT = 0, DBG_CMD = 1, DBG_BEACON = 2, DBG_EVENT = 3, DBG_MORE = 0x80 };
 struct __attribute__((packed)) DbgMsg {
   uint16_t magic;
   uint8_t ver, kit;
@@ -43,6 +45,21 @@ static uint8_t dbgSendTo[3];
 static volatile uint8_t dbgSendLeft;        // сколько раз ещё послать (повтор — на случай потери)
 static uint32_t dbgSendA, dbgSendB;
 static volatile uint32_t dbgSent, dbgHeard;
+static char dbgEvText[DBG_LINE + 1];        // приёмник: событие на отправку передатчику
+static volatile uint8_t dbgEvLeft;          // сколько раз ещё послать (повтор — на случай потери)
+static uint32_t dbgEvB, dbgEvAt;
+struct DbgEvIn {
+  uint8_t from[3];
+  char text[DBG_LINE + 1];
+};
+static DbgEvIn dbgEvIn;                     // передатчик: пришедшее событие — напечатает и запишет главный цикл
+static volatile bool dbgEvInFull;
+static void dbgEvent(const char *text) {    // приёмник (главный цикл)
+  utf8Copy(dbgEvText, text, sizeof(dbgEvText));
+  dbgEvB = ++dbgCtr;
+  dbgEvAt = 0;
+  dbgEvLeft = 3;
+}
 
 static size_t dbgBuild(uint8_t *pkt, uint8_t kind, const uint8_t *to, uint32_t a, uint32_t b, const char *text, uint8_t len) {
   DbgMsg *m = (DbgMsg *)pkt;
@@ -100,6 +117,21 @@ static void dbgOnPacket(const uint8_t *data, int len) {
   text[tl] = 0;
   if (kind == DBG_BEACON) {
     if (!cfg.isTx) dbgAirUntil = millis() + 6000;
+    return;
+  }
+  if (kind == DBG_EVENT) {
+    static uint8_t lastFrom[3];
+    static uint32_t lastA, lastB;
+    static bool have;
+    if (!cfg.isTx || dbgEvInFull) return;
+    if (have && !memcmp(lastFrom, m->from, 3) && lastA == m->a && lastB == m->b) return;   // повтор того же события
+    have = true;
+    memcpy(lastFrom, m->from, 3);
+    lastA = m->a;
+    lastB = m->b;
+    memcpy(dbgEvIn.from, m->from, 3);
+    memcpy(dbgEvIn.text, text, tl + 1);
+    dbgEvInFull = true;
     return;
   }
   if (kind == DBG_TEXT) {
@@ -187,10 +219,22 @@ static void dbgPumpRx() {
   static uint8_t pkt[PKT_MAX];
   static uint32_t last;
   if (rxPower == PW_STANDBY || millis() - last < 15) return;
+  if (rxTxBusy()) return;   // прошлый пакет ещё у драйвера — следующий не кладём поверх (см. rxSend в radio.h)
+  if (dbgEvLeft && secHave && millis() - dbgEvAt >= 700 && rLastRxMs && msSince(rLastRxMs) < 400) {   // событие — передатчику
+    static const uint8_t TXID[3] = { 0, 0, 0 };
+    size_t n = dbgBuild(pkt, DBG_EVENT, TXID, dbgSession, dbgEvB, dbgEvText, (uint8_t)strlen(dbgEvText));
+    dbgEvAt = millis() ? millis() : 1;
+    dbgEvLeft = dbgEvLeft - 1;
+    if (n) {
+      last = millis();
+      rxSend(pkt, n);
+    }
+    return;
+  }
   size_t n = dbgNext(pkt);
   if (n) {
     last = millis();
-    esp_now_send(BCAST, pkt, n);
+    rxSend(pkt, n);
   }
 }
 

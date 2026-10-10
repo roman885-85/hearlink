@@ -285,7 +285,12 @@ int main() {
     const uint8_t par[6] = { 2, 5 + 2, 14, 1, 2, 0 };   // чёткость «середня», баланс «праве +2», предел 70 %, стрелки, норма, как у передатчика
     memcpy(r.par, par, 6);
     r.online = true;
-    r.fw = 23;
+    r.fw = 26;
+    r.fwMaj = 2;   // точная версия (с 2.59 окно приёмника показывает её, а не округление до десятых)
+    r.fwMin = 62;
+    r.hasEq = true;      // нынешний приёмник: в шапке окна настроек есть кнопка «Еквалайзер»,
+    r.hasBoost = true;   // в списке — «Підсилення гучності»
+    r.boost = 4;         // +8 дБ
     view.ota.stage = 0;
     memcpy(rxSelId, r.id, 3);   // окно приёмника открываем прямо: касания выше попадают в «Оновлення» (кнопка появилась в 2.19)
     modal = M_RX;
@@ -304,13 +309,18 @@ int main() {
     printf("налаштування приймача: команда %d, аргумент %d\n", out.rxCmd, out.rxArg);
     save("18e-nalashtuvannya-pislya-natyskan");
     view.rx[rxFind(rxSelId)].hasEq = true;
+    view.rx[rxFind(rxSelId)].hasBoost = true;
+    modalAgain = true;   // окно перерисовать целиком: у приёмника появились эквалайзер и усиление (кнопка в шапке)
     drawModal();
+    modalAgain = false;
+    { Box b = rxsBox(ID_RXS_PLUS + 4); for (int k = 0; k < 2; k++) tap(b.x + 20, b.y + 20); }   // усиление: +8 → +12 дБ
+    printf("усиление: команда %d, значение %d\n", out.rxCmd, out.rxArg);
     save("18f-nalashtuvannya-z-knopkoyu-ekvalaizera");
     { Box b = rxsBox(ID_RXS_PAGE); tap(b.x + 20, b.y + 20); }
     { Box b = rxsBox(ID_RXS_MINUS + 0); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }   // низ: −4 дБ
     { Box b = rxsBox(ID_RXS_PLUS + 3); tap(b.x + 20, b.y + 20); }                              // 2,5 кГц: +2 дБ
-    { Box b = rxsBox(ID_RXS_PLUS + 6); for (int k = 0; k < 4; k++) tap(b.x + 20, b.y + 20); }   // усиление: +8 дБ
-    printf("усиление: команда %d, значение %d\n", out.rxCmd, out.rxArg);
+    { Box b = rxsBox(ID_RXS_PLUS + 6); tap(b.x + 20, b.y + 20); }                              // язык надписей: українська
+    printf("язык приёмника: команда %d, значение %d\n", out.rxCmd, out.rxArg);
     save("18g-ekvalaizer");
     { Box b = rxsBox(ID_RXS_PAGE); tap(b.x + 20, b.y + 20); }
     save("18h-nazad-do-nalashtuvan");

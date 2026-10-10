@@ -59,6 +59,8 @@ static volatile uint32_t rLastDoneMs;     // когда драйвер посл�
 static volatile int rLastErr;
 static uint32_t rRestarts;                // сколько раз радио пришлось перезапускать
 static volatile bool rApply;              // просьба применить новые канал/скорость/мощность
+static volatile uint32_t rLastChanMs, rLastNvsMs;   // когда последний раз меняли канал радио и писали настройки во флеш
+static volatile bool rRebooting;          // плата уходит на перезапуск: отправка и сторожа молчат (см. ниже, у radioSend)
 // когда ушли последние пакеты — для замера ожидания эфира. Мест 64: при 16 замер «упирался» в 32 мс
 // (очередь длиннее 16 пакетов затирала свои же отметки), и настоящих задержек в 50–60 мс видно не было.
 static volatile uint32_t rSendUs[64], rPut, rGot;
@@ -71,7 +73,11 @@ static volatile int8_t rRssi;
 static volatile uint32_t rForeign, rLastRxMs;
 typedef void (*AudioPacketFn)(const Hdr *h, const uint8_t *payload);
 static AudioPacketFn rOnAudio;
+// Проверка совместимости (порт приёмника: n11=1 — не понимать двойные пакеты; n11=2 — ещё и называться версией 2.56,
+// чтобы передатчик вернулся к одиночным пакетам и взялся обновлять; n11=0 — как есть). До перезапуска приёмника.
+static volatile uint8_t rxOldSim;
 static void (*rOnStatus)(const uint8_t *data, int len, int8_t rssi);   // передатчик: пришли сведения приёмника (прежнего или длинного вида)
+static void (*rOnSeen)(const uint8_t *data, int len);         // приёмник: передатчик объявил, кого он слышит (с 2.59)
 static void (*rOnCommand)(const uint8_t *data, int len);     // приёмник: пришла команда (прежнего или длинного вида)
 static void (*rOnPairReq)(const PairReq *r);                 // передатчик: приёмник без ключа просит доступ
 static void (*rOnPairRsp)(const PairRsp *r);                 // приёмник: передатчик прислал ключ набора
@@ -154,6 +160,64 @@ static void radioOnSent(const esp_now_send_info_t *, esp_now_send_status_t statu
   if (status != ESP_NOW_SEND_SUCCESS) rAirFail = rAirFail + 1;
 }
 
+// ---- приёмник: счёт своих отправок и сторож передающей части (с 2.59)
+// До 2.59 приёмник за своими отправками не следил вовсе: ответ драйвера «пакет ушёл» не запрашивал, результат вызова
+// не смотрел (сторож оживления радио работал только у передатчика). 10.10 приёмник 18 минут принимал звук и выполнял
+// команды, а передатчик его не слышал, пока приёмник не перезапустили (слова владельца: «нужно исключить такой баг,
+// так как приемники всегда будут включены»); ночью 09.10 то же было с другим приёмником. Теперь:
+//  — все отправки приёмника идут через rxSend и считаются;
+//  — пакет отдан драйверу, а ответа нет дольше RX_TX_STUCK_MS (или драйвер четыре раза подряд не взял пакет) —
+//    драйвер Wi-Fi перезагружается целиком (radioReinit: около 20 мс без приёма);
+//  — канал не меняется, пока свой пакет ещё у драйвера (radioScanTick, переход в rxaudio.h, круг сна).
+// Вторая, независимая проверка — сверка со списком «кого слышу» от передатчика (rxlink.h, rxSeenTick).
+#define RX_TX_STUCK_MS 500
+static volatile uint32_t rxTxPut, rxTxGot;          // отдано драйверу / драйвер ответил (с последнего запуска радио)
+static volatile uint32_t rxTxPutCount, rxTxDoneCount;   // то же — всего с запуска платы (для отчёта)
+static volatile uint32_t rxTxErr, rxTxFail;         // драйвер не взял пакет / ответил «не ушло»
+static volatile int rxTxLastErr;                    // последний код отказа
+static volatile uint32_t rxTxFirstMs, rxTxDoneMs;   // с какого времени неотвеченный пакет ждёт (последнее продвижение); последний ответ
+static volatile uint8_t rxTxErrRun;                 // отказов драйвера подряд
+static volatile uint32_t rxTxWaitMaxMs;             // дольше всего пакет ждал ответа (для отчёта)
+static volatile uint32_t rxHealStuck, rxHealUnseen; // перезагрузок радио: «драйвер не отвечает» / «передатчик не слышит»
+static volatile uint32_t rxHealMs;                  // когда радио перезагружали последний раз (0 — ни разу)
+// Проверка без настоящей неисправности (порт приёмника: n12=<0…4>, см. hearlink.ino):
+//   1 — драйвер «взял пакет и молчит» (ловит сторож отправок); 2 — пакеты «уходят в никуда», ответ драйвера есть
+//   (ловит только сверка со списком передатчика; снимается перезагрузкой радио); 3 — то же, но перезагрузка радио не
+//   помогает (снимается перезапуском платы); 4 — то же, и перезапуск платы не помогает (признак — в памяти часов).
+static volatile uint8_t rxTxFake;
+static void rxOnTxDone(const esp_now_send_info_t *, esp_now_send_status_t status) {
+  uint32_t now = millis();
+  if ((int32_t)(rxTxPut - rxTxGot) > 0) {
+    uint32_t w = now - rxTxFirstMs;
+    if (w > rxTxWaitMaxMs && w < 60000) rxTxWaitMaxMs = w;
+    rxTxGot = rxTxGot + 1;
+    rxTxDoneCount = rxTxDoneCount + 1;
+    rxTxFirstMs = now;   // следующий неотвеченный (если есть) считаем ждущим с этого мига: сторожу важно «нет продвижения»
+  }
+  rxTxDoneMs = now;
+  if (status != ESP_NOW_SEND_SUCCESS) rxTxFail = rxTxFail + 1;
+}
+// Отправка приёмника (только из главного цикла). Возвращает то же, что esp_now_send.
+static esp_err_t rxSend(const uint8_t *pkt, size_t len) {
+  if (rxTxFake >= 2) return ESP_OK;   // «ушло в никуда»
+  if ((int32_t)(rxTxPut - rxTxGot) <= 0) rxTxFirstMs = millis();
+  rxTxPut = rxTxPut + 1;
+  rxTxPutCount = rxTxPutCount + 1;
+  esp_err_t e = rxTxFake == 1 ? ESP_OK : esp_now_send(BCAST, pkt, len);
+  if (e != ESP_OK) {
+    rxTxPut = rxTxPut - 1;
+    rxTxPutCount = rxTxPutCount - 1;
+    rxTxErr = rxTxErr + 1;
+    rxTxLastErr = e;
+    if (rxTxErrRun < 255) rxTxErrRun = rxTxErrRun + 1;
+  } else rxTxErrRun = 0;
+  return e;
+}
+// свой пакет ещё у драйвера (и ждёт недолго — вставший драйвер смену канала не задерживает: его перезагрузит сторож)
+static inline bool rxTxBusy() {
+  return (int32_t)(rxTxPut - rxTxGot) > 0 && msSince(rxTxFirstMs) < 100;
+}
+
 // Поиск задержек (07.10: у передатчика раз в 2,5 с отправка встаёт на ~30 мс): самая долгая обработка принятого пакета
 // и какого он вида, самая долгая перенастройка радио, самый долгий вызов «после отправки». Печатает команда u.
 static volatile uint32_t dgRecvMaxUs, dgRecvMagic, dgApplyMaxUs, dgApplyN, dgAfterMaxUs, dgSendMaxUs;
@@ -198,6 +262,10 @@ static void radioOnRecv2(const esp_now_recv_info_t *info, const uint8_t *data, i
     if (rOnCommand) rOnCommand(data, len);
     return;
   }
+  if (len == (int)sizeof(TxSeen) && h->magic == MAGIC_SEEN && h->ver == PROTO_VER && h->kit == cfg.kit) {
+    if (rOnSeen) rOnSeen(data, len);
+    return;
+  }
   if (len >= 25 && h->magic == 0x4F48 && h->ver == PROTO_VER && h->kit == cfg.kit) {   // MAGIC_OTA: 16 байт заголовка, тело и подпись
     if (rOnOta) rOnOta(data, len);
     return;
@@ -209,12 +277,17 @@ static void radioOnRecv2(const esp_now_recv_info_t *info, const uint8_t *data, i
   }
   uint8_t aq = len >= (int)sizeof(Hdr) ? h->q & Q_MASK : 255;
   bool ast = len >= (int)sizeof(Hdr) && (h->q & Q_STEREO);
-  if (aq >= Q_COUNT || h->magic != MAGIC || h->ver != PROTO_VER || (h->q & ~(Q_MASK | Q_STEREO | Q_LANG_EN)) || (ast && !qStereoOk(aq)) ||
-      (len != qPktLen(aq, ast) && !(aq == Q_HI && ast && len == qPktLen(aq, ast) + SC_LEN))) {
+  bool adbl = len >= (int)sizeof(Hdr) && (h->q & Q_DOUBLE);   // два кадра в пакете (с 2.60)
+  if (adbl && rxOldSim) {   // проверка (порт приёмника: n11): вести себя как прошивка до 2.60 — двойных пакетов не знать
     rForeign = rForeign + 1;
     return;
   }
-  rPktSc = len != qPktLen(aq, ast);   // «найвища» стерео с копией разности каналов (с 2.43)
+  if (aq >= Q_COUNT || h->magic != MAGIC || h->ver != PROTO_VER || (h->q & ~(Q_MASK | Q_STEREO | Q_LANG_EN | Q_DOUBLE)) || (ast && !qStereoOk(aq)) ||
+      (adbl ? (aq != Q_HI || len != qPktLen2(aq, ast)) : (len != qPktLen(aq, ast) && !(aq == Q_HI && ast && len == qPktLen(aq, ast) + SC_LEN)))) {
+    rForeign = rForeign + 1;
+    return;
+  }
+  rPktSc = !adbl && len != qPktLen(aq, ast);   // «найвища» стерео с копией разности каналов (с 2.43)
   if (!rOnAudio) return;   // передатчику чужой звук не нужен
   rLastAnyMs = millis();
   rAnyCh = h->flags >> 4;
@@ -251,6 +324,7 @@ static void radioOnRecv2(const esp_now_recv_info_t *info, const uint8_t *data, i
 }
 
 static void radioSetParams() {
+  rLastChanMs = millis();
   esp_wifi_set_channel(cfg.channel, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_max_tx_power(cfg.powerDbm * 4);
   // приёмник отвечает редко и коротко — всегда на самой стойкой обычной скорости (1 Мбит/с)
@@ -276,12 +350,16 @@ static bool radioStartEspNow() {
   memcpy(peer.peer_addr, BCAST, 6);
   peer.ifidx = WIFI_IF_STA;
   esp_now_add_peer(&peer);
-  if (cfg.isTx) esp_now_register_send_cb(radioOnSent);
+  esp_now_register_send_cb(cfg.isTx ? radioOnSent : rxOnTxDone);   // приёмник тоже ждёт ответа на свои отправки (с 2.59)
   esp_now_register_recv_cb(radioOnRecv);   // передатчик тоже слушает: приёмники сообщают о себе
   radioSetParams();
   rPut = 0;
   rGot = 0;
   rLastDoneMs = millis();
+  rxTxPut = 0;   // что было у драйвера до его остановки — уже не ответит
+  rxTxGot = 0;
+  rxTxErrRun = 0;
+  rxTxFirstMs = rxTxDoneMs = millis();
   return true;
 }
 
@@ -346,6 +424,33 @@ static bool radioReinit() {
   return radioStartEspNow();
 }
 
+// Приёмник: перезагрузить радио. why: 1 — драйвер не отвечает на отправки, 2 — передатчик нас не слышит.
+// Слепок «чёрного ящика» (что было перед этим) печатает и отсылает передатчику главный цикл (hearlink.ino).
+static volatile uint8_t rxHealWhy;        // причина последней перезагрузки радио — главный цикл сообщит и обнулит
+static volatile uint32_t rxHealPend, rxHealQuietMs, rxHealTookMs;
+static void rxRadioHeal(uint8_t why) {
+  uint32_t t0 = millis();
+  rxHealPend = (uint32_t)(rxTxPut - rxTxGot);
+  rxHealQuietMs = msSince(rxTxDoneMs, t0);
+  bbFreeze((int32_t)rxHealPend, rxHealQuietMs, rxTxLastErr, cfg.channel);
+  radioReinit();
+  if (rxTxFake == 1 || rxTxFake == 2) rxTxFake = 0;   // проверочная неисправность 1 и 2 снимается перезагрузкой радио
+  rxHealMs = millis() ? millis() : 1;
+  rxHealTookMs = rxHealMs - t0;
+  if (why == 1) rxHealStuck = rxHealStuck + 1;
+  else rxHealUnseen = rxHealUnseen + 1;
+  bbMark(BB_REVIVE, 10 + why, rxHealTookMs);
+  rxHealWhy = why;
+}
+// Сторож отправок приёмника (главный цикл, не в ожидании).
+static void rxTxWatchTick() {
+  uint32_t now = millis();
+  bool stuck = ((int32_t)(rxTxPut - rxTxGot) > 0 && msSince(rxTxFirstMs, now) > RX_TX_STUCK_MS) || rxTxErrRun >= 4;
+  if (!stuck || rRebooting) return;
+  if (rxHealMs && msSince(rxHealMs, now) < 3000) return;   // только что перезагружали — не частить
+  rxRadioHeal(1);
+}
+
 // Отправить пакет. Если драйвер перестал отвечать (такое бывает: все отправки отклоняются с ESP_ERR_ESPNOW_NO_MEM
 // и сами не возобновляются) — оживлять по ступеням, а не молчать:
 //   1) через 0,3 с молчания — ESP-NOW и радио заново (быстро, но помогает не всегда);
@@ -355,7 +460,7 @@ static void (*rOnDead)();
 // Плата уходит на перезапуск (ставит обработчик выключения, см. setup): радио уже останавливают, отправка и сторож
 // молчат. Без этого (до 2.45) сторож принимал остановку радио за отказ и брался его «оживлять» посреди перезапуска —
 // тот зависал до сторожа часов («запуск через: ЗАВИСАННЯ»), а в «чёрном ящике» оставалась ложная запись «РАДІО СТАЛО».
-static volatile bool rRebooting;
+// (сама переменная rRebooting объявлена выше — она нужна и сторожу отправок приёмника)
 static bool quickBoot;                     // этот запуск — быстрый перезапуск после вставшего радио (без заставки)
 static bool updatedBoot;                   // этот запуск — после того как передатчик обновил сам себя с карты
 static bool fwChangedBoot;                 // этот запуск — первый с новой версией прошивки (в том числе залитой по кабелю)
@@ -531,6 +636,7 @@ static void radioSerialBegin() {
 static void radioScanTick() {
   static uint32_t lastHop;
   uint32_t now = millis();
+  if (rxTxBusy()) return;   // свой пакет ещё у драйвера — канал и скорость пока не трогаем (см. rxSend)
   if (rApply) {
     radioSetParams();
     rApply = false;
@@ -544,5 +650,6 @@ static void radioScanTick() {
   if (!cfg.autoChannel || msSince(rLastRxMs, now) < 600 || now - lastHop < 60) return;
   lastHop = now;
   cfg.channel = cfg.channel % 13 + 1;
+  rLastChanMs = now;
   esp_wifi_set_channel(cfg.channel, WIFI_SECOND_CHAN_NONE);
 }

@@ -3,7 +3,11 @@
 [← до головної](../../README.uk.md) · [English](../en/development.md)
 
 ## Середовище
-- Arduino IDE 2.x або `arduino-cli`; ядро **esp32 3.3.3** (ESP-IDF 5.5); бібліотека **U8g2**.
+- Arduino IDE 2.x або `arduino-cli`; ядро **esp32 3.3.12** (ESP-IDF 5.5.5) — ним зібрані випуски з 2.63 (до 2.56 —
+  3.3.3: прошивка збирається й ним, але радіо передавача з вбудованим АЦП на ньому зупиняється разів у п'ять
+  частіше); бібліотека **U8g2**. Якщо ядро для цього проєкту стоїть окремо в `~/Library/Arduino15-hearlink`
+  (свій `arduino-cli.yaml` із `directories.data` на цю теку), `build.sh` бере його сам; `CORE=old ./build.sh …` —
+  зібрати ядром з Arduino IDE (результат у `build/hearlink-s3-old`).
 - Python 3 з Pillow (картинки імітаторів), компілятор C++ (імітатори на комп'ютері).
 - Збирання: `./build.sh hearlink s3 [порт]`; результат — `build/hearlink-s3/hearlink.ino.bin` (файл оновлення) і
   `hearlink.ino.elf` (**зберігайте поруч із .bin** — без нього знімок збою не розібрати).

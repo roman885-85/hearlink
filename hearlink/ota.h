@@ -275,7 +275,7 @@ static void otaRxSend() {
   size_t bl = offsetof(OtaSt, r) + nr * 4;
   uint8_t *body = (uint8_t *)s;
   if (!secSeal(SEC_OTAST, h->session, h->n, h->from, pkt, OTA_AAD, body, bl, body + bl)) return;
-  esp_now_send(BCAST, pkt, sizeof(OtaHdr) + bl + SEC_TAG);
+  rxSend(pkt, sizeof(OtaHdr) + bl + SEC_TAG);
 }
 
 // Отпечаток, приписанный в хвост образа собственной прошивки (последние 32 байта), и длина образа: по ним файл на
@@ -602,6 +602,29 @@ static OtaCount otaTxCount(uint32_t lostMs) {
   return c;
 }
 
+// Подготовка раздачи (открыть свою прошивку, посчитать её отпечаток — 2,2 МБ) идёт на ядре ЭКРАНА, отдельной задачей.
+// Задача раздачи живёт на ядре радио (её дело — отправка), а там при одиночных пакетах задача передачи звука занимает
+// 93–100 % времени: подготовка не кончалась и за 40 с, холостой задаче ядра не доставалось ничего, и сторож задач
+// перезапускал передатчик — раз за разом, пока одна из попыток не проскакивала (10.10: пять перезапусков подряд при
+// обновлении приёмников с 2.59; в журналах на карте то же при 2.50, 2.55, 2.56, 2.57 — «ЗАВИСАННЯ (сторож задач)»).
+static volatile uint8_t otaPrepJob;   // 1 — открыть свою прошивку, 2 — посчитать отпечаток
+static volatile bool otaPrepOk;
+static void otaPrepDo(uint8_t job) {
+  OtaTx &o = otaTx;
+  if (job == 1) otaPrepOk = otaImgOpen(o.im);
+  else otaSha(o.img, o.size, o.sha, true);
+}
+static void otaPrepTask(void *parent) {
+  otaPrepDo(otaPrepJob);
+  xTaskNotifyGive((TaskHandle_t)parent);
+  vTaskDelete(NULL);
+}
+static void otaPrepRun(uint8_t job) {
+  otaPrepJob = job;
+  if (xTaskCreatePinnedToCore(otaPrepTask, "otaprep", 6144, xTaskGetCurrentTaskHandle(), 1, NULL, 1) == pdPASS) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  else otaPrepDo(job);   // задача не создалась (нет памяти) — считаем здесь, как раньше
+}
+
 static void otaTxTask(void *) {
   OtaTx &o = otaTx;
   o.stage = OT_PREP;
@@ -611,7 +634,10 @@ static void otaTxTask(void *) {
   for (auto &p : o.peer) p.used = false;
   uint32_t tp0 = millis();
   if (o.fromCard) o.img = o.cardImg;
-  else o.img = otaImgOpen(o.im) ? o.im.p : nullptr;
+  else {
+    otaPrepRun(1);
+    o.img = otaPrepOk ? o.im.p : nullptr;
+  }
   uint32_t tp1 = millis();
   uint32_t words = 0;
   if (o.img) {
@@ -632,7 +658,7 @@ static void otaTxTask(void *) {
   }
   if (o.fromCard && o.cardSha) memcpy(o.sha, o.cardSha, 32);
   else {
-    otaSha(o.img, o.size, o.sha, true);
+    otaPrepRun(2);
     Serial.printf("оновлення: власну прошивку %s за %u мс, відбиток пораховано за %u мс\n", o.im.copy ? "прочитано в пам'ять" : "відображено в пам'ять",
                   (unsigned)(tp1 - tp0), (unsigned)(millis() - tp1));
   }
@@ -851,6 +877,24 @@ static void otaAutoTick() {
       }
     portEXIT_CRITICAL(&peerMux);
     txSideCopyOn = any && all;
+    {   // Два кадра в пакете (с 2.60) — только когда КАЖДЫЙ приёмник из списка (на связи он или нет) сообщал версию
+        // 2.60 или новее: версии помнятся во флеше (txpeers.h, PeerFw). Приёмник со старой прошивкой двойных пакетов
+        // не понимает, а спящий или только что включённый — не находит передатчик и по редким одиночным. Пробные
+        // 2.57–2.59 тоже «старые»: их двойной пакет был другой длины. Пока открыто окно добавления приёмников —
+        // тоже одиночные: новый приёмник может оказаться со старой прошивкой.
+      uint8_t why = 0, who[3] = {};
+      portENTER_CRITICAL(&peerMux);
+      for (auto &p : peers)
+        if (p.used && !(p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 60)) && !why) {
+          why = 1;
+          memcpy(who, p.id, 3);
+        }
+      portEXIT_CRITICAL(&peerMux);
+      if (!why && pairOpenUntil) why = 2;
+      memcpy(txDoubleWho, who, 3);
+      txDoubleWhy = why;
+      txDoubleOk = !why;
+    }
   }
   if (!cfg.autoUpd || now < 20000 || otaTxActive() || txPause || (lastStart && now - lastStart < 120000)) return;
   uint8_t maj, mn;

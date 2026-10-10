@@ -44,8 +44,17 @@ static inline void bbMark(uint8_t what, uint8_t a = 0, uint32_t b = 0) {
   e.b = b > 65535 ? 65535 : (uint16_t)b;
 }
 
+// Показания закрытой библиотеки радиочасти — только чтение (те же, что печатает команда Qn). В слепок они идут, чтобы
+// проверить подозрение: радио «встаёт», потому что считает эфир занятым и ждёт тишины (с 2.63).
+extern "C" {
+int phy_get_noise_floor(void);
+int read_hw_noisefloor(void);
+uint8_t phy_get_cca(void);
+}
 struct BbSnap {                  // без начальных значений: живёт в памяти часов и должен пережить перезапуск платы
   uint32_t ms, pos;
+  int16_t nf, nfHw;              // уровень шума, каким его видит радиочасть (четверти дБм): расчётный и «с железа»
+  uint8_t cca;                   // её порог/состояние «эфир занят»
   int32_t pend;                  // сколько пакетов было у драйвера
   uint32_t sinceDoneMs;          // сколько драйвер уже молчал
   uint32_t heap, heapBig, heapMin, psram;
@@ -72,6 +81,9 @@ static void bbFreeze(int32_t pend, uint32_t sinceDoneMs, int err, uint8_t ch) {
   s.heapBig = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
   s.heapMin = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
   s.psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  s.nf = (int16_t)phy_get_noise_floor();
+  s.nfHw = (int16_t)read_hw_noisefloor();
+  s.cca = phy_get_cca();
   memcpy(s.ev, bbRing, sizeof(s.ev));
   bbSnapMagic = BB_MAGIC;
   bbDeaths = bbDeaths + 1;
@@ -98,9 +110,9 @@ static int bbFormat(const BbSnap &s, char *out, int cap, bool live) {
   uint32_t pos = live ? bbPos : s.pos, ref = live ? millis() : s.ms;
   if (!live)
     o += snprintf(out + o, cap - o, "# РАДІО СТАЛО на %u-й секунді, канал %u: у драйвера %d пакетів, мовчав %u мс, помилка 0x%X; пам'ять %u КБ "
-                                    "(найбільший шматок %u КБ, найменше було %u КБ), PSRAM %u КБ. Перед цим:",
+                                    "(найбільший шматок %u КБ, найменше було %u КБ), PSRAM %u КБ; радіо чуло шум %.1f / %.1f дБм, поріг-стан %u. Перед цим:",
                   (unsigned)(s.ms / 1000), s.ch, (int)s.pend, (unsigned)s.sinceDoneMs, (unsigned)s.err, (unsigned)(s.heap / 1024),
-                  (unsigned)(s.heapBig / 1024), (unsigned)(s.heapMin / 1024), (unsigned)(s.psram / 1024));
+                  (unsigned)(s.heapBig / 1024), (unsigned)(s.heapMin / 1024), (unsigned)(s.psram / 1024), s.nf / 4.0f, s.nfHw / 4.0f, s.cca);
   int n = pos < BB_N ? (int)pos : BB_N;
   for (int k = n; k >= 1 && o < cap - 48; k--) {
     const BbEv &e = ev[(pos - k) % BB_N];

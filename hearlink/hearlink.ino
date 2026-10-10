@@ -81,6 +81,7 @@ void settingsFactory();
 void settingsSave() {
   uint32_t t0 = millis();
   prefs.putBytes("cfg", &cfg, sizeof(cfg));
+  rLastNvsMs = millis();
   bbMark(BB_NVS, 0, millis() - t0);
 }
 
@@ -98,6 +99,17 @@ static void updRestart() {
   settingsSave();
   quickBootMagic = QUICK_BOOT;
   updatedMagic = UPDATED_BOOT;
+  ESP.restart();
+}
+// Приёмник: передатчик нас не слышит, перезагрузка радио не помогла (rxlink.h, rxSeenTick) — перезапустить плату.
+// Признак переживает перезапуск в памяти часов: запуск будет без заставки, и второй раз подряд так не перезапустимся.
+static void rxHealRestart() {
+  rxHealBootMagic = RX_HEAL_BOOT;
+  rxHealBootCount = rxHealBootCount + 1;
+  if (rxTxFake == 4) rxFakeKeep = RX_HEAL_BOOT;   // проверка n12=4: «неисправность» остаётся и после перезапуска
+  Serial.println("передавач не чує цей приймач, перезавантаження радіо не допомогло — перезапускаю плату");
+  Serial.flush();
+  rRebooting = true;
   ESP.restart();
 }
 static void radioDead() {
@@ -260,7 +272,8 @@ static void help() {
   Serial.printf("версія %s, %s, набір %u, канал %u%s, швидкість %s Мбіт/с%s, потужність %d дБм\n", FW_VERSION,
                 cfg.isTx ? "ПЕРЕДАВАЧ" : "ПРИЙМАЧ", cfg.kit, cfg.channel, !cfg.isTx && cfg.autoChannel ? " (пошук сам)" : "",
                 RATES[cfg.rateIdx].name, cfg.isTx && cfg.rateAuto ? " (обирається сама)" : "", cfg.powerDbm);
-  Serial.printf("плата: %s\n", cfg.board == BOARD_4848 ? "ESP32-4848S040" : "ESP32-S3");
+  Serial.printf("плата: %s; зібрано ядром Arduino %s (ESP-IDF %s)\n", cfg.board == BOARD_4848 ? "ESP32-4848S040" : "ESP32-S3", ESP_ARDUINO_VERSION_STR, esp_get_idf_version());
+  if (cfg.isTx) Serial.printf("сторож задач: стежить за задачею передачі — %s (код 0x%x); за холостою задачею ядра радіо — %s\n", txWdtErr == 0 ? "так" : "НІ", (unsigned)txWdtErr, txIdleWdtOff ? "ні (знято)" : "так");
   Serial.printf("захист: ключ набору %s%s\n", secHave ? "є" : "НЕМАЄ", cfg.isTx || secHave ? "" : " — приймач не підключено до набору, просить доступ");
   if (cfg.isTx) {
     static const char *const T[TEST_COUNT] = { "вимкнено", "тон 1000 Гц", "голос", "голос і музика", "музика", "музика з оголошенням", "перевірка каналів (лівий — один гудок, правий — два)" };
@@ -281,15 +294,27 @@ static void help() {
     }
     int q = txQNow < Q_COUNT ? (int)txQNow : qForRate(cfg.quality, cfg.rateIdx);
     bool st = txStNow;
-    Serial.printf("якість звуку: %s%s — %u Гц, кадр %u мс, пакет %d байт, в ефірі %u мкс із %u (%u %%)\n", Q_NAME[q],
-                  q != cfg.quality ? " (знижено: обрана не вміщається в цю швидкість)" : "", QDEF[q].sr, (unsigned)(qFrameUs(q) / 1000), qPktLen(q, st),
-                  (unsigned)airUs(qPktLen(q, st), cfg.rateIdx), (unsigned)qFrameUs(q), (unsigned)(airUs(qPktLen(q, st), cfg.rateIdx) * 100 / qFrameUs(q)));
+    {
+      bool db = txDblNow && q == Q_HI;   // два кадра в пакете (proto.h, Q_DOUBLE)
+      int pl = db ? qPktLen2(q, st) : qPktLen(q, st);
+      uint32_t per = qFrameUs(q) * (db ? 2 : 1);
+      if (q == Q_HI && !db && txDoubleMode == 1 && txDoubleWhy == 1) Serial.printf("два кадри в пакеті поки не можна: приймач %02X%02X%02X зі списку не повідомляв версію 2.60 або новішу (оновиться сам, щойно вийде на зв'язок; якщо його вже немає — видаліть зі списку)\n", txDoubleWho[0], txDoubleWho[1], txDoubleWho[2]);
+      else if (q == Q_HI && !db && txDoubleMode == 1 && txDoubleWhy == 2) Serial.println("два кадри в пакеті поки не можна: відкрите вікно додавання приймачів");
+      Serial.printf("якість звуку: %s%s — %u Гц, кадр %u мс, %s, пакет %d байт, в ефірі %u мкс із %u (%u %%)\n", Q_NAME[q],
+                    q != cfg.quality ? " (знижено: обрана не вміщається в цю швидкість)" : "", QDEF[q].sr, (unsigned)(qFrameUs(q) / 1000),
+                    db ? "ДВА кадри в пакеті" : "один кадр у пакеті", pl, (unsigned)airUs(pl, cfg.rateIdx), (unsigned)per, (unsigned)(airUs(pl, cfg.rateIdx) * 100 / per));
+    }
     Serial.printf("стерео в ефір: %s; зараз в ефірі %s%s\n", cfg.stereo ? "увімкнено" : "вимкнено", st ? "СТЕРЕО" : "моно",
                   cfg.stereo && !st ? " (джерело моно або якість «дальня»)" : "");
   }
   else Serial.printf("ім'я: «%s»%s; вихід: %s, %s, запас %s, гучність %u з 20\n", rxName(), cfg.off ? " (ВИМКНЕНИЙ з передавача)" : "", cfg.output == OUT_I2S ? "PCM5102 (I2S)" : "PDM",
                      cfg.rxStereo ? "ДВА КАНАЛИ (навушники напряму або стерео)" : cfg.output == OUT_I2S ? "моно" : "ПРОТИФАЗА (підсилювач з різницевим входом)",
                      cfg.depthMs ? (String(cfg.depthMs) + " мс").c_str() : "підбирається сам", cfg.volume);
+  if (!cfg.isTx) {   // здоровье радио приёмника (с 2.59): свои отправки и слышит ли его передатчик
+    uint32_t now = millis();
+    Serial.printf("радіо приймача: надіслано пакетів %u, відповідей драйвера %u, відмов %u, «не пішло» %u, найдовше чекання %u мс; перезавантажень радіо %u (не відповідало) + %u (передавач не чув); перезапусків плати через це %u\n", (unsigned)rxTxPutCount, (unsigned)rxTxDoneCount, (unsigned)rxTxErr, (unsigned)rxTxFail, (unsigned)rxTxWaitMaxMs, (unsigned)rxHealStuck, (unsigned)rxHealUnseen, (unsigned)rxHealBootCount);
+    Serial.printf("  передавач мене чує: %s; оголошень «кого чую» прийнято %u; повідомлень про себе надіслано %u\n", !rxRosterMs ? "невідомо (передавач до 2.59 цього не оголошує)" : msSince(rxRosterMs, now) > 5000 ? "невідомо (оголошень зараз немає)" : rxSeenMs && msSince(rxSeenMs, now) < 9000 ? "ТАК" : rxRosterFull ? "ні (у передавача список приймачів повний)" : "НІ", (unsigned)rxRosterN, (unsigned)rxStatusSent);
+  }
   if (!cfg.isTx) {   // чем громкость оборачивается на деле: шкала 0…100 % растянута на 0…«межа гучності»
     float g = rxVolumeGain(rxVolumeScaled(cfg.volume));
     Serial.printf("гучність %u %% при межі %u %% — звук %s%.1f дБ від повної шкали\n", cfg.volume * 5, cfg.rxVolMax * 5, g > 0 ? "" : "вимкнено, ", g > 0 ? 20 * log10f(g) : 0.0f);
@@ -893,6 +918,15 @@ static void command(String s) {
           else if (p == 10) {   // n10=<дБ 0…24> — усиление (с 2.48)
             if (rxParamSet(RXP_X_BOOST, val / 2)) settingsSave();
           }
+          else if (p == 11) {   // n11=<0|1|2> — проверка: вести себя как прошивка до 2.60 (см. rxOldSim в radio.h)
+            rxOldSim = val < 0 || val > 2 ? 0 : (uint8_t)val;
+            Serial.printf("перевірка сумісності: %s\n", rxOldSim == 2 ? "подвійних пакетів не знаю і називаюсь версією 2.56" : rxOldSim ? "подвійних пакетів не знаю" : "вимкнено");
+          }
+          else if (p == 12) {   // n12=<0…4> — проверка самолечения радио приёмника без настоящей неисправности (см. rxTxFake в radio.h)
+            rxTxFake = val < 0 || val > 4 ? 0 : (uint8_t)val;
+            static const char *const FK[] = { "вимкнено", "драйвер «узяв пакет і мовчить»", "пакети «йдуть у нікуди» (до перезавантаження радіо)", "пакети «йдуть у нікуди» (до перезапуску плати)", "пакети «йдуть у нікуди» (і після перезапуску плати)" };
+            Serial.printf("перевірка радіо приймача: %s\n", FK[rxTxFake]);
+          }
           else if (p == 7) rxUiAsk = (uint8_t)val;   // n7=1 меню, n7=2 «Зв'язок», n7=3 главный экран — для замеров
           else if (p == 8) {   // n8=1 — как настроен вывод кнопки ручки; n8=<мс> — «нажать» её программно на столько миллисекунд
             if (val == 9) {   // n8=9 — «логический анализатор»: что на самом деле идёт на ЦАП по выводам BCK, LRCK и данных
@@ -913,7 +947,7 @@ static void command(String s) {
               portENABLE_INTERRUPTS();
               rxPattern = false;
               delay(30);
-              digitalWrite(PIN_DAC_XSMT, HIGH);
+              digitalWrite(PIN_DAC_XSMT, rxDacOpen ? HIGH : LOW);
               static int idx[420];
               int n = 0;
               for (int i = 1; i < N - 4 && n < 420; i++)
@@ -970,7 +1004,8 @@ static void command(String s) {
                 float low = rxLimLow;
                 Serial.printf("обмежувач: працював %.1f %% часу, найбільше −%.1f дБ; гучність %u, чіткість %u\n", (out - out0) ? 100.0 * rxLimBusy / (out - out0) : 0.0,
                               low < 1 ? -20 * log10f(low) : 0.0f, cfg.volume, cfg.rxClarity);
-                Serial.printf("кадрів із запасних копій: зі стерео %u, у моно %u\n", (unsigned)rxScCount, (unsigned)rxMonoRec);
+                Serial.printf("кадрів із запасних копій: зі стерео %u, у моно %u; подвійних пакетів (два кадри в пакеті) прийнято %u\n", (unsigned)rxScCount, (unsigned)rxMonoRec, (unsigned)rxDblCount);
+                rxDblCount = 0;
                 rxScCount = 0;
                 rxMonoRec = 0;
               }
@@ -1183,6 +1218,12 @@ static void command(String s) {
           }
           return;
         }
+        if (arg.length() >= 2 && arg[0] == 'd') {   // Qd0 / Qd1 / Qd2 — два кадра в пакете: никогда / когда все приёмники умеют / всегда
+          txDoubleMode = arg[1] == '2' ? 2 : arg[1] == '1' ? 1 : 0;
+          Serial.printf("два кадри в пакеті: %s; приймачі: %s; зараз в ефірі %s пакети\n", txDoubleMode == 2 ? "завжди (перевірка)" : txDoubleMode ? "коли всі приймачі зі списку вміють" : "ні",
+                        txDoubleOk ? "усі зі списку вміють (2.60+)" : txDoubleWhy == 2 ? "відкрите вікно додавання" : "у списку є зі старішою або невідомою прошивкою", txDblNow ? "ПОДВІЙНІ" : "одиночні");
+          return;
+        }
         if (arg.length() >= 2 && arg[0] == 's') {   // Qs1 / Qs0 — отправка по одному / как до 2.52 (для сравнения)
           rSerial = arg[1] != '0';
           Serial.printf("надсилання: %s\n", rSerial && rq ? "по одному — наступний пакет після відповіді на попередній" : "як до 2.52 — не чекаючи відповіді");
@@ -1259,14 +1300,14 @@ static void logEmit() {
   if (!head) {   // первая строка файла: что за прибор и почему запустился
     head = true;
     o += snprintf(t + o, cap - o, "# hearlink %s; запуск: %s; рядки раз на 10 с: час с, канал, швидкість, якість, пакетів, відмов, не пішло, перезапусків радіо, "
-                  "до ефіру сер./макс. мс, черга, проріджено, пропущено, рівень дБ, джерело, запис | приймач: зв'язок, сон, сигнал там/тут дБм, запас мс, втрати %%, "
+                  "до ефіру сер./макс. мс, черга, проріджено, пропущено, рівень дБ, джерело, запис, шум радіо дБм | приймач: зв'язок, сон, сигнал там/тут дБм, запас мс, втрати %%, "
                   "пропусків, провалів мс\n", FW_VERSION, resetReason());
   }
   const LogAcc &a = logAcc;
-  o += snprintf(t + o, cap - o, "t=%u к=%u шв=%s як=%u пак=%u відм=%u неп=%u рест=%u еф=%.1f/%.1f черга=%d прор=%u проп=%u рів=%.0f дж=%s зап=%u", (unsigned)(millis() / 1000),
+  o += snprintf(t + o, cap - o, "t=%u к=%u шв=%s як=%u пак=%u відм=%u неп=%u рест=%u еф=%.1f/%.1f черга=%d прор=%u проп=%u рів=%.0f дж=%s зап=%u шум=%.0f", (unsigned)(millis() / 1000),
                 cfg.channel, RATES[cfg.rateIdx].name, (unsigned)txQNow, (unsigned)a.frames, (unsigned)a.refused, (unsigned)a.air, (unsigned)rRestarts,
                 a.airN ? a.airSumUs / 1000.0f / a.airN : 0.0f, a.airMaxUs / 1000.0f, a.pendMax, (unsigned)a.thinned, (unsigned)a.skipped,
-                a.pk > 0 ? 20 * log10f(a.pk / 32768.0f) : -99.0f, fm.playing ? "файл" : cfg.tone ? "перевірка" : txMute ? "тиша" : "вхід", recOn ? 1u : 0u);
+                a.pk > 0 ? 20 * log10f(a.pk / 32768.0f) : -99.0f, fm.playing ? "файл" : cfg.tone ? "перевірка" : txMute ? "тиша" : "вхід", recOn ? 1u : 0u, phy_get_noise_floor() / 4.0f);
   for (int i = 0; i < PEERS_MAX && o < cap - 90; i++) {
     const Peer &p = peers[i];
     if (!p.used) continue;
@@ -1449,6 +1490,7 @@ void setup() {
   gpioIntrReset();
   Serial.begin(115200);
   settingsLoad();
+  rxDacPinInit();   // приёмник с PCM5102: вывод XSMT — в «землю» с первой же строки, чтобы ЦАП молчал до конца загрузки
   if (cfg.board == BOARD_DEVKIT && cfg.isTx) {
     // Цветной светодиод платы S3 (вывод 48, у новых плат — 38) передатчику на такой плате не нужен: гасим и держим
     // вывод в нуле, чтобы не вспыхивал от наводок. У приёмника им управляет rxled.h. На модуле с экраном (плата b1)
@@ -1468,7 +1510,10 @@ void setup() {
   }
   if (!radioBegin()) Serial.println("радіо не запустилось");
   // (отправка «по одному», radioSerialBegin, не запускается: драйвер так не успевает — см. radio.h)
-  esp_register_shutdown_handler([]() { rRebooting = true; });   // после запуска радио: вызовется раньше, чем его остановят
+  esp_register_shutdown_handler([]() {   // после запуска радио: вызовется раньше, чем его остановят
+    rRebooting = true;
+    rxDacBeforeRestart();   // приёмник: ЦАП заглушить и держать заглушённым, пока плата не запустится снова
+  });
   secBegin();
   if (cfg.isTx) {
     // Ключ набора рождается в передатчике (радио уже включено — случайность настоящая). Эпоха — номер этого включения:
@@ -1503,6 +1548,15 @@ void setup() {
     // Разбор MP3 остаётся на втором ядре. Пробовал первое (07.10): там кадр MP3 разбирался 25–32 мс вместо 17 —
     // первое ядро занято передачей звука и радио, — и недоборы пошли даже у проверочной мелодии. Не переносить.
     xTaskCreatePinnedToCore(mp3Task, "mp3", 8192, NULL, 3, NULL, 1);
+    {   // За ядром радио следит сторож самой задачи передачи (см. txTask): холостая задача там голодает законно.
+        // Снимать её со сторожа надо перенастройкой: disableCore0WDT() ядра Arduino убирает задачу из списка, но
+        // оставляет «холостой крючок», и тот на каждом проходе печатает ошибку «task not found» (10.10: порт засыпало).
+      esp_task_wdt_config_t wc = {};
+      wc.timeout_ms = 5000;
+      wc.idle_core_mask = 0;
+      wc.trigger_panic = true;
+      txIdleWdtOff = esp_task_wdt_reconfigure(&wc) == ESP_OK;
+    }
     xTaskCreatePinnedToCore(txTask, "tx", 6144, NULL, 20, NULL, 0);
     if (cfg.board == BOARD_4848) {
       xTaskCreatePinnedToCore(txscreen::task, "ui", 12288, NULL, 2, NULL, 1);
@@ -1516,6 +1570,20 @@ void setup() {
     // зелёного светодиода моста USB. Настройки покажет команда «?».
     Serial.printf("ПРИЙМАЧ, прошивка %s («?» — налаштування)\n", FW_VERSION);
     rLastRxMs = 0;
+    if (esp_reset_reason() == ESP_RST_POWERON) {   // память часов после подачи питания — случайная
+      rxHealBootMagic = 0;
+      rxHealBootCount = 0;
+      rxFakeKeep = 0;
+    }
+    rxHealBoot = rxHealBootMagic == RX_HEAL_BOOT;
+    rxHealBootMagic = 0;
+    if (rxHealBoot) {
+      rxQuietBoot = true;
+      if (rxFakeKeep == RX_HEAL_BOOT) rxTxFake = 4;
+      Serial.printf("запуск після перезапуску «передавач не чув приймач» (%u-й раз від увімкнення живлення) — без заставки\n", (unsigned)rxHealBootCount);
+    } else rxHealBootCount = 0;
+    rxFakeKeep = 0;
+    rxSelfRestart = rxHealRestart;
     rxLinkBegin();
     xTaskCreatePinnedToCore(rxTask, "rx", 6144, NULL, 20, NULL, 1);
     if (cfg.board == BOARD_DEVKIT) xTaskCreatePinnedToCore(uiTask, "ui", 8192, NULL, 2, NULL, 1);
@@ -1568,11 +1636,47 @@ void loop() {
     } else if (line.length() < 600) line += ch;   // было 32: путь к файлу на карте бывает длинным
   }
   if (!cfg.isTx) {
-    if (rxPower != PW_STANDBY) radioScanTick();   // в ожидании каналы обходит сам круг сна
+    if (rxPower != PW_STANDBY) {
+      radioScanTick();   // в ожидании каналы обходит сам круг сна
+      rxTxWatchTick();   // свои отправки: драйвер не отвечает — перезагрузить радио (radio.h)
+      rxSeenTick();      // слышит ли нас передатчик (rxlink.h)
+    }
     rxLinkTick();
     rxPairTick();
     rxPowerTick();
+    if (rxHealWhy) {   // радио приёмника только что перезагружено — сказать в порт и передатчику (он запишет в журнал на карте)
+      uint8_t why = rxHealWhy;
+      rxHealWhy = 0;
+      uint32_t now = millis();
+      char t[DBG_LINE + 1];
+      if (why == 1) snprintf(t, sizeof(t), "приймач: радіо не відповідало на надсилання (у драйвера %u, мовчало %u мс, код 0x%x) — перезавантажено за %u мс; канал міняли %u мс тому, запис %u мс тому; разів %u+%u", (unsigned)rxHealPend, (unsigned)rxHealQuietMs, (unsigned)rxTxLastErr, (unsigned)rxHealTookMs, (unsigned)(rLastChanMs ? now - rLastChanMs : 0), (unsigned)(rLastNvsMs ? now - rLastNvsMs : 0), (unsigned)rxHealStuck, (unsigned)rxHealUnseen);
+      else snprintf(t, sizeof(t), "приймач: передавач мене не чув — радіо перезавантажено за %u мс; пакетів надіслано %u, відповідей драйвера %u, відмов %u; разів %u+%u", (unsigned)rxHealTookMs, (unsigned)rxTxPutCount, (unsigned)rxTxDoneCount, (unsigned)rxTxErr, (unsigned)rxHealStuck, (unsigned)rxHealUnseen);
+      Serial.println(t);
+      dbgEvent(t);
+      static char bb[2048];
+      if (bbSnapMagic == BB_MAGIC) {
+        bbFormat(bbSnap, bb, sizeof(bb), false);
+        Serial.print(bb);
+      }
+    }
+    if (rxHealBoot) {   // запуск после перезапуска «передатчик не слышал» — один раз сообщить передатчику
+      static bool told;
+      if (!told && rxPower == PW_RUN) {
+        told = true;
+        char t[DBG_LINE + 1];
+        snprintf(t, sizeof(t), "приймач: плату перезапущено, бо передавач мене не чув (%u-й раз від увімкнення живлення)", (unsigned)rxHealBootCount);
+        dbgEvent(t);
+      }
+    }
   } else {
+    if (dbgEvInFull) {   // событие приёмника (dbgair.h): в порт и в журнал на карте
+      Serial.printf("[%02X%02X%02X] %s\n", dbgEvIn.from[0], dbgEvIn.from[1], dbgEvIn.from[2], dbgEvIn.text);
+      if (logExtra && logExtraSeq == logExtraDone) {
+        snprintf(logExtra, 2048, "# [%02X%02X%02X] %s\n", dbgEvIn.from[0], dbgEvIn.from[1], dbgEvIn.from[2], dbgEvIn.text);
+        logExtraSeq = logExtraSeq + 1;
+      }
+      dbgEvInFull = false;
+    }
     rateAutoTick();
     pairTick();
   }

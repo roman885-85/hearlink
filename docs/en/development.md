@@ -3,7 +3,12 @@
 [← back to main page](../../README.md) · [Українська](../uk/development.md)
 
 ## Environment
-- Arduino IDE 2.x or `arduino-cli`; core **esp32 3.3.3** (ESP-IDF 5.5); the **U8g2** library.
+- Arduino IDE 2.x or `arduino-cli`; core **esp32 3.3.12** (ESP-IDF 5.5.5) — releases since 2.63 are built with it
+  (up to 2.56 — 3.3.3: the firmware builds with that one too, but the transmitter radio with the built-in ADC stalls
+  about five times more often on it); the **U8g2** library. If the core for this project is installed separately
+  in `~/Library/Arduino15-hearlink` (its own `arduino-cli.yaml` with `directories.data` pointing there), `build.sh`
+  picks it by itself; `CORE=old ./build.sh …` builds with the core from the Arduino IDE (the result goes to
+  `build/hearlink-s3-old`).
 - Python 3 with Pillow (simulator pictures), a C++ compiler (simulators on the computer).
 - Building: `./build.sh hearlink s3 [port]`; the result is `build/hearlink-s3/hearlink.ino.bin` (the update file)
   and `hearlink.ino.elf` (**keep it next to the .bin** — without it a crash dump cannot be analyzed).
