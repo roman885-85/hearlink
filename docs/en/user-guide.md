@@ -31,28 +31,56 @@ the test sound or files from the card. The spectrum on this page shows the sound
 
 ![Input equalizer](../img/tx-03b-ekvalaizer-vkhodu.png)
 
+**Input noise** (since 2.71; in the equalizer window — the **«Шумозаглушення» (Noise reduction)** button, back —
+**«Еквалайзер» (Equalizer)**) removes steady noise (hiss, hum) from the mixer sound before it goes on air:
+**«Шумозаглушення» (Noise reduction)** off / light / medium / strong; **«Чутливість до шуму» (Noise sensitivity)** from
+very low to very high (higher removes noise more fully, but quiet word endings get duller); **«Зразок шуму» (Noise
+sample)** — “auto, in pauses” or “remember now” (for a few seconds only silence with noise must come from the mixer).
+It acts on the input sound; the test sound and card files are not touched.
+
 | Quality | On air | Added delay | Lowest radio rate | When to choose |
 |---|---|---|---|---|
-| «найвища» (highest) | 32 kHz uncompressed | 2 ms | 5.5 Mbit/s | hall up to ~15 m, clean air, music |
-| «стандартна» (standard) | 32 kHz ADPCM | 4 ms | 2 Mbit/s | the usual choice |
+| «найвища» (highest) | 32 kHz uncompressed; two frames per packet, the previous packet repeated uncompressed (since 2.77) | 2 ms | 5.5 Mbit/s | hall up to ~15 m, clean air, music |
+| «стандартна» (standard) | 32 kHz ADPCM; at 1 Mbit/s — the new “eight bands” codec (since 2.79) | 4 ms | 1 Mbit/s | the usual choice |
 | «мова» (speech) | 16 kHz ADPCM (up to 7 kHz) | 8 ms | 1 Mbit/s | sermon, busy air |
 | «дальня» (far) | 16 kHz ADPCM | 12 ms | 0.5 Mbit/s | the longest range, mono only |
 
 If the selected quality "does not fit" into the current radio rate, the nearest lower one goes on air — the menu
 shows this («мова — за швидкістю» (speech — due to rate)).
 
+**Far mode (since 2.79).** When the transmitter drops to 1 Mbit/s for a weak receiver (see «Ефір»), the «стандартна»
+(standard) quality uses a new codec: eight 2 kHz bands, a 4 ms frame, the packet carries the frame and three spare
+copies — three lost packets in a row cause no dropout. On a sermon recording it is cleaner than the former «мова»
+(speech) (signal-to-noise “as heard through a receiver” 41.6 dB against 30.5) and even than the ADPCM «стандартна»
+(39.2 dB). Mono only: stereo goes as mono on this step.
+
 ### «Ефір» (Air)
 
 ![Air](../img/tx-07-efir.png)
 
 - **«Зайнятість каналів» (Channel occupancy)** and the button **«Знайти вільний канал» (Find a free channel)** (the
-  sound is interrupted for two seconds).
+  sound is interrupted for two seconds). Since 2.82 the measurement accounts for strong neighbouring networks: an
+  access point nearby disturbs with its energy even several channels away (three channels away it still does, nine
+  away it does not), so such channels show higher on the chart.
+- If on the current channel packets often wait 15 ms or more for the air, a yellow line appears at the top:
+  **«канал N: пакети чекають ефіру до X мс»** (channel N: packets wait for air up to X ms) — the receivers' sound is
+  delayed by the same amount. The cure is a channel farther from strong networks.
 - **Channel** 1–13; **Kit** — the number of your kit (receivers hear only their own).
-- **«Канал при заторі: сам» (On congestion: auto)** — if for five seconds out of eight the packets wait for the
-  air, the transmitter moves to a freer channel by itself; it announces the move to the receivers in advance, and
-  they move without a pause. The channel it left is not chosen for ten minutes.
-- **«Швидкість радіо: сама» (Radio rate: auto)** — the transmitter looks at the weakest receiver and steps through
-  11 → 5.5 → 2 → 1 → 0.5 Mbit/s. The most reliable is 5.5 and lower.
+- **«Канал при заторі: сам» (On congestion: auto)** — when packets wait long for the air, the transmitter moves to a
+  freer channel by itself without a pause (the move is announced to the receivers in advance and they follow). Since
+  2.83 — also when packets merely wait 15–35 ms often (the sound is delayed): this is a **trial** — after a minute on
+  the new channel the transmitter compares and goes back if the waits are no smaller there or the receivers lose
+  sound more often. A message on the screen tells about the move and its reason. A channel left because of congestion
+  is not chosen for ten minutes; a failed trial channel — for half an hour.
+- **«Швидкість радіо» (Radio rate)**. «Сама» (auto): 5.5 Mbit/s, and for a weak receiver (−75 dBm or weaker, or losing
+  sound) — 1 Mbit/s, which reaches farther (since 2.73). Back up when everybody hears well: after 30 s if the weakest
+  is −66 dBm or better, after 2 min when closer to the limit (since 2.83). A rate chosen by hand is the upper step:
+  the transmitter steps down from it the same way; the row then shows «5.5 (зараз 1)» (5.5, now 1) and a message
+  names the receiver that hears weakly.
+- **«Слабкий сигнал» (Weak signal)** (since 2.83): *lowering* / *not lowering*. “Not lowering” — the rate and quality
+  always stay as chosen, but a distant receiver may lose sound. If you choose a rate or quality while the transmitter
+  is held at 1 Mbit/s by a weak receiver, it steps up at once when the receivers already hear, otherwise it says who
+  hears weakly and where to turn this off.
 - **«Потужність» (Power)** 2–20 dBm.
 
 ### «Приймачі» (Receivers)
@@ -60,11 +88,15 @@ shows this («мова — за швидкістю» (speech — due to rate)).
 ![Receivers](../img/tx-17-pryimachi.png) ![Receiver window](../img/tx-18c-pryimach-vikno.png)
 
 A receiver row: name, signal, volume; the switch on the right turns the receiver off or on remotely (a receiver
-that is turned off falls asleep and is woken only by the "turn on" command or by a double press of its own knob).
+that is turned off falls asleep and is woken only by the "turn on" command from the transmitter: since version 2.65
+it cannot be turned on with its own knob — not after a power cycle and not while the transmitter is off either; the
+transmitter itself brings the receiver back to the state it has set).
 Touching the row opens the receiver window: signal, volume, loss, buffer, output, uptime and version; the buttons
 **«Показати себе» (Identify)** (the receiver blinks white, shows «ЦЕ Я» (IT'S ME) on its screen, beeps in the
 headphones), **«Перейменувати» (Rename)** (up to 32 letters), **«Тихіше / Гучніше» (Quieter / Louder)**,
-**«Налаштування» (Settings)**, **«Вимкнути» (Turn off)**, **«Видалити з набору» (Remove from kit)**.
+**«Налаштування» (Settings)**, **«Вимкнути» (Turn off)**, **«Перезапустити» (Restart)** (receivers with 2.84+ — a
+restart over the radio when the sound is gone and the reset button cannot be reached; the sound returns in 1–2 s),
+**«Видалити з набору» (Remove from kit)**.
 
 ![Receiver settings](../img/tx-18d-pryimach-nalashtuvannya.png) ![Receiver equalizer](../img/tx-18g-ekvalaizer.png)
 
@@ -75,6 +107,14 @@ button to the right of the name (receivers with 2.45+) opens the second sheet of
 this receiver: the same five bands, a low cut below 100 Hz (on by default in a receiver) and the receiver's
 interface language; the same button («Налаштування», Settings) goes back. This is how the sound is fitted to one
 person's hearing, while the input equalizer works for everybody at once.
+
+The third sheet is **«Обробка звуку» (Sound processing)** (receivers with 2.68+; the same button cycles on):
+**«Шумозаглушення» (Noise reduction)** off / light / medium / strong; **«Чутливість до шуму» (Noise sensitivity)**;
+**«Зразок шуму» (Noise sample)** — “auto, in pauses” or “remember now”; **«Стискання» (Compression)** off / light /
+medium / strong — quiet sound is raised, loud sound is held down (together with the boost); **«У паузах» (In pauses)**
+off / no boost / another −6 dB / another −12 dB — between words the receiver removes the boost so as not to amplify
+noise; **«Поріг пауз» (Pause threshold)** +3…+15 dB above the noise; **«Закриття пауз» (Pause closing)** fast /
+medium / slow. The same items are in the receiver menu.
 
 The last row is **«Блокування ручки» (Knob lock)** (receivers with 2.46+): *none* / *menu* (a long press does not open
 the menu) / *volume* (turning and mute-by-press do nothing) / *all*. The receiver shows «Заблоковано» (Locked) when
@@ -170,7 +210,7 @@ After 10 s without a signal the receivers fall asleep by themselves.
 | long press (0.7 s) | menu | back |
 | any movement while the screen is off | turn the screen on | — |
 | press while asleep | wake up and search for the transmitter for 10 s | — |
-| double press when turned off from the transmitter | turn itself on | — |
+| any press when turned off from the transmitter | the note "TURNED OFF by transmitter — on: transmitter only"; the receiver stays off | — |
 
 ### What it shows
 
@@ -203,15 +243,23 @@ was changed from the transmitter) and so on.
 | **«Баланс» (Balance)** | left +1…+5 / center / right +1…+5 (3 dB each); only with the «2 канали» (2 channels) output |
 | **«Підсилення» (Boost)** | off / +2…+24 dB — digital gain above “audio as it is”, like the trim on a mixing console: the sound is amplified by exactly what is set (since 2.63; in 2.48–2.56 it acted only within the headroom below full scale and was barely noticeable on loud music). If the amplified sound does not fit the DAC's scale — a loud source at a high volume — the limiter holds the peaks: no crackle, but music becomes denser. Nothing digital can make it louder than full scale: headroom above it comes only from the headphone amplifier |
 | **«Межа гучн.» (Volume limit)** | 20…100 % — the loudness ceiling: the knob scale stays 0…100 %, but 100 % sounds like this limit (since 2.41) |
+| **«Стискання» (Compression)** | off / light / medium / strong — quiet sound is raised, loud sound held down (since 2.68) |
+| **«У паузах» (In pauses)** | off / no boost / another −6 dB / another −12 dB — the boost is removed in speech pauses (since 2.68) |
+| **«Поріг пауз» (Pause threshold)** | +3…+15 dB above the noise — what counts as a pause (since 2.72) |
+| **«Закриття» (Closing)** | fast / medium / slow — how quickly a pause “closes” (since 2.72) |
+| **«Шумозагл.» (Noise red.)** | off / light / medium / strong — spectral noise reduction (since 2.68) |
+| **«Чутл. шуму» (Noise sens.)** | 1…5 of 5 — higher removes noise more fully, quiet word endings get duller (since 2.72) |
+| **«Зразок шуму» (Noise sample)** | auto (learns in pauses) / taken (remember now: a few seconds of silence with noise) (since 2.72) |
 | **«Навушники → тест» (Headphones → test)** | a tone alternately in the left and the right ear |
 | **«Зв'язок» (Link)** | signal in dBm, loss, buffer, a one-minute graph |
 | «Набір» (Kit) | kit number (display only) |
 | «Канал» (Channel) | auto or 1–13 |
 | «Запас» (Buffer) | «сам» (auto) or 4–40 ms — a buffer against uneven air (it is also the delay) |
-| «Вихід звуку» (Audio output) | PDM / PCM5102 (restart) |
+| «Вихід звуку» (Audio output) | PDM / PCM5102 / CS4344 (restart; CS4344 since 2.85) |
 | «Виводи» (Pins) | 2 channels / «протифаза» (antiphase) |
 | «Екран» (Screen) | turn off (any knob movement turns it on) |
 | «Забути набір» (Forget kit) | erase the key — the receiver will ask for access again |
+| «Перезапуск» (Restart) | “ТАК” (YES) and a press — restarts the receiver (since 2.84; when the sound is gone and the reset button cannot be reached) |
 | «Про пристрій» (About) | version, channel, kit, number, buffer, signal |
 
 ### LED
@@ -230,3 +278,9 @@ was changed from the transmitter) and so on.
 sleeps. Once every half second the receiver turns the radio on for 0.07 s and listens to its channel (every fourth
 cycle — the remaining channels). Once it hears its transmitter, it wakes up by itself: splash screen, "STARTING",
 sound.
+
+### Sound self-recovery (since 2.84)
+If the sound is gone while the receiver is connected and there is sound on air (the sound processing got stuck), the
+receiver resets its processing within 1.5 s, and if that does not help it restarts without the splash screen (no more
+than once in 10 minutes). The transmitter reports every such case to the serial port and to the log on the card. By
+hand — «Перезапуск» (Restart) in the receiver menu or «Перезапустити» (Restart) in its window on the transmitter.

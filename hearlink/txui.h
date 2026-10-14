@@ -71,13 +71,16 @@ enum Page { PG_HOME, PG_RX, PG_SOUND, PG_AIR, PG_SETUP, PG_HELP, PG_N };
 const int TABW = W / PG_N;   // ширина вкладки
 const int RX_MAX = 16, RX_ROWS = 5, RX_NAME = 66;   // имя приёмника — до 32 букв (NAME_LONG в proto.h)
 enum Param { P_CHANNEL, P_KIT, P_RATE, P_POWER, P_GAIN, P_INPUT, P_TONE, P_BRIGHT, P_DIM, P_QUALITY,
-             P_TRACK, P_DUCK_S, P_DUCK_DB, P_VOICE_GAP, P_MUSIC_DB, P_VOICE_DB, P_STEREO, P_HOP, P_LANG, P_DEBUG, P_COUNT };
+             P_TRACK, P_DUCK_S, P_DUCK_DB, P_VOICE_GAP, P_MUSIC_DB, P_VOICE_DB, P_STEREO, P_HOP, P_LANG, P_DEBUG, P_WEAK, P_COUNT };
 
 // Что показывать. Заполняет устройство перед каждым кадром.
 struct View {
   int val[P_COUNT] = { 6, 1, 0, 15, 0, 0, 0, 80, 0, 0, 0, 30, -16, 2, 0, 0, 0 };
   int8_t txEq[5] = {};                 // эквалайзер входа передатчика: −6…6 (шаг 2 дБ)
   uint8_t txLowCut = 0;
+  uint8_t txNs = 0;                    // шумозаглушение входа (с 2.68): 0 — выключено, 1…3 — слабое / среднее / сильное
+  uint8_t txNsSens = 2;                // его чувствительность 0…4 (с 2.72)
+  bool txNsFrozen = false;             // образец шума запомнен по просьбе (иначе запоминается сам, в паузах)
   // уровень входа (сглаженный); «шапка» — докуда риска недавно доходила; настоящий пик отсчётов (для подсказок)
   float levelDb = -60, holdDb = -60, peakDb = -60;
   int lastTone = 5;                    // какой проверочный звук включится по кнопке «Перевірка» (последний выбранный)
@@ -94,6 +97,8 @@ struct View {
   char cardFs[12] = "";                // какая на ней разметка, если не та
   uint32_t recS = 0, sdFreeMb = 0;
   uint8_t chanBusy[13] = {};           // занятость каналов, 0…100
+  uint8_t airSlowSecs = 0;             // в скольких секундах из 60 пакет ждал эфира 15 мс и дольше (нынешний канал)
+  uint16_t airSlowMs = 0;              // и сколько ждал, мс
   bool scanned = false, scanning = false;
   uint8_t scanStep = 0;
   char mac[20] = "";
@@ -119,6 +124,9 @@ struct View {
     bool hasLock = false;
     uint8_t boost = 0;                               // усиление (с 2.48): 0…12 = 0…+24 дБ
     bool hasBoost = false;
+    uint8_t fx[7] = {};                              // обработка «для слуха» (с 2.68): шумозаглушение, сжатие, «в паузах»; с 2.72 —
+                                                     // чувствительность, порог паузы, закрытие паузы, образец шума (0 сам, 1 запомнен)
+    bool hasFx = false;
     bool earTest = false;   // у приёмника идёт проверка наушников
   } rx[RX_MAX];
   int rxN = 0;
@@ -130,6 +138,8 @@ struct View {
   uint8_t hopFrom = 0, hopTo = 0, hopSecs = 0;
   uint16_t hopWaitMs = 0;
   bool hopStall = false;               // причина ухода — радио на том канале вставало
+  bool hopSoft = false;                // он был «мягким»: не затор, а частые ожидания эфира по 15–35 мс
+  uint8_t hopBack = 0;                 // и это возврат после пробы: 1 — на новом канале ожиданий не меньше, 2 — у приёмников чаще пропадал звук
   uint32_t hopAgoS = 0;                // сколько секунд назад
   // обновление прошивки приёмников по радио (ota.h): что делает передатчик и каждый приёмник
   struct Ota {
@@ -179,7 +189,9 @@ struct Out {
 };
 enum { RXC_IDENTIFY = 1, RXC_NAME, RXC_ENABLE, RXC_VOLUME, RXC_FORGET, RXC_STEREO,
        RXC_SET,       // настройка приёмника: rxArg = номер настройки × 32 + значение (как в команде CMD_SET)
+       RXC_SET2,      // настройка обработки «для слуха»: rxArg = (0 шум, 1 сжатие, 2 паузы) × 32 + значение (CMD_SET2)
        RXC_EARTEST,
+       RXC_RESTART,   // перезапустить приёмник (с 2.84)
        RXC_EQ };      // эквалайзер приёмника: rxArg = полоса × 16 + значение (как в команде CMD_EQ) // проверка наушников: rxArg 1 — начать, 0 — прекратить
 
 // ---------------------------------------------------------------- настройки и пояснения к ним
@@ -201,6 +213,7 @@ static const char *const OPT_STEREO[] = { "Моно", "Стерео", nullptr };
 static const char *const OPT_INPUT[] = { "Вбудований вхід", "Модуль PCM1808", nullptr };
 static const char *const OPT_LANG[] = { "Українська", "English", nullptr };
 static const char *const OPT_HOP[] = { "Не міняти — лишатись на своєму каналі", "Міняти самому на вільніший", nullptr };
+static const char *const OPT_WEAK[] = { "Не знижувати — завжди як обрано", "Знижувати швидкість самому", nullptr };
 static const char *const OPT_TEST[] = { "Вимкнено — іде звук із входу", "Тон 1000 Гц", "Голос: «Увага! Йде перевірка звуку»", "Голос і музика по колу",
                                         "Музика", "Музика, голос поверх", "Канали: лівий — гудок, правий — два", nullptr };
 // коротко — для узкой кнопки «Який звук» рядом с переключателем источника
@@ -227,18 +240,21 @@ static const ParamDef PARAM[P_COUNT] = {
   { "Гучність музики", "Гучність мелодій у перевірочному звуці. 0 дБ — як записано.", K_STEP, -30, 0, 3, " дБ", nullptr },
   { "Гучність голосу", "Гучність оголошення в перевірочному звуці. 0 дБ — як записано.", K_STEP, -30, 0, 3, " дБ", nullptr },
   { "Ефір", "Стерео йде в ефір, коли джерело стереофонічне: мелодії перевірки або модуль PCM1808. Приймач грає стерео, якщо його вихід — «два канали» (навушники напряму); у «протифазі» (для підсилювача) — моно. У якості «дальня» завжди моно.", K_LIST, 0, 1, 1, "", OPT_STEREO },
-  { "Канал при заторі", "Коли ефір на каналі зайнятий так, що пакети довго чекають (звук рветься), передавач сам замовкає на дві секунди, міряє всі канали й переходить на вільніший. Приймачі знаходять його самі. Про перехід і причину буде повідомлення.", K_LIST, 0, 1, 1, "", OPT_HOP },
+  { "Канал при заторі", "Коли ефір на каналі зайнятий і пакети довго чекають (звук рветься або затримується), передавач сам переходить на вільніший канал — без паузи, приймачі йдуть за ним. Якщо на новому каналі не краще, за хвилину повертається. Про перехід і причину буде повідомлення.", K_LIST, 0, 1, 1, "", OPT_HOP },
   { "Мова / Language", "Мова написів на передавачі й на приймачах та голос оголошення в перевірочному звуці. Language of the transmitter and receivers and the voice of the test announcement.", K_LIST, 0, 1, 1, "", OPT_LANG },
   { "Налагодження ефіром", "Рядки порту всіх пристроїв набору видно в порту того, що підключений до комп'ютера; команди іншим пристроям — теж ефіром. Для налагодження без дротів до приймачів.", K_TOGGLE, 0, 1, 1, "", nullptr },
+  { "Слабкий сигнал", "Коли якийсь приймач чує передавач слабо (-75 дБм і слабше) або в нього пропадає звук, передавач сам переходить на 1 Мбіт/с — так чути далі — і повертає обрану швидкість, коли сигнал знову добрий. Якість звуку на цей час — «стандартна». «Не знижувати» — швидкість і якість завжди такі, як обрано, але далекий приймач може втрачати звук.", K_LIST, 0, 1, 1, "", OPT_WEAK },
 };
 
 static const char *rateNowText = "";   // на какой скорости передатчик работает сейчас (заполняет устройство)
+static const char *rateTopText = "";   // какая скорость выбрана (верхняя ступень): при слабом приёмнике работаем ниже неё
 static int qualNow = -1;               // какое качество сейчас идёт в эфир (ниже выбранного, если оно не помещается в скорость)
 static bool stereoNow = false;         // в эфир сейчас идёт стерео (источник может быть и моно)
 static void paramText(int p, int v, char *s, size_t n) {
   switch (p) {
     case P_RATE:
       if (v == 0 && rateNowText[0]) snprintf(s, n, tr("сама (%s)"), rateNowText);
+      else if (rateNowText[0] && rateTopText[0] && strcmp(rateNowText, rateTopText)) snprintf(s, n, tr("%s (зараз %s)"), rateTopText, rateNowText);   // опустились ради слабого приёмника (вид — как у «сама (1)»)
       else if (rateNowText[0]) snprintf(s, n, tr("%s Мбіт/с"), rateNowText);
       else snprintf(s, n, "%s", v == 0 ? tr("сама") : OPT_RATE[v < 0 || v > 9 ? 0 : v]);
       break;
@@ -250,6 +266,7 @@ static void paramText(int p, int v, char *s, size_t n) {
     case P_DIM: snprintf(s, n, "%s", SHORT_DIM[v < 0 || v > 3 ? 0 : v]); break;
     case P_TONE: snprintf(s, n, "%s", SHORT_TEST[v < 0 || v > 6 ? 0 : v]); break;
     case P_HOP: snprintf(s, n, "%s", v ? tr("сам") : tr("ні")); break;
+    case P_WEAK: snprintf(s, n, "%s", v ? tr("знижую") : tr("не знижую")); break;
     case P_LANG: snprintf(s, n, "%s", v ? "English" : "Українська"); break;
     case P_STEREO:
       if (v && !stereoNow) snprintf(s, n, tr("стерео (зараз моно)"));
@@ -316,7 +333,7 @@ constexpr int ID_NONE = -1;
 constexpr int ID_TAB = 0;                      // +номер страницы
 constexpr int ID_HOME_CH = 10, ID_HOME_KIT = 11, ID_HOME_REC = 12, ID_HOME_RX = 13;
 constexpr int ID_HOME_FILES = 14;                   // «Файли» на плитке карты — открывает файловый менеджер
-constexpr int ID_ROW = 20;                     // +номер настройки
+constexpr int ID_ROW = 300;                    // +номер настройки (до 2.83 — 20: двадцать первая настройка совпала бы с ID_SCAN)
 constexpr int ID_SCAN = 40, ID_ABOUT = 41, ID_RESTART = 42, ID_FACTORY = 43, ID_POWEROFF = 44;
 constexpr int ID_SRC_LIVE = 45, ID_SRC_TEST = 46;   // что идёт в эфир: звук с пульта / проверочный звук
 constexpr int ID_MUTE = 47;                         // тишина в эфире
@@ -331,7 +348,9 @@ constexpr int ID_RX_PREV = 96, ID_RX_NEXT = 97;
 constexpr int ID_RX_IDENT = 100, ID_RX_RENAME = 101, ID_RX_VOLDN = 102, ID_RX_VOLUP = 103, ID_RX_FORGET = 104, ID_RX_CLOSE = 105, ID_RX_ONOFF = 106;
 constexpr int ID_RX_STEREO = 107;
 constexpr int ID_RX_SET = 108;                 // «Налаштування» в окне приёмника — открывает окно его настроек
+constexpr int ID_RX_RESTART = 109;             // «Перезапустити» в окне приёмника (приёмники с 2.84)
 constexpr int ID_RXS_MINUS = 140, ID_RXS_PLUS = 150;   // + строка окна настроек приёмника (0…6)
+constexpr int ID_TXEQ_PAGE = 165;                         // кнопка листов окна входа: «Шумозаглушення» / «Еквалайзер» (с 2.72)
 constexpr int ID_TXEQ_OPEN = 163, ID_TXEQ_OK = 164;       // «Еквалайзер» у спектра на странице «Звук» и «Готово» в его окне
 constexpr int ID_TXEQ_MINUS = 170, ID_TXEQ_PLUS = 180;    // + строка окна эквалайзера входа (0…5)
 constexpr int ID_RXS_EAR = 160, ID_RXS_OK = 161, ID_RXS_PAGE = 162;   // PAGE — «Еквалайзер» / «Налаштування»
@@ -783,8 +802,9 @@ static Box itemBox(int id) {
     case ID_ROW + P_CHANNEL: return Box{ 16, 282, 141, 56 };
     case ID_ROW + P_KIT: return Box{ 169, 282, 142, 56 };
     case ID_ROW + P_HOP: return Box{ 323, 282, 141, 56 };   // рядом с каналом: сам ли передатчик уходит с занятого канала
-    case ID_ROW + P_RATE: return Box{ 16, 346, 218, 56 };
-    case ID_ROW + P_POWER: return Box{ 246, 346, 218, 56 };
+    case ID_ROW + P_RATE: return Box{ 16, 346, 170, 56 };
+    case ID_ROW + P_WEAK: return Box{ 198, 346, 141, 56 };    // рядом со скоростью: опускать ли её ради слабого приёмника
+    case ID_ROW + P_POWER: return Box{ 351, 346, 113, 56 };
     // страница настроек: шесть строк по 46 точек
     case ID_ROW + P_BRIGHT: return rowBox(0, 76, 46, 6);
     case ID_ROW + P_DIM: return rowBox(1, 76, 46, 6);
@@ -1249,7 +1269,11 @@ static void drawContent() {
     case PG_AIR:
       card(Box{ 16, 76, 448, 138 });
       g.text(32, 100, tr("Зайнятість каналів"), F_CAP, C_MUTED_FG);
-      if (view.hopResult == 1 || view.hopResult == 2) {   // последний самостоятельный уход с канала — что и когда
+      if (view.airSlowSecs >= 10) {   // на этом канале пакеты подолгу ждут эфира — звук у приёмников задерживается на столько же
+        char t[80];
+        snprintf(t, sizeof(t), tr("канал %d: пакети чекають ефіру до %u мс"), view.val[P_CHANNEL], (unsigned)view.airSlowMs);
+        g.text(448, 100, t, F_CAP, C_WARN, AL_R);
+      } else if (view.hopResult == 1 || view.hopResult == 2) {   // последний самостоятельный уход с канала — что и когда
         char t[80];
         uint32_t m = view.hopAgoS / 60;
         if (view.hopResult == 1) snprintf(t, sizeof(t), tr("сам змінив канал з %u на %u, %u хв тому"), view.hopFrom, view.hopTo, (unsigned)m);
@@ -1262,6 +1286,7 @@ static void drawContent() {
       item(ID_ROW + P_KIT);
       item(ID_ROW + P_HOP);
       item(ID_ROW + P_RATE);
+      item(ID_ROW + P_WEAK);
       item(ID_ROW + P_POWER);
       break;
     case PG_SETUP:
@@ -1393,14 +1418,20 @@ static void drawAboutLines() {
 // ---- окно одного приёмника
 // Кнопки окна приёмника: четыре ряда по две. «Видалити з набору» есть всегда — и у приёмника на связи (нижний ряд,
 // слева от «Закрити»), и у выключенного (во всю ширину): добавить приёмник можно — значит, и удалить можно.
+// С 2.84 рядов пять (шаг 44, кнопка 40 — было четыре по 50 / 44): добавлен «Перезапустити» (владелец 12.10: «устройства
+// собраны, доступа к кнопке нет… нужно добавить пункт перезагрузки»). Он — слева от «Видалити з набору», «Закрити» —
+// во всю ширину внизу. У приёмника постарше (команды не поймёт) кнопки нет, «Видалити з набору» — во всю ширину.
+static bool rxCanRestart(int i) {
+  return i >= 0 && view.rx[i].online && view.rx[i].fwMaj * 100 + view.rx[i].fwMin >= 284;
+}
 static Box rxBtn(int id) {
   int i = rxFind(rxSelId);
-  bool online = i >= 0 && view.rx[i].online;
-  int col = (id == ID_RX_RENAME || id == ID_RX_VOLUP || id == ID_RX_ONOFF || (id == ID_RX_CLOSE && online)) ? 1 : 0;
-  int row = (id == ID_RX_IDENT || id == ID_RX_RENAME) ? 0 : (id == ID_RX_VOLDN || id == ID_RX_VOLUP) ? 1 : (id == ID_RX_CLOSE || id == ID_RX_FORGET) ? 3 : 2;
+  bool online = i >= 0 && view.rx[i].online, rst = rxCanRestart(i);
+  int col = (id == ID_RX_RENAME || id == ID_RX_VOLUP || id == ID_RX_ONOFF || (id == ID_RX_FORGET && rst)) ? 1 : 0;
+  int row = (id == ID_RX_IDENT || id == ID_RX_RENAME) ? 0 : (id == ID_RX_VOLDN || id == ID_RX_VOLUP) ? 1 : (id == ID_RX_RESTART || id == ID_RX_FORGET) ? 3 : id == ID_RX_CLOSE ? 4 : 2;
   if (id == ID_RX_FORGET && !online) row = 0;
-  Box b = { (int16_t)(mBox.x + 20 + col * 202), (int16_t)(mBox.y + 246 + row * 50), 190, 44 };
-  if (!online && (id == ID_RX_FORGET || id == ID_RX_CLOSE)) b.w = mBox.w - 40;
+  Box b = { (int16_t)(mBox.x + 20 + col * 202), (int16_t)(mBox.y + 246 + row * 44), 190, 40 };
+  if (id == ID_RX_CLOSE || (id == ID_RX_FORGET && !rst)) b.w = mBox.w - 40;
   return b;
 }
 
@@ -1452,6 +1483,7 @@ static void drawRxButton(int id, bool pressed) {
     case ID_RX_ONOFF: drawButton(b, off ? tr("Увімкнути") : tr("Вимкнути"), off ? 0 : 2, pressed); break;
     case ID_RX_STEREO: drawButton(b, i >= 0 && view.rx[i].stereo ? tr("Вихід: протифаза") : tr("Вихід: два канали"), 0, pressed); break;
     case ID_RX_SET: drawButton(b, tr("Налаштування"), 0, pressed); break;
+    case ID_RX_RESTART: drawButton(b, tr("Перезапустити"), 0, pressed); break;
     case ID_RX_FORGET: drawButton(b, tr("Видалити з набору"), 2, pressed); break;
     case ID_RX_CLOSE: drawButton(b, tr("Закрити"), 1, pressed); break;
   }
@@ -1743,6 +1775,7 @@ static void drawRxModal() {
     if (r.hasInfo) btn(ID_RX_SET);
     else if (r.fw >= 11) btn(ID_RX_STEREO);   // стерео понимают приёмники с версии 1.1
     btn(ID_RX_ONOFF);
+    if (rxCanRestart(i)) btn(ID_RX_RESTART);
   }
   btn(ID_RX_FORGET);
   btn(ID_RX_CLOSE);
@@ -1760,9 +1793,29 @@ static const char *const RXS_NAME[RXS_N] = { "Вихід звуку", "Чітк�
 // какая настройка приёмника (номер в RxInfo.p[]) стоит в строке основного листа; −1 — выход звука, −2 — усиление, −3 — блокировка
 static const int8_t RXS_PAR[RXS_N] = { -1, 0, 1, 2, -2, 3, 4, -3 };
 // Окно в два листа: настройки и эквалайзер (с 2.45) — строки и кнопки «−/+» те же, меняется их смысл.
-static int rxsPage;   // 0 — настройки, 1 — эквалайзер: строки 0…4 — полосы, 5 — срез низов, 6 — язык надписей приёмника
+static int rxsPage;   // 0 — настройки, 1 — эквалайзер: строки 0…4 — полосы, 5 — срез низов, 6 — язык надписей приёмника;
+                      // 2 — обработка звука (с 2.68): шумозаглушение, сжатие, «в паузах»
 static const char *const RXS_EQ_NAME[7] = { "Низ, 125 Гц", "400 Гц", "1 кГц", "2,5 кГц", "Верх, 6 кГц", "Зріз низів, 100 Гц", "Мова написів" };
+// Лист обработки (с 2.72 — семь строк, владелец 11.10: «добавить настройки для шумодавов»): сначала шумозаглушение с его
+// чувствительностью и образцом шума, потом сжатие, потом паузы с порогом и скоростью закрытия.
+static const char *const RXS_FX_NAME[7] = { "Шумозаглушення", "Чутливість до шуму", "Зразок шуму", "Стискання", "У паузах", "Поріг пауз", "Закриття пауз" };
+static const uint8_t RXS_FX_IDX[7] = { 0, 3, 6, 1, 2, 4, 5 };   // какая настройка (место в RxInfo2) стоит в строке
+static const uint8_t RXS_FX_HI[7] = { 3, 3, 3, 4, 4, 2, 1 };    // наибольшее значение — по месту настройки
+static inline int rxsRows() { return rxsPage == 0 ? RXS_N : 7; }   // строк на нынешнем листе
+// надпись значения настройки обработки: idx — место настройки (0 шум, 1 сжатие, 2 паузы, 3 чувствительность, 4 порог, 5 закрытие, 6 образец)
+static void fxText(int idx, int v, char *t, size_t n) {
+  switch (idx) {
+    case 0: snprintf(t, n, "%s", v == 1 ? tr("слабке") : v == 2 ? tr("середнє") : v == 3 ? tr("сильне") : tr("вимкнено")); break;
+    case 1: snprintf(t, n, "%s", v == 1 ? tr("легке") : v == 2 ? tr("середнє") : v == 3 ? tr("сильне") : tr("вимкнено")); break;
+    case 2: snprintf(t, n, "%s", v == 1 ? tr("без підсилення") : v == 2 ? tr("ще -6 дБ") : v == 3 ? tr("ще -12 дБ") : tr("вимкнено")); break;
+    case 3: snprintf(t, n, "%s", v == 0 ? tr("дуже низька") : v == 1 ? tr("низька") : v == 3 ? tr("висока") : v == 4 ? tr("дуже висока") : tr("середня")); break;
+    case 4: snprintf(t, n, tr("%s%d дБ"), "+", 3 + 3 * v); break;
+    case 5: snprintf(t, n, "%s", v == 0 ? tr("швидко") : v == 2 ? tr("повільно") : tr("середньо")); break;
+    default: snprintf(t, n, "%s", v ? tr("запам'ятовано") : tr("сам, у паузах"));
+  }
+}
 static int rxsGet(const View::Rx &r, int row) {   // значение строки числом
+  if (rxsPage == 2) return row < 7 ? r.fx[RXS_FX_IDX[row]] : 0;
   if (rxsPage) return row < 5 ? (int)r.eq[row] - 6 : row == 5 ? r.lowCut : row == 6 ? r.par[5] : 0;
   int p = RXS_PAR[row];
   if (p == -3) return r.lock;
@@ -1772,6 +1825,11 @@ static int rxsGet(const View::Rx &r, int row) {   // значение строк
 }
 static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
   int v = rxsGet(r, row);
+  if (rxsPage == 2) {   // обработку «для слуха» понимают приёмники с 2.68
+    if (!r.hasFx || row > 6) snprintf(t, n, row > 6 ? "" : "—");
+    else fxText(RXS_FX_IDX[row], v, t, n);
+    return;
+  }
   if (rxsPage) {
     if (row < 5) snprintf(t, n, tr("%s%d дБ"), v > 0 ? "+" : "", v * 2);
     else if (row == 5) snprintf(t, n, "%s", v ? tr("увімкнено") : tr("вимкнено"));
@@ -1802,6 +1860,10 @@ static void rxsText(const View::Rx &r, int row, char *t, size_t n) {
 static int rxsStep(const View::Rx &r, int row, int d) {
   static const int8_t LO[RXS_N] = { 0, 0, -5, 4, 0, 0, 0, 0 }, HI[RXS_N] = { 1, 3, 5, 20, 12, 2, 3, 3 };
   int v = rxsGet(r, row) + d;
+  if (rxsPage == 2) {
+    int hi = row < 7 ? RXS_FX_HI[RXS_FX_IDX[row]] : 0;
+    return v < 0 ? 0 : v > hi ? hi : v;
+  }
   if (rxsPage) return row < 5 ? (v < -6 ? -6 : v > 6 ? 6 : v) : row == 5 ? (v & 1) : row == 6 ? (v < 0 ? 2 : v > 2 ? 0 : v) : 0;   // язык — по кругу
   if (row == 0 || row == 5) return v < LO[row] ? HI[row] : v > HI[row] ? LO[row] : v;   // выход и вид экрана — по кругу
   return v < LO[row] ? LO[row] : v > HI[row] ? HI[row] : v;
@@ -1819,13 +1881,15 @@ static void drawRxSetButton(int id, bool pressed) {
   Box b = rxsBox(id);
   if (id == ID_RXS_EAR) return drawButton(b, i >= 0 && view.rx[i].earTest ? tr("Зупинити перевірку") : tr("Перевірка навушників"), 0, pressed);
   if (id == ID_RXS_OK) return drawButton(b, tr("Готово"), 1, pressed);
-  if (id == ID_RXS_PAGE) return drawButton(b, rxsPage ? tr("Налаштування") : tr("Еквалайзер"), 0, pressed);
+  if (id == ID_RXS_PAGE)   // на кнопке — куда она ведёт: настройки → эквалайзер → обработка звука (приёмники с 2.68) → настройки
+    return drawButton(b, rxsPage == 0 ? tr("Еквалайзер") : rxsPage == 1 && i >= 0 && view.rx[i].hasFx ? tr("Обробка звуку") : tr("Налаштування"), 0, pressed);
   bool plus = id >= ID_RXS_PLUS;
   int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
   bool dead = i >= 0 && !rxsPage && ((row == 2 && !view.rx[i].stereo) ||   // баланс при одном канале не к чему приложить
                                      (row == 4 && !view.rx[i].hasBoost) ||  // усиление понимают приёмники с 2.48
                                      (row == 7 && !view.rx[i].hasLock));    // блокировку понимают приёмники с 2.46
-  if (rxsPage && row >= 7) return g.fill(b.x, b.y, b.w, b.h, C_CARD);   // на листе эквалайзера семь строк
+  if (i >= 0 && rxsPage == 2 && !view.rx[i].hasFx) dead = true;
+  if (row >= rxsRows()) return g.fill(b.x, b.y, b.w, b.h, C_CARD);   // на листе эквалайзера семь строк, на листе обработки — три
   card(b, pressed && !dead ? m2::Gfx::blend(C_SECONDARY, C_FG, 40) : C_SECONDARY, C_BORDER);
   uint16_t ink = dead ? C_BORDER : C_FG;
   g.box(b.x + b.w / 2 - 9, b.y + b.h / 2 - 2, 18, 4, 1, ink);   // знаки — фигурами
@@ -1837,15 +1901,19 @@ static void drawRxSetRow(int row) {
   char t[40];
   int y = mBox.y + 52 + row * 44;
   g.fill(mBox.x + 16, y, mBox.w - 32 - 112, 40, C_CARD);
-  if (rxsPage && row >= 7) return;
-  g.text(mBox.x + 18, y + 26, tr(rxsPage ? RXS_EQ_NAME[row] : RXS_NAME[row]), F_CAP, C_MUTED_FG);
+  if (row >= rxsRows()) return;
+  g.text(mBox.x + 18, y + 26, tr(rxsPage == 2 ? RXS_FX_NAME[row] : rxsPage ? RXS_EQ_NAME[row] : RXS_NAME[row]), F_CAP, C_MUTED_FG);
   rxsText(view.rx[i], row, t, sizeof(t));
   g.text(mBox.x + mBox.w - 16 - 116, y + 26, t, F_CAPB, C_FG, AL_R, 150);
 }
 // ---- Окно «Еквалайзер входу» (с 2.45): шесть строк с «−/+», как на листе эквалайзера приёмника, но для самого
 // передатчика — звук с пульта правится один раз для всех приёмников.
+// С 2.72 окно в два листа (как у приёмника): эквалайзер — и шумозаглушение входа с чувствительностью и образцом шума.
+static int txeqPage;   // 0 — эквалайзер (шесть строк), 1 — шумозаглушение входа (три строки)
+static inline int txeqRows() { return txeqPage ? 3 : 6; }
 static Box txeqBox(int id) {
   if (id == ID_TXEQ_OK) return Box{ (int16_t)(mBox.x + mBox.w - 16 - 134), (int16_t)(mBox.y + mBox.h - 62), 134, 48 };
+  if (id == ID_TXEQ_PAGE) return Box{ (int16_t)(mBox.x + mBox.w - 16 - 176), (int16_t)(mBox.y + 8), 176, 40 };
   bool plus = id >= ID_TXEQ_PLUS;
   int row = id - (plus ? ID_TXEQ_PLUS : ID_TXEQ_MINUS);
   return Box{ (int16_t)(mBox.x + mBox.w - 16 - (plus ? 50 : 106)), (int16_t)(mBox.y + 56 + row * 46), 50, 40 };
@@ -1853,7 +1921,10 @@ static Box txeqBox(int id) {
 static void drawTxEqButton(int id, bool pressed) {
   Box b = txeqBox(id);
   if (id == ID_TXEQ_OK) return drawButton(b, tr("Готово"), 1, pressed);
+  if (id == ID_TXEQ_PAGE) return drawButton(b, txeqPage ? tr("Еквалайзер") : tr("Шумозаглушення"), 0, pressed);   // на кнопке — куда она ведёт
   bool plus = id >= ID_TXEQ_PLUS;
+  int row = id - (plus ? ID_TXEQ_PLUS : ID_TXEQ_MINUS);
+  if (row >= txeqRows()) return g.fill(b.x, b.y, b.w, b.h, C_CARD);
   card(b, pressed ? m2::Gfx::blend(C_SECONDARY, C_FG, 40) : C_SECONDARY, C_BORDER);
   g.box(b.x + b.w / 2 - 9, b.y + b.h / 2 - 2, 18, 4, 1, C_FG);   // знаки — фигурами
   if (plus) g.box(b.x + b.w / 2 - 2, b.y + b.h / 2 - 9, 4, 18, 1, C_FG);
@@ -1862,20 +1933,28 @@ static void drawTxEqRow(int row) {
   char t[40];
   int y = mBox.y + 56 + row * 46;
   g.fill(mBox.x + 16, y, mBox.w - 32 - 112, 40, C_CARD);
-  g.text(mBox.x + 18, y + 26, tr(RXS_EQ_NAME[row]), F_CAP, C_MUTED_FG);
-  if (row < 5) snprintf(t, sizeof(t), tr("%s%d дБ"), view.txEq[row] > 0 ? "+" : "", view.txEq[row] * 2);
-  else snprintf(t, sizeof(t), "%s", view.txLowCut ? tr("увімкнено") : tr("вимкнено"));
+  if (row >= txeqRows()) return;
+  if (txeqPage) {   // шумозаглушение входа: сила, чувствительность, образец шума
+    g.text(mBox.x + 18, y + 26, tr(RXS_FX_NAME[row]), F_CAP, C_MUTED_FG);
+    fxText(row == 0 ? 0 : row == 1 ? 3 : 6, row == 0 ? view.txNs : row == 1 ? view.txNsSens : view.txNsFrozen, t, sizeof(t));
+  } else {
+    g.text(mBox.x + 18, y + 26, tr(RXS_EQ_NAME[row]), F_CAP, C_MUTED_FG);
+    if (row < 5) snprintf(t, sizeof(t), tr("%s%d дБ"), view.txEq[row] > 0 ? "+" : "", view.txEq[row] * 2);
+    else snprintf(t, sizeof(t), "%s", view.txLowCut ? tr("увімкнено") : tr("вимкнено"));
+  }
   g.text(mBox.x + mBox.w - 16 - 116, y + 26, t, F_CAPB, C_FG, AL_R, 150);
 }
 static void drawTxEqModal() {
   mBox = Box{ 24, 30, 432, 420 };
   modalCard();
-  g.text(mBox.x + 20, mBox.y + 36, tr("Еквалайзер входу"), F_H, C_FG, AL_L, 392);
+  g.text(mBox.x + 20, mBox.y + 36, txeqPage ? tr("Шум входу") : tr("Еквалайзер входу"), F_H, C_FG, AL_L, 208);
+  drawTxEqButton(ID_TXEQ_PAGE, false);
+  hot[hotN++] = Hot{ txeqBox(ID_TXEQ_PAGE), ID_TXEQ_PAGE };
   for (int row = 0; row < 6; row++) {
     drawTxEqRow(row);
     for (int id : { ID_TXEQ_MINUS + row, ID_TXEQ_PLUS + row }) {
       drawTxEqButton(id, false);
-      hot[hotN++] = Hot{ txeqBox(id), id };
+      if (row < txeqRows()) hot[hotN++] = Hot{ txeqBox(id), id };
     }
   }
   g.text(mBox.x + 18, mBox.y + mBox.h - 32, tr("Для всіх приймачів"), F_CAP, C_MUTED_FG);
@@ -1897,6 +1976,8 @@ static uint32_t rxsSum() {   // что сейчас показано: измен
   mix(r.hasLock);
   mix(r.boost);
   mix(r.hasBoost);
+  for (int k = 0; k < 7; k++) mix(r.fx[k]);
+  mix(r.hasFx);
   mix(r.stereo);
   mix(r.earTest);
   mix(r.online);
@@ -1917,7 +1998,7 @@ static void drawRxSetModal() {
     drawRxSetRow(row);
     for (int id : { ID_RXS_MINUS + row, ID_RXS_PLUS + row }) {
       drawRxSetButton(id, false);
-      if (!(rxsPage && row >= 7)) hot[hotN++] = Hot{ rxsBox(id), id };
+      if (row < rxsRows()) hot[hotN++] = Hot{ rxsBox(id), id };
     }
   }
   for (int id : { ID_RXS_EAR, ID_RXS_OK }) {
@@ -2106,6 +2187,7 @@ static void kbPopErase(int i) {
 
 static void closeModal();
 static void toast(const char *text);
+static void toast2(const char *line1, const char *line2, uint32_t ms);
 static uint32_t kbDownMs = 0, kbRepMs = 0;
 static bool kbRepeated = false;
 
@@ -2591,6 +2673,12 @@ static void activate(int id) {
           drawRxButton(ID_RX_STEREO, false);
         }
         break;
+      case ID_RX_RESTART:
+        if (i >= 0) {
+          out.rxCmd = RXC_RESTART;
+          toast2(tr("Приймач перезапускається"), tr("Звук повернеться за кілька секунд"), 5000);
+        }
+        break;
       case ID_RX_FORGET:
         modal = M_CONFIRM;
         modalArg = CF_FORGET;
@@ -2608,11 +2696,37 @@ static void activate(int id) {
   }
   if (modal == M_TXEQ) {
     if (id == ID_TXEQ_OK) closeModal();
-    else if (id >= ID_TXEQ_MINUS && id < ID_TXEQ_PLUS + 6) {
+    else if (id == ID_TXEQ_PAGE) {   // другой лист того же окна
+      txeqPage = !txeqPage;
+      modalAgain = true;
+      drawModal();
+      modalAgain = false;
+    } else if (id >= ID_TXEQ_MINUS && id < ID_TXEQ_PLUS + 6) {
       bool plus = id >= ID_TXEQ_PLUS;
       int row = id - (plus ? ID_TXEQ_PLUS : ID_TXEQ_MINUS);
-      if (row < 0 || row > 5) return;
+      if (row < 0 || row >= txeqRows()) return;
       int v;
+      if (txeqPage) {   // шумозаглушение входа: строка 0 — сила (поле 6), 1 — чувствительность (7), 2 — образец шума (8)
+        if (row == 0) {
+          v = (int)view.txNs + (plus ? 1 : -1);
+          v = v < 0 ? 0 : v > 3 ? 3 : v;
+          if (v == view.txNs) return;
+          view.txNs = (uint8_t)v;
+        } else if (row == 1) {
+          v = (int)view.txNsSens + (plus ? 1 : -1);
+          v = v < 0 ? 0 : v > 4 ? 4 : v;
+          if (v == view.txNsSens) return;
+          view.txNsSens = (uint8_t)v;
+        } else {   // «+» — запомнить шум сейчас (в эфире должна быть только тишина с шумом), «−» — снова запоминать самому
+          if (!plus && !view.txNsFrozen) return;
+          view.txNsFrozen = plus;
+          v = plus ? 2 : 0;
+        }
+        out.eqBand = 6 + row;
+        out.eqVal = v;
+        drawTxEqRow(row);
+        return;
+      }
       if (row < 5) {
         v = view.txEq[row] + (plus ? 1 : -1);
         v = v < -6 ? -6 : v > 6 ? 6 : v;
@@ -2641,11 +2755,29 @@ static void activate(int id) {
       out.rxArg = r.earTest ? 1 : 0;
       drawRxSetButton(ID_RXS_EAR, false);
       rxsShown = rxsSum();
-    } else if (id == ID_RXS_PAGE) {   // другой лист того же окна
-      rxsPage = !rxsPage;
+    } else if (id == ID_RXS_PAGE) {   // другой лист того же окна: настройки → эквалайзер → обработка звука → настройки
+      rxsPage = rxsPage == 0 ? 1 : rxsPage == 1 && view.rx[i].hasFx ? 2 : 0;
       modalAgain = true;
       drawModal();
       modalAgain = false;
+    } else if (rxsPage == 2 && id >= ID_RXS_MINUS && id < ID_RXS_PLUS + RXS_N) {   // обработка звука
+      View::Rx &r = view.rx[i];
+      bool plus = id >= ID_RXS_PLUS;
+      int row = id - (plus ? ID_RXS_PLUS : ID_RXS_MINUS);
+      if (row > 6 || !r.hasFx) return;
+      int idx = RXS_FX_IDX[row], v = rxsStep(r, row, plus ? 1 : -1);
+      if (idx == 6) {   // образец шума: «+» — запомнить сейчас (можно и повторно), «−» — снова запоминать самому
+        if (!plus && !r.fx[6]) return;
+        r.fx[6] = plus ? 1 : 0;
+        v = plus ? 2 : 0;
+      } else {
+        if (v == rxsGet(r, row)) return;
+        r.fx[idx] = (uint8_t)v;
+      }
+      out.rxCmd = RXC_SET2;
+      out.rxArg = (idx << 5) | v;
+      drawRxSetRow(row);
+      rxsShown = rxsSum();
     } else if (rxsPage && id >= ID_RXS_MINUS && id < ID_RXS_PLUS + RXS_N) {
       View::Rx &r = view.rx[i];
       bool plus = id >= ID_RXS_PLUS;
@@ -2869,6 +3001,7 @@ static void activate(int id) {
       drawModal();
       break;
     case ID_TXEQ_OPEN:
+      txeqPage = 0;
       modal = M_TXEQ;
       drawModal();
       break;
@@ -2898,7 +3031,7 @@ static void redrawItem(int id, bool pressed) {
   if (modal == M_FILES) return fmItem(id, pressed);
   if (modal == M_RX) drawRxButton(id, pressed);
   else if (modal == M_RXSET) drawRxSetButton(id, pressed);
-  else if (modal == M_TXEQ) drawTxEqButton(id, pressed);
+  else if (modal == M_TXEQ) drawTxEqButton(id, pressed);   // (и кнопка листов — она рисуется тем же)
   else if (modal == M_PAIR) drawPairButton(id, pressed);
   else if (modal == M_OTA) drawOtaButton(id, pressed);
   else if (modal != M_NONE) drawModalItem(id, pressed);
@@ -3168,6 +3301,9 @@ static void hopNotice() {
   } else if (view.hopResult == 1) {
     snprintf(a, sizeof(a), tr("Канал змінено: з %u на %u"), view.hopFrom, view.hopTo);
     if (view.hopStall) snprintf(b, sizeof(b), "%s", tr("Причина: на тому каналі радіо зупинялось"));
+    else if (view.hopSoft && view.hopBack == 2) snprintf(b, sizeof(b), "%s", tr("Повернувся: там у приймачів звук пропадав частіше"));
+    else if (view.hopSoft && view.hopBack == 1) snprintf(b, sizeof(b), "%s", tr("Повернувся: там пакети чекали ефіру не менше"));
+    else if (view.hopSoft) snprintf(b, sizeof(b), tr("Причина: пакети часто чекали ефіру до %u мс"), view.hopWaitMs);
     else if (view.hopWaitMs) snprintf(b, sizeof(b), tr("Причина: ефір був зайнятий, пакети чекали до %u мс"), view.hopWaitMs);
     else snprintf(b, sizeof(b), tr("Причина: перевірка з порту"));
     toast2(a, b, 12000);
@@ -3296,7 +3432,16 @@ static void frameBody(bool down, int tx, int ty) {
         drawRxSetButton(ID_RXS_PLUS + 2, false);
       }
       drawRxSetButton(ID_RXS_EAR, false);
+      if (view.rx[i].hasEq) drawRxSetButton(ID_RXS_PAGE, false);   // куда ведёт кнопка листов, зависит от того, что приёмник умеет
       rxsShown = rxsSum();
+    }
+    return;
+  }
+  if (modal == M_TXEQ) {   // лист «Шум входу»: образец шума запомнился (или снова «сам») — строку обновить
+    static bool shown;
+    if (txeqPage && pressId == ID_NONE && view.txNsFrozen != shown) {
+      shown = view.txNsFrozen;
+      drawTxEqRow(2);
     }
     return;
   }
@@ -3374,6 +3519,14 @@ static void frameBody(bool down, int tx, int ty) {
         needFull = !view.scanning;   // поиск кончился — перерисовать с новым каналом
         drawChannels();
         drawItem(ID_SCAN, false);
+      }
+      {   // подсказка «пакети чекають ефіру» появилась, пропала или число в ней заметно сменилось — перерисовать лист
+        static int shownAir = -1;
+        int key = view.airSlowSecs >= 10 ? 1 + (view.airSlowMs + 2) / 5 : 0;   // шагом 5 мс: не дёргать лист из-за миллисекунды
+        if (key != shownAir) {
+          if (shownAir >= 0 && pressId == ID_NONE && !view.scanning) needFull = true;
+          shownAir = key;
+        }
       }
       break;
     }

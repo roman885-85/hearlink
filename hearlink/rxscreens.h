@@ -425,13 +425,13 @@ static void going(u8g2_t *g, uint32_t t, uint32_t total, bool off) {
   timeBar(g, 56, 1 - phase(t, 0, total - fold));
 }
 
-// ---- Приёмник спит по команде с передатчика, а на нём нажали ручку: подсказать, как включить.
+// ---- Приёмник спит по команде с передатчика, а на нём нажали ручку: сказать, что включает его только передатчик.
 static void sleeping(u8g2_t *g, uint32_t t) {
   u8g2_SetFont(g, u8g2_font_10x20_t_cyrillic);
   u8g2_DrawUTF8(g, 4, 18, tr("ВИМКНЕНО"));
   u8g2_SetFont(g, u8g2_font_6x13_t_cyrillic);
   u8g2_DrawUTF8(g, 4, 34, tr("з передавача"));
-  centered(g, 60, tr("ручку двічі - увімк."));
+  centered(g, 60, tr("вмикає лише передавач"));
   {   // месяц: диск, из которого вынут сдвинутый диск; вокруг — редкие звёзды
     int mx = 108, my = 30 + (int)lroundf(1.5f * sinf(t / 900.0f));
     u8g2_DrawDisc(g, mx, my, 8, U8G2_DRAW_ALL);
@@ -963,6 +963,34 @@ static void menuIcon(u8g2_t *g, int id, int x, int y) {   // значок 9×9, 
       u8g2_DrawVLine(g, x + 4, y + 1, 7);
       u8g2_DrawHLine(g, x + 6, y + 4, 3);
       u8g2_DrawVLine(g, x + 7, y + 3, 3);
+      break;
+    case 18:  // шумозаглушение: «крупа» шума, перечёркнутая наискось
+      u8g2_DrawPixel(g, x + 1, y + 1);
+      u8g2_DrawPixel(g, x + 4, y);
+      u8g2_DrawPixel(g, x + 7, y + 2);
+      u8g2_DrawPixel(g, x, y + 4);
+      u8g2_DrawPixel(g, x + 5, y + 3);
+      u8g2_DrawPixel(g, x + 2, y + 6);
+      u8g2_DrawPixel(g, x + 7, y + 6);
+      u8g2_DrawPixel(g, x + 4, y + 8);
+      u8g2_DrawLine(g, x, y + 8, x + 8, y);
+      break;
+    case 19:  // сжатие: две черты и стрелки между ними — навстречу
+      u8g2_DrawHLine(g, x, y, 9);
+      u8g2_DrawHLine(g, x, y + 8, 9);
+      u8g2_DrawVLine(g, x + 4, y + 2, 2);
+      u8g2_DrawHLine(g, x + 3, y + 3, 3);
+      u8g2_DrawVLine(g, x + 4, y + 5, 2);
+      u8g2_DrawHLine(g, x + 3, y + 5, 3);
+      break;
+    case 20:  // в паузах: знак паузы
+      u8g2_DrawBox(g, x + 1, y + 1, 2, 7);
+      u8g2_DrawBox(g, x + 6, y + 1, 2, 7);
+      break;
+    case 21:  // перезапуск: кольцо с разрывом и стрелкой
+      u8g2_DrawCircle(g, x + 4, y + 5, 3, U8G2_DRAW_LOWER_LEFT | U8G2_DRAW_LOWER_RIGHT | U8G2_DRAW_UPPER_LEFT);
+      u8g2_DrawHLine(g, x + 4, y + 2, 2);
+      u8g2_DrawTriangle(g, x + 5, y, x + 5, y + 5, x + 8, y + 2);
       break;
     default:  // назад: стрелка
       u8g2_DrawHLine(g, x + 1, y + 4, 7);

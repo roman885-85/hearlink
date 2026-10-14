@@ -6,8 +6,8 @@
 //
 // Заставка, поиск передатчика, «запуск», уход в ожидание — по состоянию приёмника (rxPower, см. rxaudio.h);
 // сами картинки с движением — в rxscreens.h. В ожидании экран погашен; нажатие ручки его будит:
-// если ждали сигнала — приёмник ещё 10 с ищет передатчик, если выключен с передатчика — подсказка
-// «ручку двічі — увімкнути».
+// если ждали сигнала — приёмник ещё 10 с ищет передатчик, если выключен с передатчика — надпись, что включает его
+// только передатчик (до 2.64 приёмник можно было включить самому двойным нажатием ручки).
 #pragma once
 #include <Wire.h>
 #include <U8g2lib.h>
@@ -190,16 +190,22 @@ static void specUpdate() {
 // С версии 2.32 в начале списка — то, что нужно слушающему (владелец 07.10 выбрал из предложенного: вид главного экрана,
 // светодиод, язык, чёткость речи, баланс, предел громкости, проверка наушников, качество связи), дальше — служебное.
 // Те же шесть настроек меняются и с передатчика (окно приёмника → «Налаштування»); дверь у них одна — rxParamSet.
-enum { M_VIEW, M_LED, M_LANG, M_CLARITY, M_BALANCE, M_VOLMAX, M_BOOST, M_EARTEST, M_LINK,
-       M_KIT, M_CHANNEL, M_DEPTH, M_OUTPUT, M_STEREO, M_SCREEN, M_FORGET, M_ABOUT, M_EXIT, M_COUNT };
-static const char *const MENU_NAME[M_COUNT] = { "Вигляд", "Світлодіод", "Мова", "Чіткість", "Баланс", "Межа гучн.", "Підсилення", "Навушники", "Зв'язок",
-                                                "Набір", "Канал", "Запас", "Вихід звуку", "Виводи", "Екран", "Забути набір", "Про пристрій", "Вийти" };
-static const uint8_t MENU_ICON[M_COUNT] = { 9, 10, 11, 12, 13, 14, 17, 15, 16, 0, 1, 2, 3, 4, 5, 6, 7, 8 };   // значки — rxs::menuIcon
+// С 2.68 за «Підсилення» — обработка «для слуха» (nsfx.h): как оно ведёт себя у края шкалы, что делать в паузах и
+// шумозаглушение. Те же три настройки меняются с передатчика (окно приёмника → «Обробка звуку»).
+// С 2.72 — и их настройки (владелец 11.10: «добавить настройки для шумодавов»): порог и закрытие пауз, чувствительность
+// шумозаглушения и образец шума.
+enum { M_VIEW, M_LED, M_LANG, M_CLARITY, M_BALANCE, M_VOLMAX, M_BOOST, M_COMP, M_GATE, M_GATETHR, M_GATEREL, M_NS, M_NSSENS, M_NSLEARN, M_EARTEST, M_LINK,
+       M_KIT, M_CHANNEL, M_DEPTH, M_OUTPUT, M_STEREO, M_SCREEN, M_FORGET, M_RESTART, M_ABOUT, M_EXIT, M_COUNT };
+static const char *const MENU_NAME[M_COUNT] = { "Вигляд", "Світлодіод", "Мова", "Чіткість", "Баланс", "Межа гучн.", "Підсилення", "Стискання", "У паузах",
+                                                "Поріг пауз", "Закриття", "Шумозагл.", "Чутл. шуму", "Зразок шуму", "Навушники", "Зв'язок",
+                                                "Набір", "Канал", "Запас", "Вихід звуку", "Виводи", "Екран", "Забути набір", "Перезапуск", "Про пристрій", "Вийти" };
+static const uint8_t MENU_ICON[M_COUNT] = { 9, 10, 11, 12, 13, 14, 17, 19, 20, 20, 20, 18, 18, 18, 15, 16, 0, 1, 2, 3, 4, 5, 6, 21, 7, 8 };   // значки — rxs::menuIcon
 // какой пункт меню отвечает за настройку RXP_… (для оповещения «настройку сменили с передатчика»)
 static const uint8_t PARAM_ITEM[RXP_COUNT] = { M_CLARITY, M_BALANCE, M_VOLMAX, M_VIEW, M_LED, M_LANG };
 // «Забути набір»: стереть ключ набора — приёмник снова попросит доступ (для перехода к другому передатчику или
 // после смены ключа на своём). Нарочно в два действия: повернуть на «ТАК» и нажать.
 static bool menuForgetArm;
+static bool menuRestartArm;   // в пункте «Перезапуск» выбрано «ТАК»
 
 static void menuValue(int item, char *s, size_t n) {
   switch (item) {
@@ -219,6 +225,19 @@ static void menuValue(int item, char *s, size_t n) {
       if (cfg.rxBoost) snprintf(s, n, tr("%s%d дБ"), "+", cfg.rxBoost * 2);
       else snprintf(s, n, "%s", tr("вимк."));
       break;
+    case M_COMP:
+      snprintf(s, n, "%s", cfg.rxComp == 0 ? tr("вимк.") : cfg.rxComp == 1 ? tr("легке") : cfg.rxComp == 2 ? tr("середнє") : tr("сильне"));
+      break;
+    case M_GATE:
+      snprintf(s, n, "%s", cfg.rxGate == 0 ? tr("вимк.") : cfg.rxGate == 1 ? tr("без підс.") : cfg.rxGate == 2 ? tr("ще -6 дБ") : tr("ще -12 дБ"));
+      break;
+    case M_NS:
+      snprintf(s, n, "%s", cfg.rxNs == 0 ? tr("вимк.") : cfg.rxNs == 1 ? tr("слабке") : cfg.rxNs == 2 ? tr("середнє") : tr("сильне"));
+      break;
+    case M_GATETHR: snprintf(s, n, tr("%s%d дБ"), "+", 3 + 3 * cfg.rxGateThr); break;
+    case M_GATEREL: snprintf(s, n, "%s", cfg.rxGateRel == 0 ? tr("швидко") : cfg.rxGateRel == 2 ? tr("повільно") : tr("середньо")); break;
+    case M_NSSENS: snprintf(s, n, tr("%d з 5"), cfg.rxNsSens + 1); break;
+    case M_NSLEARN: snprintf(s, n, "%s", rxNsFrozen ? tr("взято") : tr("сам")); break;
     case M_EARTEST: snprintf(s, n, "%s", tr("тест")); break;
     case M_LINK:
       if (rLastRxMs && msSince(rLastRxMs) < 1200) snprintf(s, n, tr("%d дБм"), (int)rRssi);
@@ -233,10 +252,11 @@ static void menuValue(int item, char *s, size_t n) {
       if (cfg.depthMs) snprintf(s, n, tr("%u мс"), cfg.depthMs);
       else snprintf(s, n, tr("сам (%.0f)"), (float)rxTargetMs);
       break;
-    case M_OUTPUT: snprintf(s, n, "%s", cfg.output == OUT_I2S ? "PCM5102" : "PDM"); break;
+    case M_OUTPUT: snprintf(s, n, "%s", cfg.output == OUT_CS4344 ? "CS4344" : cfg.output == OUT_I2S ? "PCM5102" : "PDM"); break;
     case M_STEREO: snprintf(s, n, "%s", cfg.rxStereo ? tr("2 канали") : tr("протифаза")); break;
     case M_SCREEN: snprintf(s, n, "%s", tr("вимкнути")); break;
     case M_FORGET: snprintf(s, n, "%s", !secHave ? tr("нема ключа") : menuForgetArm ? tr("ТАК") : tr("ні")); break;
+    case M_RESTART: snprintf(s, n, "%s", menuRestartArm ? tr("ТАК") : tr("ні")); break;
     default: s[0] = 0;
   }
 }
@@ -256,6 +276,13 @@ static bool menuChange(int item, int d) {   // true — нужна переза�
       break;
     }
     case M_BOOST: rxParamSet(RXP_X_BOOST, cfg.rxBoost + d); break;   // слышно сразу
+    case M_COMP: rxParamSet(RXP_Y_COMP, cfg.rxComp + d); break;
+    case M_GATE: rxParamSet(RXP_Y_GATE, cfg.rxGate + d); break;
+    case M_NS: rxParamSet(RXP_Y_NS, cfg.rxNs + d); break;
+    case M_GATETHR: rxParamSet(RXP_Y_GTHR, cfg.rxGateThr + d); break;
+    case M_GATEREL: rxParamSet(RXP_Y_GREL, cfg.rxGateRel + d); break;
+    case M_NSSENS: rxParamSet(RXP_Y_SENS, cfg.rxNsSens + d); break;
+    case M_NSLEARN: rxParamSet(RXP_Y_LEARN, d > 0 ? 2 : 0); break;   // вправо — запомнить шум сейчас, влево — снова сам
     case M_KIT: break;   // номер набора приёмник получает от передатчика (при подключении и вслед за его сменой) — здесь только показ
     case M_CHANNEL: {   // 0 — авто, 1…13
       int v = cfg.autoChannel ? 0 : cfg.channel;
@@ -270,9 +297,10 @@ static bool menuChange(int item, int d) {   // true — нужна переза�
       cfg.depthMs = v < 4 ? 0 : v > 40 ? 40 : v;
       break;
     }
-    case M_OUTPUT: cfg.output = cfg.output == OUT_I2S ? OUT_PDM : OUT_I2S; return true;
+    case M_OUTPUT: cfg.output = (uint8_t)((cfg.output + (d > 0 ? 1 : 2)) % 3); return true;   // PDM → PCM5102 → CS4344 → PDM
     case M_STEREO: cfg.rxStereo = !cfg.rxStereo; break;   // действует сразу: усилитель должен быть подключён соответственно
     case M_FORGET: menuForgetArm = !menuForgetArm; break;
+    case M_RESTART: menuRestartArm = !menuRestartArm; break;   // «ТАК» и нажатие — перезапуск (звук пропал, а до кнопки сброса не добраться)
   }
   return false;
 }
@@ -410,19 +438,25 @@ static void uiTask(void *) {
     }
     if (pw == PW_STANDBY && (pressed || turn)) {
       if (why == WHY_NOSIGNAL) rxPowerWhy = WHY_KEY;   // ждали сигнала — поискать ещё раз, уже с экраном
-      else peekUntil = now + 5000;                     // выключен с передатчика — показать, как включить
+      else peekUntil = now + 5000;                     // выключен с передатчика — сказать, что включает его только передатчик
     }
-    if (cfg.off) {   // выключен с передатчика: ручка не работает, кроме двойного нажатия — включить самому
-      static uint32_t lastClick;
-      if (clickKnob) {
-        if (now - lastClick < 700) {
-          cfg.off = 0;
-          peekUntil = 0;
-          settingsSave();
-        }
-        lastClick = now;
-      }
+    // Выключен с передатчика: ручка не работает вовсе, включить приёмник может только передатчик (владелец 10.10:
+    // «функция приемника самостоятельно включить должна быть заблокирована… удаленное управление с передатчика
+    // является приоритетным»). До 2.64 двойное нажатие включало приёмник самому. Служебный выход, если передатчика
+    // больше нет, — кабель и команда K0 (забыть набор): приёмник попросит доступ заново.
+    // И выход с самой ручки (владелец 11.10: «делай»): её держат 10 с, и за всё это время приёмник ни разу не услышал
+    // свой передатчик — набор забывается, приёмник просит доступ заново. Звук это не включает: доступ даёт оператор
+    // передатчика. Пока передатчик в эфире, удержание не делает ничего — включает и выключает только он. На экране об
+    // этом выходе ничего нет и отсчёт не показывается (владелец 11.10: «информация о десяти секундах не отображать.
+    // это знать пользователю не нужно») — он описан только в руководстве для того, кто обслуживает набор.
+    if (cfg.off) {
       screen = S_MAIN;
+      if ((keyStable & 1) && secHave && now - pressAt >= 10000 && (!rLastRxMs || msSince(rLastRxMs, now) >= (int32_t)(now - pressAt))) {
+        secForget();
+        cfg.off = 0;
+        settingsSave();
+        peekUntil = 0;
+      }
     }
     // ручка и кнопки работают в работе и пока ищем передатчик (без него тоже надо уметь открыть меню)
     bool live = !cfg.off && (pw == PW_RUN || (pw == PW_SEARCH && (why == WHY_KEY || pt >= RX_SPLASH_MS)));
@@ -508,6 +542,10 @@ static void uiTask(void *) {
             }
             menuForgetArm = false;
           }
+          if (item == M_RESTART) {
+            if (clickKnob && menuRestartArm) rxRestartAsk = 2;   // исполнит главный цикл (запишет настройки и перезапустит)
+            menuRestartArm = false;
+          }
           if (needRestart) {
             settingsSave();
             delay(100);
@@ -579,6 +617,20 @@ static void uiTask(void *) {
           say(msg);
         }
         boostWas = cfg.rxBoost;
+      }
+      {   // обработку «для слуха» сменили (с передатчика — сказать; своей ручкой — и так видно)
+        static uint8_t fxWas[3] = { 255, 255, 255 };
+        const uint8_t fxNow[3] = { cfg.rxNs, cfg.rxComp, cfg.rxGate };
+        static const uint8_t FX_ITEM[3] = { M_NS, M_COMP, M_GATE };
+        for (int k = 0; k < 3; k++) {
+          if (fxWas[k] != 255 && fxWas[k] != fxNow[k] && screen != S_EDIT) {
+            char val[24], msg[44];
+            menuValue(FX_ITEM[k], val, sizeof(val));
+            snprintf(msg, sizeof(msg), "%s: %s", tr(MENU_NAME[FX_ITEM[k]]), val);
+            say(msg);
+          }
+          fxWas[k] = fxNow[k];
+        }
       }
       if (cfg.rxLock != lockWas) {   // ручку заблокировали или освободили с передатчика
         say(cfg.rxLock ? tr("Заблоковано") : tr("Розблоковано"));

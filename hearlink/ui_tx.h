@@ -267,6 +267,11 @@ static void report() {
     Serial.print("зайнятість каналів 1…13, %:");
     for (int i = 0; i < 13; i++) Serial.printf(" %u", scanBusy[i]);
     Serial.printf(" → канал %u\n", cfg.channel);
+    Serial.print("  із них ризик від сильних сусідніх мереж, %:");
+    for (int i = 0; i < 13; i++) Serial.printf(" %u", scanNear[i]);
+    Serial.print("; найсильніша мережа на каналі, дБм:");
+    for (int i = 0; i < 13; i++) Serial.printf(scanApRssi[i] > -127 ? " %d" : " –", scanApRssi[i]);
+    Serial.println();
   }
 }
 
@@ -337,12 +342,13 @@ static void task(void *) {
     v.val[ui::P_CHANNEL] = cfg.channel;
     v.val[ui::P_KIT] = cfg.kit;
     v.val[ui::P_RATE] = 0;
-    if (!cfg.rateAuto)
+    if (!cfg.rateAuto)   // в строке — выбранная скорость (верхняя ступень); на какой работаем сейчас — rateNowText
       for (int i = 0; i < 9; i++)
-        if (RATE_IDX[i] == cfg.rateIdx) v.val[ui::P_RATE] = i + 1;
+        if (RATE_IDX[i] == rateTopNow()) v.val[ui::P_RATE] = i + 1;
     v.val[ui::P_QUALITY] = cfg.quality;
     v.val[ui::P_STEREO] = cfg.stereo;
     v.val[ui::P_HOP] = cfg.autoHop;
+    v.val[ui::P_WEAK] = cfg.rateLadder;
     v.val[ui::P_DEBUG] = cfg.dbgAir;
     v.val[ui::P_LANG] = cfg.lang;
     strlcpy(v.srcName, cfg.srcName, sizeof(v.srcName));
@@ -354,6 +360,8 @@ static void task(void *) {
     v.hopSecs = hopSecs;
     v.hopWaitMs = hopWaitMs;
     v.hopStall = hopStall;
+    v.hopSoft = hopSoft;
+    v.hopBack = hopBackWhy;
     v.hopAgoS = hopAtMs ? (now - hopAtMs) / 1000 : 0;
     ui::stereoNow = txStNow;
     {   // названия мелодий для списка — один раз, когда раздел со звуками прочитан
@@ -380,11 +388,37 @@ static void task(void *) {
     v.val[ui::P_VOICE_DB] = cfg.voiceDb;
     ui::qualNow = txQNow;
     ui::rateNowText = RATES[cfg.rateIdx].name;
+    ui::rateTopText = RATES[rateTopNow()].name;
+    {   // передатчик сам сменил ступень скорости ради слабого приёмника (rateAutoTick) — сказать, что и почему
+      static uint32_t noteSeen;
+      uint32_t ns = rateNoteSeq;
+      if (ns != noteSeen) {
+        noteSeen = ns;
+        static char l1[96], l2[96];
+        if (rateNoteKind == 1) {
+          snprintf(l1, sizeof(l1), tr("«%s» чує слабо"), rateNoteName);
+          snprintf(l2, sizeof(l2), tr("Швидкість 1 Мбіт/с, щоб звук не зникав"));
+        } else if (rateNoteKind == 3) {   // оператор выбрал скорость или качество, а подняться нельзя — почему и где это выключить
+          if (rateNoteWhy == 4) snprintf(l1, sizeof(l1), tr("Слабкий приймач щойно зник зі зв'язку"));
+          else if (rateNoteWhy == 3) snprintf(l1, sizeof(l1), tr("У «%s» пропадає звук (%d дБм)"), rateNoteName, (int)rateNoteRssi);
+          else snprintf(l1, sizeof(l1), tr("«%s» чує слабо: %d дБм"), rateNoteName, (int)rateNoteRssi);
+          snprintf(l2, sizeof(l2), tr("Тому швидкість 1 Мбіт/с. Вимкнути: «Слабкий сигнал»"));
+        } else {
+          snprintf(l1, sizeof(l1), tr("Усі приймачі чують добре"));
+          snprintf(l2, sizeof(l2), tr("Швидкість знову %s Мбіт/с"), RATES[cfg.rateIdx].name);
+        }
+        ui::toast2(l1, l2, rateNoteKind == 3 ? 9000 : 6000);
+        Serial.printf("на екрані: %s | %s\n", l1, l2);
+      }
+    }
     v.val[ui::P_POWER] = cfg.powerDbm;
     v.val[ui::P_GAIN] = cfg.gainDb;
     if (ui::out.eqBand < 0) {   // пока нажатие не выполнено, на экране — то, что нажали
       for (int k = 0; k < 5; k++) v.txEq[k] = (int8_t)((int)cfg.txEq[k] - 6);
       v.txLowCut = cfg.txLowCut;
+      v.txNs = cfg.txNs > 3 ? 0 : cfg.txNs;
+      v.txNsSens = cfg.txNsSens > 4 ? 2 : cfg.txNsSens;
+      v.txNsFrozen = txNsFrozen || txNsLearnAsk || txNsLearning;
     }
     v.val[ui::P_INPUT] = cfg.input;
     v.val[ui::P_TONE] = cfg.tone;
@@ -501,6 +535,8 @@ static void task(void *) {
     v.scanStep = scanStep;
     v.scanned = scanDone;
     memcpy(v.chanBusy, scanBusy, 13);
+    v.airSlowSecs = airSecs >= 20 ? airSlowSecs * 60 / airSecs : 0;   // в пересчёте на минуту; первые 20 с — рано судить
+    v.airSlowMs = airSlowMs;
     {   // приёмники: копия таблицы
       int n = 0;
       portENTER_CRITICAL(&peerMux);
@@ -513,7 +549,7 @@ static void task(void *) {
         r.name[ui::RX_NAME - 1] = 0;
         r.wide = p.wide;
         r.online = p.seenMs && msSince(p.seenMs, now) < 7000;
-        r.off = p.flags & ST_OFF;
+        r.off = p.wantOff;   // выключатель показывает то, что задано с передатчика (оно главное), а не то, что сообщил приёмник
         r.sleep = p.flags & ST_SLEEP;
         r.mute = p.flags & ST_MUTE;
         r.stereo = p.flags & ST_STEREO;
@@ -533,6 +569,8 @@ static void task(void *) {
         r.hasEq = p.hasEq;
         r.lock = p.lock;
         r.hasLock = p.hasInfo && (p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 46));
+        memcpy(r.fx, p.fx, sizeof(r.fx));
+        r.hasFx = p.hasFx;
         r.boost = p.boost > 12 ? 0 : p.boost;
         r.hasBoost = p.hasInfo && (p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 48));
         r.earTest = p.earTest;
@@ -755,20 +793,35 @@ static void task(void *) {
         case ui::P_KIT: cfg.kit = val; break;
         case ui::P_RATE:
           cfg.rateAuto = val == 0;
-          if (val >= 1 && val <= 9) {
-            cfg.rateIdx = RATE_IDX[val - 1];
+          cfg.rateTop = 255;
+          if (val >= 1 && val <= 9) cfg.rateTop = RATE_IDX[val - 1];   // с 2.78 выбранная — верхняя ступень (см. rateAutoTick)
+          // Стоим на нижней ступени ради слабого приёмника: наверх ведёт rateAutoTick — сразу, если приёмники уже
+          // слышат, а если нет — скажет на экране, кто и почему (до 2.83 передатчик на несколько секунд прыгал на
+          // выбранную скорость и падал обратно: «качество и скорость трансляции не переключается»).
+          if (rateHeldLow()) rateKick = 1;
+          else if (val >= 1 && val <= 9) {
+            cfg.rateIdx = cfg.rateTop;
             rApply = true;
-            int q = qForRate(cfg.quality, cfg.rateIdx);
+            rateKick = 1;
+            int q = txQPick(cfg.quality, cfg.rateIdx, cfg.stereo != 0, nullptr);
             if (q != cfg.quality) {   // выбранное качество в эту скорость не помещается — сказать, что пойдёт на деле
               static char msg[128];
               snprintf(msg, sizeof(msg), tr("На цій швидкості якість звуку — «%s»"), tr(Q_NAME[q]));
               ui::toast(msg);
             }
-          }
+          } else rateKick = 1;
+          break;
+        case ui::P_WEAK:
+          cfg.rateLadder = val ? 1 : 0;
+          rateKick = 1;
           break;
         case ui::P_QUALITY: {
           cfg.quality = val;
-          int q = qForRate(cfg.quality, cfg.rateIdx);
+          if (rateHeldLow()) {   // качество держит нижняя ступень скорости: подняться, если уже можно, иначе объяснить (rateAutoTick)
+            rateKick = 1;
+            break;
+          }
+          int q = txQPick(cfg.quality, cfg.rateIdx, cfg.stereo != 0, nullptr);
           if (q != cfg.quality && !cfg.rateAuto) {
             static char msg[128];
             snprintf(msg, sizeof(msg), tr("Швидкість %s Мбіт/с: якість буде «%s»"), RATES[cfg.rateIdx].name, tr(Q_NAME[q]));
@@ -817,6 +870,12 @@ static void task(void *) {
     }
     if (o.eqBand >= 0) {   // эквалайзер входа
       if (o.eqBand < 5) cfg.txEq[o.eqBand] = (uint8_t)constrain(o.eqVal + 6, 0, 12);
+      else if (o.eqBand == 6) cfg.txNs = (uint8_t)constrain(o.eqVal, 0, 3);   // шумозаглушение входа — второй лист того же окна
+      else if (o.eqBand == 7) cfg.txNsSens = (uint8_t)constrain(o.eqVal, 0, 4);
+      else if (o.eqBand == 8) {   // образец шума: 2 — запомнить сейчас, 0 — снова сам
+        if (o.eqVal) txNsLearnAsk = cfg.txNs && !cfg.tone;
+        else txNsFrozen = false;
+      }
       else cfg.txLowCut = o.eqVal ? 1 : 0;
       txEqGen = txEqGen + 1;
       o.eqBand = -1;
@@ -862,8 +921,7 @@ static void task(void *) {
           case ui::RXC_ENABLE:
             peerCommand(p.id, CMD_ENABLE, o.rxArg);
             p.flags = o.rxArg ? p.flags & ~ST_OFF : p.flags | ST_OFF;
-            p.wantOff = !o.rxArg;
-            p.enforceUntil = now + 15000;   // спящий приёмник слушает эфир урывками — повторять, пока не подтвердит
+            p.wantOff = !o.rxArg;           // дальше команду повторяет приём его сообщений (txpeers.h), пока он не подчинится
             peersDirty = true;
             break;
           case ui::RXC_VOLUME:
@@ -882,6 +940,12 @@ static void task(void *) {
             else if ((o.rxArg >> 5) == RXP_X_BOOST) p.boost = o.rxArg & 31;
             p.parSetMs = now ? now : 1;
             break;
+          case ui::RXC_SET2:   // обработка «для слуха»: (0 шум, 1 сжатие, 2 паузы) × 32 + значение
+            peerCommand(p.id, CMD_SET2, (uint8_t)o.rxArg);
+            if ((o.rxArg >> 5) == 6) p.fx[6] = (o.rxArg & 31) ? 1 : 0;   // образец шума: 2 — «запомнить сейчас» → станет «запомнен»
+            else if ((o.rxArg >> 5) < 6) p.fx[o.rxArg >> 5] = o.rxArg & 31;
+            p.parSetMs = now ? now : 1;
+            break;
           case ui::RXC_EQ:   // эквалайзер: полоса × 16 + значение
             peerCommand(p.id, CMD_EQ, (uint8_t)o.rxArg);
             if ((o.rxArg >> 4) < 5) p.eq[o.rxArg >> 4] = o.rxArg & 15;
@@ -892,6 +956,10 @@ static void task(void *) {
             peerCommand(p.id, CMD_EARTEST, o.rxArg ? 1 : 0);
             p.earTest = o.rxArg ? 1 : 0;
             p.parSetMs = now ? now : 1;
+            break;
+          case ui::RXC_RESTART:
+            peerCommand(p.id, CMD_RESTART, 0);
+            Serial.printf("приймач %02X%02X%02X: з екрана надіслано команду «перезапуститися»\n", p.id[0], p.id[1], p.id[2]);
             break;
           case ui::RXC_FORGET: peerRemove(i); break;   // удалить из набора: приёмник теряет доступ, ключ набора меняется
         }

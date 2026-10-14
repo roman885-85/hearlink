@@ -14,6 +14,8 @@
 #include "esp_rom_gpio.h"
 #include "assets.h"
 #include "txmp3.h"
+#include "nsfx.h"
+#include "subc.h"
 
 static adc_continuous_handle_t txAdc;
 static i2s_chan_handle_t txI2s;
@@ -443,18 +445,116 @@ static volatile bool txMute;               // тишина в эфире: пак
 #define TX_HARD_US 20000
 static volatile bool txThinOn = true;
 static volatile uint32_t txThinned, txSkipped;   // за секунду: пакетов пропущено с заменой копиями и кадров потеряно совсем
+static volatile uint32_t txSkipMs;                // когда последний раз кадр пропал совсем: эфир был занят, и потери у приёмников — не от слабого сигнала
+static volatile uint32_t txLostMsAll;             // сколько миллисекунд звука пропало у играющих приёмников (по их сообщениям), нарастающим итогом — для «мягкого» ухода с канала
 // Запись настроек во флеш выключает кэш на 8–120 мс (долго — когда NVS стирает страницу), и звук со входа за это время
 // теряется: замер 09.10 — в секунду записи в эфир ушло 438 пакетов из 500, у приёмника «порожньо 105 мс». Поэтому
 // несрочную запись откладываем до паузы в звуке: 0,15 с в эфире тише −46 дБ (или передача стоит). Дольше maxMs не
 // ждём — запишем как есть: настройка не должна пропасть, если питание выключат.
+// шумозаглушение входа (nsfx.h) — для отчёта: на сколько сейчас убавлено (в среднем, дБ), сколько шагов сочтено
+// паузой (по ним запоминается шум), сколько времени занимает
+static volatile float txNsRedDb;
+static volatile uint32_t txNsUsSum, txNsUsMax, txNsCalls, txNsPauseHops;
+static volatile bool txNsLearnAsk;   // «запомнить шум сейчас» (порт: e7=1)
+static volatile bool txNsFrozen;     // шум запомнен по просьбе и не обновляется (e7=0 — снова сам)
+static volatile bool txNsLearning;   // идёт секунда запоминания
+// Шумозаглушение входа считает отдельная задача на ядре экрана. На ядре радио (в задаче передачи) оно стоило 0,43 мс
+// на двухмиллисекундный кадр, а на кадрах с расчётом спектра — 0,87 мс: треть кадров выходила за свои 2 мс (замер
+// 11.10, вход PCM1808, моно: «довших за 2000 мкс 6206 із 19876»). Ядро экрана свободнее, и задача на нём работает
+// одновременно с передачей: кадр кладётся в кольцо, а забирается готовым через кадр.
+#define TXNS_RING 8
+struct TxNsFrame {
+  int16_t m[FRAME], s[FRAME];
+};
+static TxNsFrame *txNsIn, *txNsOut;            // что отдано на обработку и что готово (по номеру кадра)
+static volatile uint32_t txNsPut, txNsDone;    // сколько кадров отдано / обработано
+static volatile uint32_t txNsLate;             // сколько раз кадр не успел (в эфир пошёл необработанный)
+static volatile uint8_t txNsLevel, txNsSensV;
+static volatile bool txNsStereo, txNsResetAsk;
+static TaskHandle_t txNsTaskH;
+static void txNsTask(void *) {
+  static float work[NSX_N] __attribute__((aligned(16)));
+  NsSpec *ns = (NsSpec *)heap_caps_malloc(sizeof(NsSpec), MALLOC_CAP_SPIRAM);
+  if (ns) ns->reset();
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    while (txNsDone != txNsPut) {
+      uint32_t k = txNsDone;
+      TxNsFrame f = txNsIn[k & (TXNS_RING - 1)];
+      if (ns) {
+        if (txNsResetAsk) {
+          txNsResetAsk = false;
+          ns->reset();
+        }
+        ns->level = txNsLevel;
+        ns->sens = txNsSensV;
+        if (txNsLearnAsk) {
+          txNsLearnAsk = false;
+          ns->learnStart();
+        }
+        if (!txNsFrozen && !ns->learnLeft) ns->frozen = false;
+        txNsFrozen = ns->frozen;
+        txNsLearning = ns->learnLeft > 0;
+        uint32_t t0 = (uint32_t)esp_timer_get_time();
+        ns->run(f.m, f.s, FRAME, txNsStereo, work);
+        uint32_t d = (uint32_t)esp_timer_get_time() - t0;
+        txNsUsSum = txNsUsSum + d;
+        txNsCalls = txNsCalls + 1;
+        if (d > txNsUsMax) txNsUsMax = d;
+        txNsRedDb = ns->redDb;
+        txNsPauseHops = ns->pauseHops;
+      }
+      txNsOut[k & (TXNS_RING - 1)] = f;
+      txNsDone = k + 1;
+    }
+  }
+}
+// задача и её память заводятся, когда шумозаглушение включают впервые; false — памяти не нашлось
+static bool txNsStart() {
+  if (txNsTaskH) return true;
+  if (!txNsIn) txNsIn = (TxNsFrame *)heap_caps_calloc(TXNS_RING, sizeof(TxNsFrame), MALLOC_CAP_SPIRAM);
+  if (!txNsOut) txNsOut = (TxNsFrame *)heap_caps_calloc(TXNS_RING, sizeof(TxNsFrame), MALLOC_CAP_SPIRAM);
+  if (!txNsIn || !txNsOut) return false;
+  return xTaskCreatePinnedToCore(txNsTask, "txns", 4096, NULL, 18, &txNsTaskH, 1) == pdPASS;
+}
 static volatile uint32_t txLoudMs;            // когда в эфир последний раз шёл звук громче −46 дБ (0 — ещё не было)
 static bool txQuietToSave(uint32_t dueMs, uint32_t maxMs);
 static volatile bool txEqOnTone;              // проба (порт: e9=1): эквалайзер входа действует и на проверочный тон 1 кГц — для замера
 static volatile uint32_t txEqGen = 1;         // растёт при смене эквалайзера входа — задача передачи пересчитывает звенья
 // Два кадра в пакете (proto.h, Q_DOUBLE). Порт: Qd0 — никогда, Qd1 — когда все приёмники на связи умеют (2.60+),
 // Qd2 — всегда (проверка). txDoubleOk считает otaAutoTick по версиям приёмников на связи.
+// С 2.77 двойной пакет несёт два прошлых кадра без сжатия («с точными копиями», proto.h, qPktLen3) — когда все
+// приёмники из списка сообщали 2.77+ (txDupOk, считает там же). Qd3 — двойные по-старому, только со сжатыми копиями
+// (для сравнения на слух); Qd2 — всегда двойные и всегда с точными копиями.
 static volatile uint8_t txDoubleMode = 1;
 static volatile bool txDoubleOk;
+static volatile bool txDupOk;                // все приёмники из списка понимают пакет «с точными копиями» (2.77+)
+// Подполосный кодек (subc.h, proto.h — Q_SUB), с 2.79: им идёт «стандартна» в моно, когда все приёмники из списка
+// сообщали 2.79+ (txSubOk). Порт: Qc0 — не применять (прежнее сжатие; для сравнения на слух), Qc1 — как положено.
+static volatile bool txSubOk;                // все приёмники из списка понимают подполосный кодек
+static volatile bool txSubOff;               // проверка (Qc0): кодек не применять
+static volatile bool txSubNow;               // сейчас в эфир идёт он
+// Качество, которое пойдёт в эфир на этой скорости: выбранное или ближайшее ниже, которое помещается (как qForRate),
+// но «стандартна» в моно с новым кодеком легче прежней — пакет 158 байт вместо 223 — и помещается даже в 1 Мбит/с.
+// Со стерео: пока стерео в выбранном качестве помещается — идёт оно (прежним сжатием). Не помещается (нижняя
+// ступень, 1 Мбит/с) — эфир переходит в моно на новый кодек, а не в «мова» со стерео: у той одна запасная копия
+// (при 25 % потерь пропадало 5 % звука), у нового кодека три. Экран при этом пишет «стерео (зараз моно)».
+static inline int txQPick(int want, int rateIdx, bool st, bool *sub) {
+  int q = want < 0 ? 0 : want >= Q_COUNT ? Q_COUNT - 1 : want;
+  for (;; q++) {
+    bool subFits = q == Q_STD && txSubOk && !txSubOff && airUs(qPktLenSub(), rateIdx) * 100 <= qFrameUs(Q_STD) * 45;
+    bool normal = q >= Q_COUNT - 1 || qFits(q, rateIdx, st);
+    if (subFits && (!st || !normal)) {
+      if (sub) *sub = true;
+      return q;
+    }
+    if (normal) {
+      if (sub) *sub = false;
+      return q;
+    }
+  }
+}
+static volatile bool txDupNow;               // сейчас в эфир идут такие пакеты
 static volatile uint8_t txDoubleWhy;         // почему двойные пакеты нельзя: 0 — можно, 1 — в списке есть приёмник без
 static uint8_t txDoubleWho[3];               // подтверждённой версии 2.60+ (его номер — здесь), 2 — открыто окно добавления
 static volatile bool txDblNow;               // сейчас в эфир идут двойные пакеты
@@ -476,6 +576,11 @@ static void txTask(void *) {
   static uint8_t pkt[PKT_MAX];
   static uint8_t hist[1 + DBL_COPIES][3 + Q_MAX_N / 2];   // сжатые прошлые кадры: [0] — N−1, [1] — N−2 … (двойному пакету нужны [1…DBL_COPIES])
   static uint8_t pairMain[Q_MAX_N * 2], pairSide[3 + Q_MAX_N / 2];   // первый кадр пары ждёт второго
+  static uint8_t pcmHist[1 + DUP_PCM][FRAME * 2];   // прошлые кадры «найвищої» без сжатия: [0] — N−1, [1] — N−2 … (как hist)
+  static SubcEnc subEnc;                     // подполосный кодек: разбор кадра (с 2.79)
+  static uint8_t subF0[2][SUB_F0], subF2[3][SUB_F2], subF3[4][SUB_F3];   // кадр в трёх видах: [0] — новый, [1] — N−1, [2] — N−2, [3] — N−3
+  static bool sub;                           // «стандартна» идёт подполосным кодеком
+  static bool dup;                           // двойные пакеты идут «с точными копиями» (с 2.77)
   static uint8_t bcn[256];                   // одиночный пакет «для старых приёмников» три раза в секунду
   static uint16_t bcnLen;                    // он собран и ждёт свободного кадра пары (0 — нет)
   static bool dbl, pairHave;                 // идём двойными пакетами; первый кадр пары уже лежит
@@ -600,6 +705,42 @@ static void txTask(void *) {
         side[i] = u > 32767 ? 32767 : u < -32768 ? -32768 : (int16_t)u;
       }
     }
+    // Шумозаглушение входа (с 2.68): только звук с пульта — проверочный звук и файлы чистые. Считает его отдельная
+    // задача на ядре экрана (txNsTask): кадр отдаётся ей, а в эфир идёт кадр, отданный четыре кадра назад (8 мс).
+    {
+      static bool nsWas;
+      bool nsOn = cfg.txNs >= 1 && cfg.txNs <= 3 && !cfg.tone && !card && got && txNsStart();
+      if (nsOn) {
+        if (!nsWas) txNsResetAsk = true;   // включили (или вернулись ко входу): очередь и оценка — с чистого листа
+        txNsLevel = cfg.txNs;
+        txNsSensV = cfg.txNsSens > 4 ? 2 : cfg.txNsSens;
+        txNsStereo = cfg.stereo && cfg.input == IN_I2S;
+        uint32_t k = txNsPut;
+        TxNsFrame &f = txNsIn[k & (TXNS_RING - 1)];
+        memcpy(f.m, pcm, sizeof(f.m));
+        memcpy(f.s, side, sizeof(f.s));
+        txNsPut = k + 1;
+        xTaskNotifyGive(txNsTaskH);
+        // В эфир — кадр, отданный на обработку кадр назад: у задачи на него было 2 мс. Не успела (ядро экрана было
+        // занято записью во флеш) — идёт тот же звук без обработки, с той же задержкой: провала нет.
+        if ((int32_t)(txNsDone - k) >= 0 && k >= 1) {
+          const TxNsFrame &o = txNsOut[(k - 1) & (TXNS_RING - 1)];
+          memcpy(pcm, o.m, sizeof(o.m));
+          memcpy(side, o.s, sizeof(o.s));
+        } else {
+          const TxNsFrame &o = txNsIn[(k - 4) & (TXNS_RING - 1)];
+          if (k >= 4) {
+            memcpy(pcm, o.m, sizeof(o.m));
+            memcpy(side, o.s, sizeof(o.s));
+          } else {
+            memset(pcm, 0, sizeof(pcm));
+            memset(side, 0, sizeof(side));
+          }
+          if (k >= 4) txNsLate = txNsLate + 1;
+        }
+      }
+      nsWas = nsOn;
+    }
     TXP(0)
     int pk = 0, pkS = 0;
     float sq = 0;
@@ -650,11 +791,21 @@ static void txTask(void *) {
     bool srcSt = card ? cpChans == 2 : cfg.tone ? cfg.tone == TEST_LR || ((cfg.tone == TEST_ALL || cfg.tone == TEST_MUSIC || cfg.tone == TEST_DUCK) && txSoundsOk) : cfg.input == IN_I2S;
     bool wantSt = cfg.stereo && srcSt;
     // качество: выбранное, а если на нынешней скорости радио оно не помещается — ближайшее ниже
-    int wantQ = qForRate(cfg.quality, cfg.rateIdx, wantSt);
-    wantSt = wantSt && qStereoOk(wantQ);
-    if (wantQ != q || wantSt != st) {
+    bool wantSub = false;
+    int wantQ = txQPick(cfg.quality, cfg.rateIdx, wantSt, &wantSub);
+    wantSt = wantSt && qStereoOk(wantQ) && !wantSub;   // новый кодек — только моно
+    if (wantQ != q || wantSt != st || wantSub != sub) {
       q = wantQ;
       st = wantSt;
+      sub = wantSub;
+      txSubNow = sub;
+      if (sub) {
+        subcInit();
+        subEnc.reset();
+        memset(subF0, 0, sizeof(subF0));
+        memset(subF2, 0, sizeof(subF2));
+        memset(subF3, 0, sizeof(subF3));
+      }
       txQNow = q;
       txStNow = st;
       accN = 0;
@@ -662,11 +813,16 @@ static void txTask(void *) {
       idxCarry = 0;
       idxCarryS = 0;
       memset(hist, 0, sizeof(hist));
+      memset(pcmHist, 0, sizeof(pcmHist));
       pairHave = false;
     }
     const QDef &d = QDEF[q];
-    if (!pairHave) dbl = q == Q_HI && (txDoubleMode == 2 || (txDoubleMode == 1 && txDoubleOk));   // упаковка меняется только между парами
+    if (!pairHave) {   // упаковка меняется только между парами
+      dbl = q == Q_HI && (txDoubleMode >= 2 || (txDoubleMode == 1 && txDoubleOk));
+      dup = dbl && (txDoubleMode == 2 || (txDoubleMode == 1 && txDupOk));
+    }
     txDblNow = dbl;
+    txDupNow = dup;
     if (st) {   // при заторе стерео плавно сводится в моно: кадры из копий несут только середину, и разность «через раз» дребезжала бы
       static float sg = 1;
       // (с 2.43 на «найвищій» копии несут и разность — сводить незачем; осталось для прочих качеств и старых приёмников)
@@ -695,6 +851,16 @@ static void txTask(void *) {
     }
     // На «найвищій» сжатая середина идёт только в запасные копии (нужна лишь при потере пакета) — ей хватит
     // простого сжатия; подбор шага оставлен там, где сжатое звучит всегда.
+    if (sub) {   // подполосный кодек: один разбор — три вида кадра (для нового места в пакете и для будущих копий)
+      for (int k = 1; k >= 1; k--) memcpy(subF0[k], subF0[k - 1], SUB_F0);
+      for (int k = 2; k >= 1; k--) memcpy(subF2[k], subF2[k - 1], SUB_F2);
+      for (int k = 3; k >= 1; k--) memcpy(subF3[k], subF3[k - 1], SUB_F3);
+      subEnc.analyse(src);
+      subEnc.pack(subF0[0], SUB_F0, false);
+      subEnc.pack(subF2[0], SUB_F2, false);
+      subEnc.pack(subF3[0], SUB_F3, true);
+      memset(blk, 0, sizeof(blk));
+    } else
     if (d.pcm) adpcmEncodeBlock(src, d.n, blk, idxCarry);
     else adpcmEncodeBlockBest(src, d.n, blk, idxCarry);
     if (st) adpcmEncodeBlockBest(srcS, d.n, blkS, idxCarryS);
@@ -747,7 +913,7 @@ static void txTask(void *) {
     h->boot = boot;
     h->seq = dbl ? pairSeq : mySeq;
     h->flags = accFlags | (dbl ? pairFl : 0) | (cfg.channel << 4);
-    h->q = q | (st ? Q_STEREO : 0) | (cfg.lang ? Q_LANG_EN : 0) | (dbl ? Q_DOUBLE : 0);
+    h->q = q | (st ? Q_STEREO : 0) | (cfg.lang ? Q_LANG_EN : 0) | (dbl ? Q_DOUBLE : 0) | (sub ? Q_SUB : 0);
     accFlags = 0;
     uint8_t *w = pkt + sizeof(Hdr);
     if (dbl && !stash) {   // первый кадр пары — из запомненного
@@ -758,6 +924,16 @@ static void txTask(void *) {
         w += bl;
       }
     }
+    if (sub) {   // новый кадр, прошлый той же точности, позапрошлый попроще, трёхпакетной давности — грубо
+      memcpy(w, subF0[0], SUB_F0);
+      w += SUB_F0;
+      memcpy(w, subF0[1], SUB_F0);
+      w += SUB_F0;
+      memcpy(w, subF2[2], SUB_F2);
+      w += SUB_F2;
+      memcpy(w, subF3[3], SUB_F3);
+      w += SUB_F3;
+    } else
     if (d.pcm) {
       memcpy(w, src, d.n * 2);
       w += d.n * 2;
@@ -769,8 +945,14 @@ static void txTask(void *) {
       memcpy(w, blkS, bl);
       w += bl;
     }
+    if (sub) {
+    } else
     if (dbl) {   // копии кадров двух прошлых пакетов, от ближнего (N−2) к дальнему; в стерео — и копии их разности
-      for (int k = 1; k <= DBL_COPIES; k++, w += bl) memcpy(w, hist[k], bl);
+      // (счёт k — от кадра, собираемого сейчас: [0] — первый кадр этой же пары, он уже лежит в пакете)
+      int k = 1;
+      if (dup)   // прошлый пакет — ещё раз без сжатия: его пропажа восстановится бит в бит (см. qPktLen3 в proto.h)
+        for (; k <= DUP_PCM; k++, w += d.n * 2) memcpy(w, pcmHist[k], d.n * 2);
+      for (; k <= DBL_COPIES; k++, w += bl) memcpy(w, hist[k], bl);
       if (st)
         for (int k = 1; k <= DBL_COPIES; k++, w += SC_LEN) memcpy(w, scHist[k], SC_LEN);
     } else {
@@ -814,8 +996,10 @@ static void txTask(void *) {
         winLow = INT32_MAX;
         winCnt = 0;
       }
-      int copies = dbl ? 1 : qCopies(q, st), pend = raw - ofs;   // двойной пакет несёт копии двух прошлых пакетов, но
-                                                                 // нарочно пропускаем не больше одного из двух: запас от потерь остаётся
+      // двойной пакет несёт копии двух прошлых пакетов, но нарочно пропускаем не больше одного из двух: запас от
+      // потерь остаётся. То же на нижней ступени «самой» скорости (1 Мбит/с): туда передатчик ушёл ради слабого
+      // приёмника, а у него пропуск двух пакетов подряд оставляет каждый кадр на единственном пакете (с 2.74).
+      int copies = dbl || cfg.rateIdx == R_1M ? 1 : sub ? 2 : qCopies(q, st), pend = raw - ofs;
       if (pend > rPendMax) rPendMax = pend;
       uint32_t fus = qFrameUs(q) * (dbl ? 2 : 1);
       int thinAt = TX_THIN_US / fus < 3 ? 3 : TX_THIN_US / fus, hardAt = TX_HARD_US / fus < 5 ? 5 : TX_HARD_US / fus;
@@ -860,7 +1044,10 @@ static void txTask(void *) {
       } else {
         radioSend(NULL, 0);   // пакета нет, но сторож радио должен видеть и это время (см. radioSend)
         if (run < copies) txThinned = txThinned + 1;
-        else txSkipped = txSkipped + 1;
+        else {
+          txSkipped = txSkipped + 1;
+          txSkipMs = millis() ? millis() : 1;
+        }
         if (run < 255) run++;
         // одиночный пропуск стерео не трогает; четыре за четверть секунды — затор, стерео сводится в моно
         static uint32_t winAt;
@@ -880,6 +1067,10 @@ static void txTask(void *) {
     }
     memcpy(hist[0], blk, bl);
     memcpy(scHist[0], scNow, SC_LEN);
+    if (d.pcm) {   // и несжатые кадры — тем же порядком (нужны только «найвищій»: у остальных копия и есть сам кадр)
+      for (int k = DUP_PCM; k >= 1; k--) memcpy(pcmHist[k], pcmHist[k - 1], FRAME * 2);
+      memcpy(pcmHist[0], src, d.n * 2);
+    }
     txFrames = txFrames + 1;
   }
 }

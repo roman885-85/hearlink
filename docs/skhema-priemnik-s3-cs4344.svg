@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 980" width="1240" height="980" font-family="Helvetica, Arial, sans-serif"><rect width="1240" height="980" fill="#fff"/><text x="620" y="30" font-size="18" text-anchor="middle" fill="#111" font-weight="bold">Приёмник ESP32-S3 + ЦАП CS4344</text>
+<rect x="60" y="80" width="240" height="330" rx="8" fill="#f4f6f8" stroke="#333" stroke-width="2"/>
+<text x="180" y="104" font-size="15" text-anchor="middle" fill="#111" font-weight="bold">ESP32-S3</text>
+<text x="180" y="122" font-size="12" text-anchor="middle" fill="#555">плата DevKitC, N16R8</text>
+<rect x="520" y="80" width="250" height="330" rx="8" fill="#f4f6f8" stroke="#333" stroke-width="2"/>
+<text x="645" y="104" font-size="15" text-anchor="middle" fill="#111" font-weight="bold">CS4344</text>
+<text x="645" y="122" font-size="12" text-anchor="middle" fill="#555">модуль ЦАП (I2S)</text>
+<circle cx="300" cy="140" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="145" font-size="13" text-anchor="end" fill="#111">3V3</text>
+<circle cx="520" cy="140" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="145" font-size="13" text-anchor="start" fill="#111">VCC (VA)</text>
+<polyline points="300,140 520,140" fill="none" stroke="#c0392b" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="300" cy="180" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="185" font-size="13" text-anchor="end" fill="#111">GND</text>
+<circle cx="520" cy="180" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="185" font-size="13" text-anchor="start" fill="#111">GND</text>
+<polyline points="300,180 520,180" fill="none" stroke="#222" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="300" cy="220" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="225" font-size="13" text-anchor="end" fill="#111">10</text>
+<circle cx="520" cy="220" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="225" font-size="13" text-anchor="start" fill="#111">MCLK</text>
+<polyline points="300,220 520,220" fill="none" stroke="#7d4bb0" stroke-width="3" stroke-linejoin="round"/>
+<circle cx="300" cy="260" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="265" font-size="13" text-anchor="end" fill="#111">11</text>
+<circle cx="520" cy="260" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="265" font-size="13" text-anchor="start" fill="#111">SCLK</text>
+<polyline points="300,260 520,260" fill="none" stroke="#d2691e" stroke-width="3" stroke-linejoin="round"/>
+<circle cx="300" cy="300" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="305" font-size="13" text-anchor="end" fill="#111">12</text>
+<circle cx="520" cy="300" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="305" font-size="13" text-anchor="start" fill="#111">LRCK</text>
+<polyline points="300,300 520,300" fill="none" stroke="#d2691e" stroke-width="3" stroke-linejoin="round"/>
+<circle cx="300" cy="340" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="290" y="345" font-size="13" text-anchor="end" fill="#111">13</text>
+<circle cx="520" cy="340" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="530" y="345" font-size="13" text-anchor="start" fill="#111">SDIN</text>
+<polyline points="300,340 520,340" fill="none" stroke="#d2691e" stroke-width="3" stroke-linejoin="round"/>
+<text x="410" y="212" font-size="12" text-anchor="middle" fill="#7d4bb0">главный такт 8 МГц</text>
+<text x="410" y="292" font-size="12" text-anchor="middle" fill="#d2691e">звук цифрой (I2S)</text>
+<text x="410" y="132" font-size="12" text-anchor="middle" fill="#c0392b">питание 3,3 В</text>
+<text x="645" y="395" font-size="12" text-anchor="middle" fill="#555">XSMT нет — вывод 14 не нужен</text>
+<circle cx="770" cy="150" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="760" y="155" font-size="13" text-anchor="end" fill="#111">L</text>
+<circle cx="770" cy="194" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="760" y="199" font-size="13" text-anchor="end" fill="#111">G</text>
+<circle cx="770" cy="238" r="4" fill="#fff" stroke="#333" stroke-width="2"/>
+<text x="760" y="243" font-size="13" text-anchor="end" fill="#111">R</text>
+<rect x="930" y="80" width="250" height="150" rx="8" fill="#fbfbfb" stroke="#777" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="1055" y="104" font-size="15" text-anchor="middle" fill="#111" font-weight="bold">Наушники</text>
+<text x="1055" y="122" font-size="12" text-anchor="middle" fill="#555">в гнездо модуля — тихо</text>
+<polyline points="770,150 930,150" fill="none" stroke="#00796b" stroke-width="3" stroke-linejoin="round" stroke-dasharray="7 5"/>
+<polyline points="770,194 930,194" fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round" stroke-dasharray="7 5"/>
+<polyline points="770,238 850,238 850,214 930,214" fill="none" stroke="#00796b" stroke-width="3" stroke-linejoin="round" stroke-dasharray="7 5"/>
+<text x="850" y="138" font-size="12" text-anchor="middle" fill="#555">гнездо 3,5 мм модуля</text>
+<rect x="930" y="260" width="250" height="150" rx="8" fill="#f4f6f8" stroke="#333" stroke-width="2"/>
+<text x="1055" y="284" font-size="15" text-anchor="middle" fill="#111" font-weight="bold">MAX97220 (HYT)</text>
+<text x="1055" y="302" font-size="12" text-anchor="middle" fill="#555">усилитель — для работы</text>
+<text x="1055" y="330" font-size="13" text-anchor="middle" fill="#111">L → L+,  R → R+</text>
+<text x="1055" y="352" font-size="13" text-anchor="middle" fill="#111">L−, R− и G → «земля»</text>
+<text x="1055" y="378" font-size="12" text-anchor="middle" fill="#555">питание усилителя +5 В</text>
+<polyline points="770,150 880,150 880,312 930,312" fill="none" stroke="#00796b" stroke-width="3" stroke-linejoin="round"/>
+<polyline points="770,238 850,238 850,340 930,340" fill="none" stroke="#00796b" stroke-width="3" stroke-linejoin="round"/>
+<circle cx="880" cy="150" r="4.5" fill="#00796b"/>
+<circle cx="850" cy="238" r="4.5" fill="#00796b"/>
+<text x="60" y="470" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Порядок</text>
+<text x="60" y="491" font-size="13" text-anchor="start" fill="#222">1. Наушники с выводов 17 и 18 (прямое подключение) снять — в этом режиме они молчат.</text>
+<text x="60" y="512" font-size="13" text-anchor="start" fill="#222">2. Собрать по схеме: шесть проводов. Питание модуля — 3,3 В (вывод 3V3 платы приёмника), не 5 В.</text>
+<text x="60" y="533" font-size="13" text-anchor="start" fill="#222">3. В меню приёмника: «Вихід звуку» → CS4344 (плата перезапустится). С порта — команда o2.</text>
+<text x="60" y="554" font-size="13" text-anchor="start" fill="#222"></text>
+<text x="60" y="575" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Почему так (описание CS4344, DS613F2)</text>
+<text x="60" y="596" font-size="13" text-anchor="start" fill="#222">• Главный такт (MCLK) обязателен и должен быть целым кратным частоты каналов. У ESP32-S3 целым делением</text>
+<text x="60" y="617" font-size="13" text-anchor="start" fill="#222">  выходит 160 МГц / 20 = 8 МГц, поэтому выход идёт на 31 250 Гц (8 МГц / 256); звук эфира (32 кГц) приёмник</text>
+<text x="60" y="638" font-size="13" text-anchor="start" fill="#222">  пересчитывает сам. Для 32 кГц нужен был бы такт 8,192 МГц — только дробным делителем, с неровными периодами.</text>
+<text x="60" y="659" font-size="13" text-anchor="start" fill="#222">• Такт бит — 2 МГц (64 на кадр), слово канала 32 такта; формат I2S, 16 бит. Это вывод SCLK модуля (BCK, BCLK).</text>
+<text x="60" y="680" font-size="13" text-anchor="start" fill="#222">• «Единица» на входах — от 60 % питания ЦАП: при 3,3 В это 2 В (запас), при 5 В — 3 В (выводы ESP32 дают 3,3 В — на грани).</text>
+<text x="60" y="701" font-size="13" text-anchor="start" fill="#222">• XSMT у этого ЦАП нет: при включении выход сам плавно встаёт (около 0,3–0,5 с), при сне такт снимается — так же плавно уходит.</text>
+<text x="60" y="722" font-size="13" text-anchor="start" fill="#222"></text>
+<text x="60" y="743" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Выход</text>
+<text x="60" y="764" font-size="13" text-anchor="start" fill="#222">• Выход линейный: 0,65 × питания размахом — около 0,76 В действующего при 3,3 В (у PCM5102 2,1 В — громче на 9 дБ).</text>
+<text x="60" y="785" font-size="13" text-anchor="start" fill="#222">• Нагрузка — не меньше 3 кОм: наушники в гнездо модуля играют тихо и с искажениями; для работы — усилитель MAX97220.</text>
+<text x="60" y="806" font-size="13" text-anchor="start" fill="#222"></text>
+<text x="60" y="827" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Защита вывода 10</text>
+<text x="60" y="848" font-size="13" text-anchor="start" fill="#222">• Раньше вывод 10 был «землёй» для SCK модуля PCM5102. Прежде чем подать на него такт, приёмник проверяет, не замкнут</text>
+<text x="60" y="869" font-size="13" text-anchor="start" fill="#222">  ли вывод на «землю»; если замкнут — такт не подаёт (n8=7 пишет «ВИВІД 10 НА «ЗЕМЛІ»»). Проверка: команда порта n8=7.</text>
+<text x="60" y="890" font-size="13" text-anchor="start" fill="#222"></text>
+<text x="60" y="911" font-size="13" text-anchor="start" fill="#222" font-weight="bold">Проверено 14.10.2026 на приёмнике с PCM5102 (он принимает ту же схему тактов): такт 8,000 МГц, деление 20 целое,</text>
+<text x="60" y="932" font-size="13" text-anchor="start" fill="#222" font-weight="bold">выход 31 249 отсчётов/с; на самом модуле CS4344 — не проверено.</text></svg>

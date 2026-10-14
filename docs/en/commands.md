@@ -39,7 +39,10 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 
 | Command | Action |
 |---|---|
-| `v<rate>` | 0.5 1 2 5.5 11 6 9 12 18 24 36 48 54 Mbit/s; `v0` — auto |
+| `v<rate>` | 0.5 1 2 5.5 11 6 9 12 18 24 36 48 54 Mbit/s; `v0` — auto. Since 2.78 a rate chosen by hand is the upper step: for a weak receiver the transmitter steps down to 1 Mbit/s by itself (if «Слабкий сигнал» (Weak signal) is “lowering”) |
+| `Ql2` / `Ql3` | the «Слабкий сигнал» (Weak signal) setting: do not lower / lower the rate for a weak receiver (stored, as from the screen; since 2.83) |
+| `Ql0` / `Ql1` | forbid / allow the lower rate step temporarily — for measurements at a fixed rate (not stored) |
+| `Qc0` / `Qc1` | forbid / allow the new far-mode codec — to compare by ear with the former compression (not stored; since 2.79) |
 | `p<2–20>` | power, dBm |
 | `q<0–3>` | quality: 0 «найвища» (highest), 1 «стандартна» (standard), 2 «мова» (speech), 3 «дальня» (far) |
 | `g<0–6>` | source: 0 input, 1 tone, 2 voice, 3 voice and music, 4 music, 5 music with an announcement, 6 left/right channel check |
@@ -50,6 +53,7 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `z1` / `z0` | go completely silent on air / come back — a check of receiver sleep |
 | `s` | find a free channel |
 | `h0` / `h1` / `h2` / `h3` | leaving a busy channel: off / on / move now / treat 6 s as "bad" |
+| `h` / `h4` | state of the soft channel move (since 2.83): whether a trial is running, seconds with air waits of 15 ms or more, the experience of channels, scores from the scan / a trial of the best channel by the scan now, with a return after a minute (a check of the procedure) |
 | `T0` / `T1` | packet thinning when the air is busy |
 | `A1` / `A0` | count other parties' transmissions on our own channel |
 | `O` | turn the transmitter off (a touch on the screen turns it on) |
@@ -61,15 +65,19 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `Q` | the radio "black box"; `Q0…Q3` — up to which step to revive (an experiment only: the limit expires by itself after 60 s, or after 5 s without air); `Q7 Q8 Q9 Q6` — perform a step on a healthy radio; `Q10` — an imitated stalled driver; `Qn` — what the radio hears (noise level); `Qp<bits>` — radio protocol experiment (1 b, 2 g, 4 n, 8 LR; `Qp15` — as usual). `Q` also prints measurements: gaps between sends, the path of a lone packet, frame processing time by stages |
 | `Y1`/`Y0`, `Y3`/`Y4`, `Y5…Y8` | experiments with display frame output |
 | `M8` | full-screen warning “cable update — the screen goes dark for a minute” (25 s or until the board is reset) |
-| `Qd0` / `Qd1` / `Qd2` | two frames per packet on «найвища»: never / automatically, when all receivers in touch can take it (the default) / always (an experiment). Lasts until a restart. `?` says «ДВА кадри в пакеті» (two frames) or «один кадр у пакеті» (one frame) |
+| `Qp<setting>=<value>` | (the display module, since 2.83) a choice “as from the screen” without a touch — a check of the handling; the numbers are `enum Param` in `txui.h` (2 — rate, 9 — quality, 20 — «Слабкий сигнал») |
+| `e6=<0…3>`, `e8=<0…4>`, `e7=1` / `e7=0` | input noise reduction (since 2.71–2.72): strength / sensitivity / noise sample — remember now / auto in pauses |
+| `Qd0` / `Qd1` / `Qd2` / `Qd3` | two frames per packet on «найвища»: never / automatically, when all receivers in touch can take it (the default) / always (an experiment); since 2.77 the double packet repeats the previous packet uncompressed, `Qd3` — the former compressed copies. Lasts until a restart. `?` says «ДВА кадри в пакеті» (two frames) or «один кадр у пакеті» (one frame) |
 | `Y9`, `Y10`/`Y11` | knock the display driver out of its buffer order on purpose; put frame portions where the driver says (as before 2.49) / the firmware's own way |
 
 ### Receivers from the transmitter
 | Command | Action |
 |---|---|
-| `P` | list of receivers with all readings and settings |
+| `P` | list of receivers with all readings and settings; since 2.73 — the line «звук від команди P0» (sound since P0): how much sound each one lost |
+| `P0` | reset these counters |
 | `I` | to the first one online — "identify yourself" |
-| `E0` / `E1` | turn it off / on |
+| `E0` / `E1` | turn it off / on; `E0 <number>` / `E1 <number>` — that receiver |
+| `E2 <number>` | restart that receiver (as the «Перезапустити» button; receivers with 2.84+) |
 | `V<0–20>` | volume |
 | `W0` / `W1` | output «протифаза» (antiphase) / "two channels" |
 | `N<name>` | give a name |
@@ -77,7 +85,8 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `i<no.>=<value>[@number]` | settings: 0 clarity 0–3, 1 balance −5…5, 2 volume limit 1–20, 3 view 0–2, 4 LED 0–3, 5 language 0–2; `i9=1` / `i9=0` — headphone test. Example: `i0=2@884A94` |
 | `i7=<dB 0…24>[@number]` | digital boost of a receiver, a “trim” (on the receiver itself — `n10=<dB>`); the `n7=3` reply shows “boost +N dB (now …)” |
 | `i6=<0…3>[@number]` | receiver knob lock: 0 none, 1 menu, 2 volume, 3 all (on the receiver itself — `n6=<0…3>`) |
-| `i20…i24=<dB>[@number]`, `i25=<0/1>[@number]` | receiver equalizer: bands 125 Hz, 400 Hz, 1 kHz, 2.5 kHz, 6 kHz (−12…12 dB) and the low cut; the state and the level before/after are in the `n7=3` reply |
+| `i16…i22=<value>[@number]` | receiver sound processing (since 2.68 / 2.72): 16 noise reduction 0–3, 17 compression 0–3, 18 in pauses 0–3, 19 noise sensitivity 0–4, 20 pause threshold 0–4 (+3…+15 dB), 21 pause closing 0–2, 22 noise sample (2 — remember now, 0 — auto) |
+| `i23`, `i24=<dB>[@number]`, `i25=<0/1>[@number]` | receiver equalizer: the 2.5 kHz and 6 kHz bands (−12…12 dB) and the low cut; the state and the level before/after are in the `n7=3` reply. **Known bug in 2.72–2.85:** the numbers `i20…i22` are taken by the processing, so the 125 Hz, 400 Hz and 1 kHz bands cannot be set from the port (from the transmitter screen they can) |
 | `e`, `e<0…4>=<dB>`, `e5=<0/1>` | transmitter input equalizer: show / band / low cut; `e9=1` — probe: apply it to the 1 kHz tone too (for measuring) |
 | `a0` / `a1` / `a2` | input: built-in / PCM1808 / probe — PCM1808 for one boot without the master clock (the port works; normally with PCM1808 the transmitter prints nothing: the clock goes out on the TXD pin) |
 | `J` / `J1` / `J0` | access requests / open the adding window for 3 min / close it |
@@ -103,7 +112,7 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `d<0\|4–40>` | buffer, ms (0 — auto) |
 | `l<0–20>` | volume |
 | `m` | mute |
-| `o0` / `o1` | output: PDM / PCM5102 (restart) |
+| `o0` / `o1` / `o2` | output: PDM / PCM5102 / CS4344 (restart; `o2` since 2.85) |
 | `w0` / `w1` | pins: antiphase / two channels |
 | `n` | the "for hearing" settings: clarity, balance, limit, view, LED, language |
 | `n<no.>=<value>` | change one (numbers as in `i`) |
@@ -127,10 +136,11 @@ The pin shorts itself to ground — exactly what the button or the encoder conta
 | `n8=3` / `n8=4` | turn by one click in one direction and in the other |
 | `n8=5` | press for a second without holding up the main loop |
 | `n8=6` | the same after 30 s — a check of waking from sleep (in sleep the port is not listened to) |
-| `n8=7` | what is on the audio output pins: share of ones and edges on 10 (SCK), 11 (BCK), 12 (LRCK), 13 (data), 17, 18 (PDM); the XSMT level (pin 14) |
+| `n8=7` | what is on the audio output pins: share of ones and edges on 10 (SCK), 11 (BCK), 12 (LRCK), 13 (data), 17, 18 (PDM); the XSMT level (pin 14); with the CS4344 (2.85) also the master clock divider (integer or fractional), the output rate and whether pin 10 is held on ground |
 | `n8=9` | “logic analyzer”: samples BCK, LRCK and data on the pins (the DAC is muted meanwhile, known numbers 0x5A01 / 0xA5F3 go to the output) and prints the bits of one word — the format and bit shift become visible |
 | `n8=8` | true rates since the previous such call: audio from the air (transmitter clock) and the output (own clock), in samples per second and ppm |
 | `n8=2` | leave the pin "dirty", as after sleep in old versions (a check of the cleanup at startup) |
+| `n8=11` / `n8=12` / `n8=13` / `n8=14` | a check of the sound self-recovery (since 2.84): a “not-a-number” into the processing input / into the equalizer memory / hold the output on one value (the watchdog must reset the processing, then restart the board) / clear |
 
 ## Debugging over the radio
 On the transmitter: «Налашт.» (Settings) → «Налагодження ефіром» (Debug over air) or `G1` (turn off — `G0`). After

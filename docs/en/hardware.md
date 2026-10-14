@@ -23,7 +23,7 @@
 | Board | **ESP32-S3-DevKitC-1 N16R8** (or a compatible one with 16 MB flash and 8 MB PSRAM) | PSRAM is needed for the over-the-air update: the 2.2 MB image is received into memory as a whole |
 | Display with knob | "M75" module: OLED **SH1106 1.3″ 128×64 I2C** + **EC11** encoder with a button | power it **from 3.3 V only**: the I2C pull-ups on the module go to VCC |
 | Audio output | headphones directly: 1 kΩ + 10 nF on each leg and a 1 µF coupling capacitor | or a headphone amplifier with a differential input (MAX97220) |
-| External DAC (optional) | **PCM5102** module | cleaner sound: CPU supply noise does not reach the headphones; see the section below |
+| External DAC (optional) | **PCM5102** or **CS4344** module (since 2.85) | cleaner sound: CPU supply noise does not reach the headphones; see the sections below |
 | Power | power bank or a battery with a 5 V output | the display is optional: without it the receiver simply plays |
 
 The receiver board can also have no display and no knob — it is then controlled from the transmitter (volume,
@@ -60,7 +60,7 @@ board.
 
 The real appearance of the ESP32-S3-DevKitC-1 is shown in the manufacturer's documentation:
 <https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/>. The other modules are
-easy to find by name: “ESP32-4848S040”, “SH1106 1.3 OLED EC11”, “MAX97220 module”, “PCM5102 module”,
+easy to find by name: “ESP32-4848S040”, “SH1106 1.3 OLED EC11”, “MAX97220 module”, “PCM5102 module”, “CS4344 module” (or “Pmod I2S”),
 “PCM1808 module”.
 
 ## Pins
@@ -74,6 +74,7 @@ easy to find by name: “ESP32-4848S040”, “SH1106 1.3 OLED EC11”, “MAX97
 | Module buttons CON, BAK (not used, pulled up) | 15, 16 |
 | Audio output "+", "−" (one-bit PDM) | 17, 18 |
 | PCM5102: BCK, LCK, DIN, XSMT; SCK — to GND (or to pin 10, held low) | 11, 12, 13, 14 |
+| CS4344: MCLK, SCLK, LRCK, SDIN (supply VCC — from 3V3) | 10, 11, 12, 13 |
 | On-board RGB LED (WS2812) | 48 (38 on newer boards) |
 
 ### Transmitter on the ESP32-4848S040 module
@@ -117,7 +118,7 @@ Receiver with a headphone amplifier ("antiphase" output):
 
 Variants with external converters (not verified on the boards):
 [transmitter + PCM1808](../skhema-peredatchik-4848-pcm1808.png),
-[receiver + PCM5102](../skhema-priemnik-s3-pcm5102.png).
+[receiver + PCM5102](../skhema-priemnik-s3-pcm5102.png), [receiver + CS4344](../skhema-priemnik-s3-cs4344.png).
 
 The schematics are drawn by `tools/gen_schema.py`; they are also available as SVG.
 
@@ -209,6 +210,66 @@ treble on the receiver (“Clarity”, equalizer bands 2.5 and 6 kHz) or bridge 
   XSMT levels; `n8=9` — samples the pins and prints the bits of one word (a format check).
 - Documentation: [PCM5102A, Texas Instruments](https://www.ti.com/lit/ds/symlink/pcm5102a.pdf) — operation without
   a master clock (section 9.3.5.3, table 11: 32 kHz with BCK 1.024 or 2.048 MHz), the XSMT input (9.3.3).
+
+## External CS4344 DAC on the receiver (firmware 2.85 and later)
+
+The module is a board with the **CS4344** chip (Cirrus Logic) and a 3.5 mm jack: the Digilent Pmod I2S or its copies,
+“CS4344 DAC module”. The header usually has six pins: MCLK, LRCK, SCLK, SDIN, GND, VCC; other boards label them
+differently — BCK or BCLK instead of SCLK, WS or LRC instead of LRCK, DIN or SDATA instead of SDIN.
+
+| Module pin | To | Why |
+|---|---|---|
+| VCC | receiver **3V3** | DAC supply, about 16 mA. If the module has its own regulator and the input is labelled “5V” or “VIN” — the receiver’s 5V |
+| GND | GND | |
+| MCLK | **10** | master clock 8 MHz — without it the CS4344 stays silent |
+| SCLK (BCK, BCLK) | **11** | bit clock, 2 MHz |
+| LRCK (WS) | **12** | channel clock, 31.25 kHz |
+| SDIN (DIN, SDATA) | **13** | I2S data, 16 bit |
+
+![Receiver with CS4344](../skhema-priemnik-s3-cs4344.png)
+
+**Supply 3.3 V, not 5 V.** A logic “1” at the CS4344 inputs starts at 60 % of its supply voltage (datasheet, “Digital
+input characteristics”). At 3.3 V that is 2 V, and the ESP32-S3 pins have margin; at 5 V it is 3 V while the processor
+pin gives 3.3 V — borderline.
+
+**Why the output runs at 31.25 kHz.** The CS4344 requires a master clock (MCLK), and it must be an integer multiple of
+the channel rate (section 4.1: “MCLK/LRCK must be an integer ratio”). For the usual 32 kHz that is 8.192 MHz, which the
+ESP32-S3 can only make with a fractional divider from 160 MHz — the clock periods are uneven (exactly such a clock made
+the PCM5102 rasp in 2.35–2.37). 160 MHz / 20 = 8 MHz divides evenly, and 8 MHz / 256 = 31,250 Hz. The receiver converts
+the 32 kHz audio from the air to this rate itself, with the same tempo adjustment that keeps the buffer: one output
+sample takes 1.024 input samples instead of one. Audio frequencies do not shift; the band reaches 15.6 kHz.
+
+**Line-level output.** Full-scale swing is 0.65 of the supply voltage: about 0.76 V RMS at 3.3 V (the PCM5102 gives
+2.1 V; the CS4344 is 9 dB quieter). Load — at least 3 kΩ, output impedance 100 Ω (“DAC Analog Characteristics”):
+headphones plugged straight into the module jack play quietly and distort when loud. For real use — the **MAX97220**
+headphone amplifier (as after the PCM5102, section above): left and right module outputs → L+ and R+; L−, R− and the
+module ground → ground. The amplifier gain can be raised to 2 (a 470 Ω resistor on the “+” input, or a jumper):
+0.76 V × 2 = 1.5 V, below the ~2 V the MAX97220 gives into 32 Ω headphones at 5 V, so it will not clip (calculated,
+not measured).
+
+**No XSMT.** The CS4344 has no “sound on” pin — pin 14 is not needed. The chip protects itself from clicks (Popguard,
+section 4.5): when the master clock appears, the output rises smoothly in 0.25 s (0.42 s if the module has 10 µF on VQ),
+and sound follows about 2000 samples (≈ 64 ms) later; when the receiver falls asleep and the clock stops, the output
+falls just as smoothly. So after power-on or wake-up the sound appears 0.3–0.5 s later than with the PCM5102.
+
+**Pin 10 and the old PCM5102 wiring.** Pin 10 used to be the “ground” for the SCK of the PCM5102 module, and SCK on the
+module itself may also be shorted to ground with a solder blob. To avoid driving an 8 MHz clock into a short, the
+receiver checks pin 10 before starting the output: it enables a pull-up on it, and if the pin still reads zero it does
+not drive the clock there (`n8=7` says «ВИВІД 10 НА «ЗЕМЛІ»», pin 10 on ground); the CS4344 is silent then. A PCM5102
+module left in CS4344 mode does play: it takes its clock from BCK or from pin 10.
+
+- In the receiver menu: «Вихід звуку» (Audio out) → **CS4344** (the board restarts; it cycles PDM → PCM5102 → CS4344);
+  from the serial port — `o2`. Headphones on pins 17/18 are silent in this mode.
+- Check: `n8=7` — whether pins 10–13 toggle, and the line «головний такт: джерело PLL 160 МГц, ділення 20 ціле (дробу
+  z=0 y=0 x=0) → 8.000 МГц; …; частота виходу 31250 Гц» (master clock from PLL 160 MHz, integer divider 20, 8.000 MHz,
+  output 31,250 Hz); `n8=8` — the real output rate (about 31,250 samples per second).
+- Documentation: [CS4344/45/48, Cirrus Logic, DS613F2](https://statics.cirrus.com/pubs/proDatasheet/CS4344-45-48_F2.pdf) — section 4.1 (master clock, Table 1), 4.2 (bit clock,
+  “External Serial Clock Mode”), 4.5 (Popguard), the analog characteristics and digital input tables.
+
+**What was verified (14.10.2026).** CS4344 mode on a receiver with a PCM5102 module, which accepts the same clock
+scheme: master clock 8.000 MHz (divider 20, no fraction — read from the processor registers), bit clock = master / 4,
+output 31,249 samples per second, the tempo adjustment keeps the buffer, sound plays. **Not verified on an actual
+CS4344 module** — there is none in the kit.
 
 ## Two ways to connect headphones
 

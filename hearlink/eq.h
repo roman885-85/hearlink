@@ -12,18 +12,18 @@ struct Eq6 {
   void set(int k, float b0, float b1, float b2, float a0, float a1, float a2) {
     c[k][0] = b0 / a0; c[k][1] = b1 / a0; c[k][2] = b2 / a0; c[k][3] = a1 / a0; c[k][4] = a2 / a0;
   }
-  void build(const uint8_t *bands, bool lowCut) {
+  void build(const uint8_t *bands, bool lowCut, float fs = SRATE) {   // fs — частота, на которой звено работает (приёмник с CS4344 — 31 250)
     static const float F[5] = { 125, 400, 1000, 2500, 6000 };
     any = false;
     {   // срез низов: фильтр Баттерворта 100 Гц
-      float w = 2 * PI * 100.0f / SRATE, cs = cosf(w), al = sinf(w) / (2 * 0.7071f);
+      float w = 2 * PI * 100.0f / fs, cs = cosf(w), al = sinf(w) / (2 * 0.7071f);
       set(0, (1 + cs) / 2, -(1 + cs), (1 + cs) / 2, 1 + al, -2 * cs, 1 - al);
       on[0] = lowCut;
       any |= on[0];
     }
     for (int b = 0; b < 5; b++) {
       int v = bands[b] > 12 ? 6 : bands[b];
-      float A = powf(10.0f, (v - 6) * 2.0f / 40.0f), w = 2 * PI * F[b] / SRATE, cs = cosf(w), sn = sinf(w);
+      float A = powf(10.0f, (v - 6) * 2.0f / 40.0f), w = 2 * PI * F[b] / fs, cs = cosf(w), sn = sinf(w);
       on[b + 1] = v != 6;
       any |= on[b + 1];
       if (b == 0 || b == 4) {   // «полки»: низ и верх

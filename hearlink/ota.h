@@ -68,6 +68,10 @@ struct __attribute__((packed)) OtaSt {
   } r[OTA_RANGES];
 };
 #define OTA_PKT 250
+// Сколько передатчик досылает недостающее отстающим после того, как образ отправлен целиком. Дольше — отстающим
+// отбой (обновятся в другой раз), остальные записывают, звук возвращается в эфир. До 2.66 предела не было: один
+// приёмник, принимающий урывками, держал звук всего набора остановленным, пока раздачу не отменяли руками.
+#define OTA_FILL_MAX_MS 180000
 
 // Длина образа прошивки в разделе: заголовок, куски, контрольный байт с добивкой до 16, отпечаток (если есть).
 static uint32_t otaImageLen(const uint8_t *m, uint32_t cap) {
@@ -275,7 +279,10 @@ static void otaRxSend() {
   size_t bl = offsetof(OtaSt, r) + nr * 4;
   uint8_t *body = (uint8_t *)s;
   if (!secSeal(SEC_OTAST, h->session, h->n, h->from, pkt, OTA_AAD, body, bl, body + bl)) return;
-  rxSend(pkt, sizeof(OtaHdr) + bl + SEC_TAG);
+  // на адрес передатчика, с подтверждением (как сообщения о себе, см. radio.h): при слабом сигнале сообщения «всем»
+  // терялись, и обновление такого приёмника шло бы рывками
+  for (int i = 0; i < 30 && rxTxBusy(); i++) delay(1);
+  rxSendTo(!rxUniOff && rxUniReady() ? rxPeerMac : BCAST, pkt, sizeof(OtaHdr) + bl + SEC_TAG);
 }
 
 // Отпечаток, приписанный в хвост образа собственной прошивки (последние 32 байта), и длина образа: по ним файл на
@@ -684,15 +691,20 @@ static void otaTxTask(void *) {
   }
   OtaCount c = otaTxCount(8000);
   uint8_t result = OT_DONE;
+  bool late = false;   // досылка затянулась: отстающим — отбой
   if (o.cancel) result = OT_CANCELLED;
   else if (!c.want && !o.force) result = OT_NOBODY;
   else {
     o.stage = OT_SEND;
-    uint32_t idx = 0, lastAnn = millis(), lastPoll = 0, emptySince = 0;
+    uint32_t idx = 0, lastAnn = millis(), lastPoll = 0, emptySince = 0, fillSince = 0;
     for (;;) {
       uint32_t now = millis();
       if (o.cancel) {
         result = OT_CANCELLED;
+        break;
+      }
+      if (fillSince && now - fillSince > OTA_FILL_MAX_MS) {   // отстающих больше не ждём (см. OTA_FILL_MAX_MS)
+        late = true;
         break;
       }
       if (now - lastAnn > 500) {   // объявление повторяется: приёмник, включённый позже, тоже подхватит
@@ -701,6 +713,7 @@ static void otaTxTask(void *) {
       }
       if (!o.needN) {   // всё отправлено: спрашиваем, чего кому не хватает
         o.stage = OT_FINISH;
+        if (!fillSince) fillSince = now ? now : 1;
         c = otaTxCount(8000);
         if (!c.recv) break;   // у всех, кто отвечает, образ целиком (или никто уже не отвечает)
         if (o.force && !c.want) break;
@@ -713,25 +726,27 @@ static void otaTxTask(void *) {
         continue;
       }
       emptySince = 0;
-      // следующий нужный блок по кругу
-      uint32_t b = idx, tries = 0;
-      while (tries < o.blocks) {
-        if ((b & 31) == 0 && !o.need[b >> 5]) {
-          tries += 32;
-          b += 32;
-          if (b >= o.blocks) b = 0;
-          continue;
-        }
-        if (o.need[b >> 5] & (1u << (b & 31))) break;
-        tries++;
-        if (++b >= o.blocks) b = 0;
+      // Следующий нужный блок по кругу, начиная с idx: слова карты по порядку; в слове, где стоит idx, сперва биты от
+      // idx и дальше, а то, что в нём до idx, — в самом конце круга.
+      // До 2.67 круг считался шагами, и пустое последнее слово карты (в нём блоков меньше 32) стоило 32 шага: круг
+      // кончался, не дойдя до блоков прямо перед idx. Если не хватало только их, блок не находился никогда — раздача
+      // крутилась на месте, ничего не слала и не опрашивала, звук набора стоял (11.10: дважды подряд приёмник замер
+      // на 99 % — «лишилось надіслати 2, надіслано 14057» без движения).
+      uint32_t words = (o.blocks + 31) / 32, b = UINT32_MAX;
+      for (uint32_t step = 0; step <= words && b == UINT32_MAX; step++) {
+        uint32_t w = ((idx >> 5) + step) % words, m = o.need[w];
+        if (step == 0) m &= ~0u << (idx & 31);
+        else if (step == words) m &= ~(~0u << (idx & 31));
+        if (m) b = w * 32 + __builtin_ctz(m);
       }
-      if (tries >= o.blocks) {   // счёт разошёлся с картой — пересчитать
+      if (b >= o.blocks) {   // ничего не нашлось (или отмечен блок за концом образа): счёт разошёлся с картой — пересчитать
         portENTER_CRITICAL(&otaMux);
+        if (b != UINT32_MAX) o.need[b >> 5] &= ~(1u << (b & 31));
         uint32_t n = 0;
         for (uint32_t i = 0; i < o.blocks; i++) n += (o.need[i >> 5] >> (i & 31)) & 1;
         o.needN = n;
         portEXIT_CRITICAL(&otaMux);
+        vTaskDelay(1);   // и не крутиться без передышки
         continue;
       }
       portENTER_CRITICAL(&otaMux);
@@ -747,7 +762,8 @@ static void otaTxTask(void *) {
       if ((o.sent % 12) == 0) vTaskDelay(1);
     }
   }
-  if (result == OT_CANCELLED)
+  if (late) Serial.printf("оновлення: досилання тривало довше %u с — приймачам, які ще приймали, відбій (оновляться іншим разом)\n", (unsigned)(OTA_FILL_MAX_MS / 1000));
+  if (result == OT_CANCELLED || late)   // отбой действует только на тех, кто ещё принимает: записывающим он не мешает
     for (int i = 0; i < 12; i++) {
       otaTxSignal(OTA_CANCEL);
       vTaskDelay(pdMS_TO_TICKS(20));
@@ -894,6 +910,21 @@ static void otaAutoTick() {
       memcpy(txDoubleWho, who, 3);
       txDoubleWhy = why;
       txDoubleOk = !why;
+      // Двойной пакет «с точными копиями» (с 2.77, proto.h) — по тому же правилу: каждый приёмник из списка сообщал
+      // 2.77 или новее. Иначе двойные идут прежнего вида (сжатые копии) — их понимают с 2.60.
+      bool dupOk = !why;
+      portENTER_CRITICAL(&peerMux);
+      for (auto &p : peers)
+        if (p.used && !(p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 77))) dupOk = false;
+      portEXIT_CRITICAL(&peerMux);
+      txDupOk = dupOk;
+      // Подполосный кодек (с 2.79, proto.h — Q_SUB) — по тому же правилу: все приёмники из списка сообщали 2.79+
+      bool subOk = !why;
+      portENTER_CRITICAL(&peerMux);
+      for (auto &p : peers)
+        if (p.used && !(p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 79))) subOk = false;
+      portEXIT_CRITICAL(&peerMux);
+      txSubOk = subOk;
     }
   }
   if (!cfg.autoUpd || now < 20000 || otaTxActive() || txPause || (lastStart && now - lastStart < 120000)) return;

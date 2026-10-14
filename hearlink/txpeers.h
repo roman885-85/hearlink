@@ -18,8 +18,7 @@ struct Peer {
   int8_t rssi, rssiHere;      // как он слышит передатчик и как передатчик слышит его
   uint16_t uptimeMin;
   uint32_t seenMs;            // когда последний раз сообщал о себе (0 — в этом включении ни разу)
-  bool wantOff;               // каким его хотят видеть с передатчика
-  uint32_t enforceUntil;      // до этого времени команду «включить/выключить» повторять, если приёмник ещё не такой
+  bool wantOff;               // каким его держит передатчик: это состояние главное, приёмник под него подводится (с 2.64)
   uint8_t dev[32];            // личный ключ приёмника (шифр 16 + подпись 16) — им закрыт новый ключ набора при смене
   bool hasDev;
   volatile uint8_t keyPush;   // сколько раз ещё послать ему новый ключ набора
@@ -31,11 +30,25 @@ struct Peer {
   uint8_t fwMaj, fwMin;       // точная версия прошивки (приёмники с 2.42; у прежних — нули)
   uint8_t boost;              // усиление приёмника (с 2.48): 0…12 = 0…+24 дБ
   uint8_t lock;               // блокировка ручки приёмника (с 2.46): 0 — нет, 1 — меню, 2 — громкость, 3 — всё
+  uint8_t fx[7];              // обработка «для слуха» (с 2.68): шумозаглушение, сжатие, «в паузах» — по 0…3; с 2.72 —
+                              // чувствительность 0…4, порог паузы 0…4, закрытие паузы 0…2, образец шума (0 сам, 1 запомнен)
+  bool hasFx;                 // приёмник сообщил их (RxInfo2) — значит, понимает CMD_SET2
   uint8_t eq[5], lowCut;      // эквалайзер приёмника (с 2.45); hasEq — сообщает ли
   bool hasEq;
   uint8_t autoTries;          // сколько раз в это включение передатчик сам пытался его обновить
   uint32_t autoNeedMs;        // с какого времени он на связи, не спит и с прошивкой старее, чем у передатчика
   uint32_t parSetMs;          // когда настройку сменили с передатчика: 2,5 с после этого сообщения приёмника её не затирают
+  // счёт сообщений о себе (с 2.64; печатает P, в журнал на карте идёт «ст=»)
+  uint32_t stGot, stMiss;     // получено / не дошло (по промежуткам между полученными: приёмник шлёт их раз в 2,0–2,3 с)
+  uint32_t stPend;            // из полученных — пришло, пока собственный пакет передатчика ждал у драйвера
+  uint16_t stGot10, stMiss10; // получено и не дошло за текущие 10 с журнала
+  uint32_t stPh[11];          // через сколько после своего последнего пакета пришло сообщение: по 0,5 мс; последняя — 5 мс и дольше
+  // с 2.73: по этому «сама» выбирает скорость радио (rateAutoTick) и считается, сколько звука приёмник потерял
+  float rssiSm;               // как он слышит передатчик, сглажено по нескольким сообщениям (одно — уровень одного пакета)
+  uint8_t badRun;             // сколько сообщений подряд были с пропавшими кадрами или потерями от 10 %
+  uint32_t aN, aLossSum;      // с команды P0: сообщений и сумма их потерь (в десятых долях процента)
+  uint32_t aLost, aUnder;     // миллисекунд пропавшего звука (кадры, которых не оказалось и в запасных копиях) и провалов
+  uint32_t aBad, aCap;        // сообщений с пропавшими кадрами; сообщений, где счёт упёрся в предел (на деле было больше)
 };
 static Peer peers[PEERS_MAX];
 static portMUX_TYPE peerMux = portMUX_INITIALIZER_UNLOCKED;
@@ -392,6 +405,27 @@ static void pairPrint() {
 
 // из задачи Wi-Fi: пришли сведения приёмника
 static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
+  if (len == (int)sizeof(RxInfo2)) {   // настройки обработки «для слуха» (2.68+): подпись и свежесть — как у остальных сообщений
+    const RxInfo2 *ri = (const RxInfo2 *)data;
+    uint8_t body[INFO2_BODY];
+    if (!secOpen(SEC_RXINFO2, ri->echoEpoch, ri->echoSeq, ri->id, data, ST_CLEAR, data + ST_CLEAR, INFO2_BODY, data + ST_CLEAR + INFO2_BODY, body)) {
+      secBadTag = secBadTag + 1;
+      return;
+    }
+    if (ri->echoEpoch != secEpoch || (uint32_t)(txSeqNow - ri->echoSeq) > 6000) {
+      secReplay = secReplay + 1;
+      return;
+    }
+    portENTER_CRITICAL(&peerMux);
+    int k = peerFind(ri->id);
+    if (k >= 0) {
+      if (!peers[k].parSetMs || msSince(peers[k].parSetMs) > 2500)
+        for (int j = 0; j < 7; j++) peers[k].fx[j] = body[j] > (j < 3 ? 3 : 4) ? 0 : body[j];   // fx[3] и spare[0…3] идут подряд
+      peers[k].hasFx = true;
+    }
+    portEXIT_CRITICAL(&peerMux);
+    return;
+  }
   if (len == (int)sizeof(RxInfo)) {   // настройки приёмника (2.32+): подпись и свежесть проверяются так же, как у сведений
     const RxInfo *ri = (const RxInfo *)data;
     uint8_t body[INFO_BODY];
@@ -479,89 +513,211 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
     p.rssi = st->rssi;
     p.rssiHere = rssiHere;
     p.uptimeMin = st->uptimeMin;
+    {   // для выбора скорости и для счёта потерь звука (с 2.73)
+      bool cont = p.seenMs && msSince(p.seenMs) < 15000 && p.rssiSm < 0;
+      p.rssiSm = cont ? p.rssiSm + (st->rssi - p.rssiSm) * 0.35f : (float)st->rssi;
+      bool bad = st->lostFrames > 0 || st->lossPm >= 100;
+      p.badRun = !cont ? (bad ? 1 : 0) : bad ? (p.badRun < 250 ? p.badRun + 1 : 250) : 0;
+      p.aN++;
+      p.aLossSum += st->lossPm;
+      p.aLost += st->lostFrames * (qFrameUs(txQNow < Q_COUNT ? (int)txQNow : Q_HI) / 1000);
+      p.aUnder += st->underMs;
+      if (st->flags & ST_PLAYING) txLostMsAll = txLostMsAll + st->lostFrames * (qFrameUs(txQNow < Q_COUNT ? (int)txQNow : Q_HI) / 1000) + st->underMs;
+      if (st->lostFrames) p.aBad++;
+      if (st->lossPm == 255 || st->lostFrames == 255 || st->underMs == 255) p.aCap++;
+    }
+    {   // счёт: сколько сообщений дошло и сколько, судя по промежутку, пропало; и когда они приходят (см. radio.h, «замер»)
+      uint32_t gap = p.seenMs ? millis() - p.seenMs : 0;
+      if (gap && gap < 60000) {
+        uint32_t n = (gap + 1075) / 2150;
+        if (n > 1) {
+          p.stMiss += n - 1;
+          p.stMiss10 += n - 1;
+        }
+      }
+      p.stGot++;
+      p.stGot10++;
+      uint32_t ph = ((uint32_t)esp_timer_get_time() - rDoneUs) / 500;
+      p.stPh[ph > 10 ? 10 : ph]++;
+      if ((int32_t)(rPut - rGot) > 0) {
+        p.stPend++;
+        rStMarkSlot = rGot;
+        rStMarkPeer = (int8_t)i;
+      }
+    }
     p.seenMs = millis() ? millis() : 1;
   }
   bool resend = false, off = false;
   uint8_t id[3];
   if (i >= 0) {
     Peer &p = peers[i];
+    // Включён приёмник или выключен — решает передатчик (владелец 10.10: «удаленное управление с передатчика является
+    // приоритетным»). Приёмник сообщил о себе не в том состоянии — команда повторяется, пока он не подчинится: так
+    // доходит и до спящего (он слушает эфир урывками), и до приёмника с прошивкой до 2.64, который включили его же
+    // ручкой. До 2.64 команду повторяли 15 с, а потом передатчик принимал то состояние, что сообщил приёмник.
     bool isOff = p.flags & ST_OFF;
     if (isOff != p.wantOff) {
-      if (millis() < p.enforceUntil) {   // команда ещё не дошла — повторить
-        resend = true;
-        off = p.wantOff;
-        memcpy(id, p.id, 3);
-      } else {                           // приёмник включили его же ручкой — так тому и быть
-        p.wantOff = isOff;
-        peersDirty = true;
-      }
+      resend = true;
+      off = p.wantOff;
+      memcpy(id, p.id, 3);
     }
   }
   portEXIT_CRITICAL(&peerMux);
   if (resend) peerCommand(id, CMD_ENABLE, off ? 0 : 1);
 }
 
-// Скорость радио «сама». Замер 06.10 на столе (сигнал у приёмника −53 и −33 дБм): на 6, 12 и 24 Мбит/с терялось
-// 3–8 % пакетов, на 11, 5,5, 2 и 1 — 0–2 %. Старый способ передачи (одна несущая) лучше держит узкие помехи
-// вроде Bluetooth. Поэтому лестница — из таких скоростей: 11 → 5,5 → 2 → 1 → 0,5 Мбит/с.
-// Смотрим на самого слабого из приёмников на связи. Вниз — когда он слышит плохо или два отчёта подряд теряет
-// больше 4 % пакетов; вверх — когда сигнал с запасом и потерь меньше 1 %. Если шаг вниз потерь не убавил
-// (мешают столкновения, а они длинному пакету вреднее) — шаг назад и минута без новых попыток.
-// Ниже 5,5 лестница идёт, только если туда помещается выбранное качество звука.
+// Скорость радио «сама» (переписано в 2.73 после замера 12.10). До этого — лестница 5,5 → 2 → 1 → 0,5 Мбит/с, по
+// которой при качестве «найвища» идти было некуда: ниже 5,5 она спускалась, только если туда помещалось ВЫБРАННОЕ
+// качество. Владелец 12.10: «звук с приемников пропадает, а если на среднем уровне сигнала, вообще отключается»;
+// «главный приоритет — стабильная связь и беспрерывный звук даже при слабом сигнале».
+// Замер 12.10 (tools/ratescan.py; дальний приёмник, уровень меняли мощностью передатчика, по 36 с на режим; второе
+// число — сколько звука пропало за эти 36 с: кадры, которых не оказалось и в запасных копиях):
+//   сигнал     5,5 «найвища»       2 «стандартна»     1 «мова»             0,5 «дальня»
+//   −77 дБм    2,5 %, 0 мс         3,6 %, 28 мс       2,7 %, 0 мс          1,2 %, 0 мс
+//   −82…−83    >25 %, звука нет    17 %, 196 мс       9 %, 8 мс            7,5 %, 120 мс
+//   −86…−89    —                   >25 %, звука нет   16 %, 208 мс (−86)   24 %, 2 с (−87)
+//                                                     >25 %, нет (−88)
+// Обрыв у 5,5 Мбит/с — между −77 и −80 дБм, у 1 Мбит/с — около −87: девять децибел запаса. 2 Мбит/с даёт из них
+// три и теряет больше (пакет длинный, а кадр короткий — эфир занят на треть), 0,5 — не лучше 1. Поэтому ступеней
+// две: 5,5 Мбит/с с выбранным качеством и 1 Мбит/с, где качество само опускается до «мова» (qForRate, radio.h).
+// На 11 и выше «сама» не поднимается с 06.10: «выше 5,5 — потери даже с приёмником рядом» (замер тогда же).
+// Вниз — быстро: самый слабый из играющих приёмников слышит передатчик на −75 дБм и хуже (сглаженно) либо два его
+// сообщения подряд — с пропавшим звуком при сигнале слабее −68 (у сильного приёмника потери — это занятый эфир,
+// скорость тут не поможет; не считаются и секунды, когда передатчик сам не мог выйти в эфир). Вверх — не спеша:
+// две минуты подряд все слышат лучше −70 дБм и без пропаж. Смена ступени — это перестройка всех приёмников (у
+// каждого пауза в звуке на 40–70 мс), поэтому частить нельзя: вернулись наверх, а в ближайшие две минуты пришлось
+// спуститься снова — следующая попытка вдвое позже (от двух минут до двадцати); десять минут наверху — срок прежний.
+// Приёмник пропал со связи слабым и не сказав, что засыпает, — три минуты держим нижнюю ступень: на 5,5 он мог
+// просто перестать слышать передатчик. Выключенные с передатчика в счёт не идут: они не играют.
+// С 2.78 ступени работают и при скорости, выбранной вручную: выбранная — ВЕРХНЯЯ ступень, вниз (до 1 Мбит/с) —
+// только ради слабого приёмника и с сообщением на экране. Владелец 12.10 держал постоянную 5,5 Мбит/с и получал
+// ровно то, от чего ступени придуманы: «при уровне сигнала 75-80 приемник теряет сеть полностью» (журнал: на −72…−74
+// потери 10–23 %, на −77…−84 звука нет), — а главным назвал «стабильную связь и безпрерывный звук даже при слабом
+// сигнале». «Сама» отличается лишь тем, что верхняя ступень у неё всегда 5,5. Выбраны 1 или 0,5 Мбит/с — опускаться
+// некуда. Для замеров на строго заданной скорости нижняя ступень запрещается с порта: Ql0 (не запоминается).
+static volatile uint8_t rateWhy;      // для «?»: 0 — приёмников нет, 1 — все слышат хорошо, 2 — слабый сигнал, 3 — у слабого
+                                      // пропадает звук, 4 — слабый пропал со связи, 5 — сигнал уже хороший, ждём срока,
+                                      // 6 — нижней ступени нет (выбрана 1 или 0,5 Мбит/с) либо она запрещена (Ql0)
+static volatile int8_t rateWhyRssi;   // сигнал самого слабого играющего приёмника
+static uint8_t rateWhyId[3];
+static volatile uint32_t rateSteps;   // сколько раз скорость менялась сама в это включение
+static volatile bool rateLadderOff;   // проверка (порт: Ql0): скорость стоит на выбранной, вниз не идёт
+static volatile uint8_t rateKick;     // оператор только что выбрал скорость или качество (или сменил «Слабкий сигнал»): если стоим
+                                      // на нижней ступени — подняться сразу, когда приёмники это позволяют, иначе объяснить на экране
+// сообщение на экран о смене ступени (показывает ui_tx.h, когда номер сменился): 1 — опустились, 2 — вернулись,
+// 3 — оператор выбрал скорость или качество, а подняться нельзя: почему (rateNoteWhy — как rateWhy: 2, 3 или 4)
+static volatile uint32_t rateNoteSeq;
+static volatile uint8_t rateNoteKind, rateNoteWhy;
+static volatile int8_t rateNoteRssi;
+static char rateNoteName[NAME_LONG];
+static inline uint8_t rateTopNow() {   // верхняя ступень: у «самой» — 5,5 Мбит/с, иначе выбранная вручную
+  return cfg.rateAuto ? (uint8_t)R_5M : cfg.rateTop < N_RATES ? cfg.rateTop : cfg.rateIdx;
+}
+// лестница сейчас держит нижнюю ступень (а выбрана скорость выше)
+static inline bool rateHeldLow() {
+  uint8_t top = rateTopNow();
+  return cfg.rateLadder && !rateLadderOff && top != R_1M && top != R_LR500 && cfg.rateIdx == R_1M;
+}
 static void rateAutoTick() {
-  static uint32_t last, noDownUntil;
-  static uint8_t bad, good, trial;     // trial: сколько отчётов осталось до оценки шага вниз
-  static int lossWas, lossSum;
-  if (!cfg.rateAuto || millis() - last < 2500) return;
-  last = millis();
-  int worst = 0, loss = 0, n = 0;
-  for (auto &p : peers)
-    if (p.used && peerOnline(p)) {
-      if (!n || p.rssi < worst) worst = p.rssi;
-      if (p.lossPm > loss) loss = p.lossPm;
-      n++;
-    }
-  // Потолок — 5,5 Мбит/с. На 11 лестница начиналась до 06.10; сняли: на 8 м она теряла больше, чем 5,5
-  // (3,5 против 2,3 %), а у владельца «выше 5,5 — потери даже с приёмником рядом» (замер: на 11 передатчик раз
-  // упёрся в занятый эфир на 68 мс и потерял пакеты, на 6–24 — 0,3–0,6 % при сигнале −21 дБм, на 5,5 — 0,0 %).
-  static const uint8_t LAD[] = { R_5M, R_2M, R_1M, R_LR500 };
-  static const int8_t DOWN[] = { -80, -86, -90 };   // сигнал слабее — на ступень ниже
-  static const int8_t UP[] = { -72, -78, -84 };     // сильнее — на ступень выше
-  int low = 0, pos = 0;
-  for (int i = 0; i < 4; i++) {
-    if (qFits(cfg.quality, LAD[i])) low = i;
-    if (LAD[i] == cfg.rateIdx) pos = i;
+  // upMul — во сколько раз растянут срок возвращения: удваивается, когда после возвращения пришлось опуститься снова
+  static uint32_t last, goodSince, stepDownMs, stepUpMs, upMul = 1;
+  uint32_t now = millis();
+  bool kick = rateKick != 0;
+  if (now - last < 1000 && !kick) return;
+  last = now;
+  rateKick = 0;
+  if (kick) {   // оператор распорядился сам — прежние «штрафные» сроки не в счёт
+    upMul = 1;
+    stepDownMs = 0;
   }
-  if (!n) {
-    pos = 0;
-    bad = good = trial = 0;
-  } else {
-    bad = loss > 40 ? bad + 1 : 0;       // потери — в десятых долях процента
-    good = loss < 10 ? good + 1 : 0;
-    if (trial) {
-      lossSum += loss;
-      if (!--trial && lossSum / 3 * 10 > lossWas * 7 && pos > 0 && worst >= DOWN[pos - 1]) {   // не помогло
-        pos--;
-        noDownUntil = millis() + 60000;
-        bad = 0;
+  if (!cfg.rateAuto && cfg.rateTop >= N_RATES) cfg.rateTop = cfg.rateIdx;   // настройки от прошивки до 2.78: выбранной считаем ту, что стоит
+  uint8_t top = rateTopNow();
+  if (top == R_1M || top == R_LR500 || rateLadderOff || !cfg.rateLadder) {   // опускаться некуда или запрещено
+    rateWhy = 6;
+    rateWhyRssi = 0;
+    goodSince = 0;
+    if (cfg.rateIdx != top) {
+      cfg.rateIdx = top;
+      rApply = true;
+    }
+    return;
+  }
+  float worst = 0;
+  int n = 0;
+  bool lossy = false, ghost = false;
+  uint8_t wid[3] = { 0, 0, 0 };
+  char wname[NAME_LONG] = "";
+  portENTER_CRITICAL(&peerMux);
+  for (auto &p : peers) {
+    if (!p.used || !p.seenMs || (p.flags & ST_OFF)) continue;
+    if (peerOnline(p)) {
+      bool bad = p.badRun >= 2 && p.rssiSm < -68.0f;
+      if (!n || p.rssiSm < worst || (bad && !lossy)) {
+        if (!n || p.rssiSm < worst) worst = p.rssiSm;
+        memcpy(wid, p.id, 3);
+        memcpy(wname, p.name, NAME_LONG);
       }
-    } else if (pos < low && worst < DOWN[pos]) pos++;
-    else if (pos < low && bad >= 2 && millis() > noDownUntil) {
-      pos++;
-      lossWas = loss;
-      lossSum = 0;
-      trial = 3;
-      bad = 0;
-    } else if (pos > 0 && worst > UP[pos - 1] && good >= 4) {
-      pos--;
-      good = 0;
+      if (bad) lossy = true;
+      n++;
+    } else if (msSince(p.seenMs) < 180000 && p.rssiSm <= -72.0f && !(p.flags & ST_SLEEP)) ghost = true;
+  }
+  portEXIT_CRITICAL(&peerMux);
+  bool jam = txSkipMs && msSince(txSkipMs) < 4000;
+  bool low = cfg.rateIdx == R_1M;
+  bool weak = n && worst <= -75.0f, strong = !n || worst >= -70.0f;
+  uint8_t want = low ? (uint8_t)R_1M : top;   // на любой иной скорости, чем нижняя, встаём на верхнюю ступень
+  uint8_t why = !n ? 0 : 1;
+  if (!low) {
+    if (weak || (lossy && !jam) || ghost) {
+      want = R_1M;
+      why = weak ? 2 : lossy ? 3 : 4;
+      if (stepUpMs && msSince(stepUpMs) < 120000 && upMul < 16) upMul *= 2;
+    } else if (stepUpMs && msSince(stepUpMs) > 600000) upMul = 1;
+  } else {
+    // Срок возвращения (с 2.83): сигнал слабейшего с запасом (−66 дБм и лучше — на 9 дБ выше порога ухода вниз) —
+    // 30 с ровного приёма; у самого порога возврата (−70…−66) — прежние 120 с. До 2.83 было 120 с всегда, и после
+    // пары переходов туда-обратно срок вырастал до 20 минут: при хорошем сигнале передатчик выглядел застрявшим.
+    uint32_t wait = (n && worst < -66.0f ? 120000u : 30000u) * upMul;
+    if (wait > 600000) wait = 600000;
+    bool ok = strong && !lossy && !ghost;
+    why = !strong ? 2 : lossy ? 3 : ghost ? 4 : 5;
+    if (!ok) goodSince = 0;
+    else if (!goodSince) goodSince = now | 1;
+    if (ok && msSince(goodSince) >= wait && (!stepDownMs || msSince(stepDownMs) >= wait)) {
+      want = top;
+      why = !n ? 0 : 1;
+    }
+    if (kick) {   // оператор выбрал скорость или качество: подняться сейчас, если приёмники это позволяют
+      if (!weak && !lossy && !ghost) {
+        want = top;
+        why = !n ? 0 : 1;
+      } else {   // нельзя — сказать на экране почему
+        wname[NAME_LONG - 1] = 0;
+        memcpy(rateNoteName, wname, NAME_LONG);
+        rateNoteWhy = weak ? 2 : lossy ? 3 : 4;
+        rateNoteRssi = n ? (int8_t)lroundf(worst) : 0;
+        rateNoteKind = 3;
+        rateNoteSeq = rateNoteSeq + 1;
+      }
     }
   }
-  if (pos > low) pos = low;
-  uint8_t cur = cfg.rateIdx, want = LAD[pos];
-  if (want != cur) {
+  rateWhy = why;
+  rateWhyRssi = n ? (int8_t)lroundf(worst) : 0;
+  memcpy(rateWhyId, wid, 3);
+  if (want != cfg.rateIdx) {
+    bool down = want == R_1M;
+    if (down) stepDownMs = now | 1;
+    else stepUpMs = now | 1;
+    goodSince = 0;
+    rateSteps = rateSteps + 1;
     cfg.rateIdx = want;
     rApply = true;
+    if (down || low) {   // сказать оператору, что и почему (смена с прежней «не той» скорости на верхнюю — без сообщения)
+      wname[NAME_LONG - 1] = 0;
+      memcpy(rateNoteName, wname, NAME_LONG);
+      rateNoteKind = down ? 1 : 2;
+      rateNoteSeq = rateNoteSeq + 1;
+    }
   }
 }
 
@@ -689,6 +845,23 @@ static void peerForget(int i) {
   peersDirty = true;
 }
 
+// P0 — начать счёт сообщений заново (для сравнения «до и после»)
+static void peersStatZero() {
+  portENTER_CRITICAL(&peerMux);
+  for (int i = 0; i < PEERS_MAX; i++) {
+    Peer &p = peers[i];
+    p.stGot = p.stMiss = p.stPend = 0;
+    p.stGot10 = p.stMiss10 = 0;
+    p.aN = p.aLossSum = p.aLost = p.aUnder = p.aBad = p.aCap = 0;
+    memset(p.stPh, 0, sizeof(p.stPh));
+    rStDtSum[i] = 0;
+    rStDtN[i] = 0;
+  }
+  rDtAllSum = 0;
+  rDtAllN = 0;
+  portEXIT_CRITICAL(&peerMux);
+}
+
 static void peersPrint() {
   int n = 0;
   for (int i = 0; i < PEERS_MAX; i++) {
@@ -706,6 +879,12 @@ static void peersPrint() {
     if (p.hasEq)   // приёмники с 2.45: эквалайзер и (с 2.46) блокировка ручки
       Serial.printf("    еквалайзер %d %d %d %d %d дБ, зріз низів %u; блокування ручки %u (0 немає, 1 меню, 2 гучність, 3 усе); підсилення +%u дБ; прошивка %u.%02u\n",
                     (p.eq[0] - 6) * 2, (p.eq[1] - 6) * 2, (p.eq[2] - 6) * 2, (p.eq[3] - 6) * 2, (p.eq[4] - 6) * 2, p.lowCut, p.lock, p.boost * 2, p.fwMaj, p.fwMin);
+    if (p.hasFx) Serial.printf("    обробка звуку: шумозаглушення %u, стискання %u, у паузах %u (i16, i17, i18 = 0…3); чутливість %u (i19 = 0…4), поріг пауз +%u дБ (i20 = 0…4), закриття пауз %u (i21 = 0…2), зразок шуму %s (i22 = 2 — запам'ятати зараз, 0 — сам)\n", p.fx[0], p.fx[1], p.fx[2], p.fx[3], 3 + 3 * p.fx[4], p.fx[5], p.fx[6] ? "запам'ятовано" : "сам");
+    if (p.stGot) {
+      Serial.printf("    повідомлень про себе: отримано %u, не дійшло близько %u (%.1f %%); із отриманих %u прийшли, поки власний пакет передавача чекав ефіру — такий пакет ішов до ефіру в середньому %u мкс (звичайний — %u мкс)\n", (unsigned)p.stGot, (unsigned)p.stMiss, 100.0f * p.stMiss / (p.stGot + p.stMiss), (unsigned)p.stPend, rStDtN[i] ? (unsigned)(rStDtSum[i] / rStDtN[i]) : 0u, rDtAllN ? (unsigned)(rDtAllSum / rDtAllN) : 0u);
+      Serial.printf("    коли приходять (від попереднього власного пакета, кроком 0,5 мс; остання — 5 мс і довше): %u %u %u %u %u %u %u %u %u %u %u\n", (unsigned)p.stPh[0], (unsigned)p.stPh[1], (unsigned)p.stPh[2], (unsigned)p.stPh[3], (unsigned)p.stPh[4], (unsigned)p.stPh[5], (unsigned)p.stPh[6], (unsigned)p.stPh[7], (unsigned)p.stPh[8], (unsigned)p.stPh[9], (unsigned)p.stPh[10]);
+    }
+    if (p.aN) Serial.printf("    звук від команди P0: повідомлень %u, втрати в середньому %.1f %%; пропало звуку %u мс (у %u повідомленнях), провалів %u мс%s; сигнал згладжено %.0f дБм\n", (unsigned)p.aN, p.aLossSum / 10.0f / p.aN, (unsigned)p.aLost, (unsigned)p.aBad, (unsigned)p.aUnder, p.aCap ? "; лік упирався в межу — насправді більше" : "", p.rssiSm);
   }
   if (!n) Serial.println("  приймачів у списку немає");
 }

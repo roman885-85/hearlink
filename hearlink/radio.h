@@ -64,6 +64,17 @@ static volatile bool rRebooting;          // плата уходит на пер
 // когда ушли последние пакеты — для замера ожидания эфира. Мест 64: при 16 замер «упирался» в 32 мс
 // (очередь длиннее 16 пакетов затирала свои же отметки), и настоящих задержек в 50–60 мс видно не было.
 static volatile uint32_t rSendUs[64], rPut, rGot;
+// ---- замер (с 2.64): доходят ли до передатчика сообщения приёмников о себе и мешают ли им собственные пакеты
+// Передатчик не слышит эфир, пока передаёт сам. Сообщение приёмника (1,3 мс на 1 Мбит/с) должно целиком лечь в
+// промежуток между пакетами звука; если оно ещё идёт, когда пора слать следующий пакет, радио должно подождать его
+// конца. Здесь видно, ждёт ли оно: путь до эфира того пакета, во время которого пришло сообщение, считается отдельно
+// по каждому приёмнику (печатает P). 16 — PEERS_MAX из txpeers.h.
+static volatile uint32_t rDoneUs;                       // когда драйвер последний раз ответил «пакет ушёл», мкс
+static volatile int8_t rStMarkPeer = -1;                // сообщение этого приёмника пришло, пока свой пакет был у драйвера…
+static volatile uint32_t rStMarkSlot;                   // …вот этот пакет: его путь запишется приёмнику на счёт
+static volatile uint32_t rStDtSum[16], rStDtN[16];      // сумма и число таких путей, по приёмникам
+static volatile uint64_t rDtAllSum;                     // и для сравнения — путь всех пакетов
+static volatile uint32_t rDtAllN;
 static volatile int32_t rPendMax;         // наибольшая очередь драйвера за секунду, пакетов (обнуляет отчёт)
 static volatile uint32_t rAirSumUs, rAirN, rAirMaxUs;  // сумма, число и наибольшее ожидание (обнуляет читающий)
 static volatile uint32_t rAir2SumUs, rAir2N, rAir2MaxUs;  // то же для отчёта в порт
@@ -142,6 +153,19 @@ static void radioOnSent(const esp_now_send_info_t *, esp_now_send_status_t statu
     rRevived = rRevived + 1;
   }
   uint32_t dt = (uint32_t)esp_timer_get_time() - rSendUs[rGot & 63];
+  rDoneUs = (uint32_t)esp_timer_get_time();
+  if (dt < 200000) {
+    rDtAllSum = rDtAllSum + dt;
+    rDtAllN = rDtAllN + 1;
+  }
+  if (rStMarkPeer >= 0) {   // во время этого пакета пришло сообщение приёмника (txpeers.h, peerOnStatus)
+    int8_t k = rStMarkPeer;
+    if (rStMarkSlot == rGot && dt < 200000 && k < 16) {
+      rStDtSum[k] = rStDtSum[k] + dt;
+      rStDtN[k] = rStDtN[k] + 1;
+    }
+    rStMarkPeer = -1;
+  }
   if (((rSoloMask >> (rGot & 63)) & 1) && dt < 200000) {
     rSoloSumUs = rSoloSumUs + dt;
     rSoloN = rSoloN + 1;
@@ -185,8 +209,24 @@ static volatile uint32_t rxHealMs;                  // когда радио п�
 //   (ловит только сверка со списком передатчика; снимается перезагрузкой радио); 3 — то же, но перезагрузка радио не
 //   помогает (снимается перезапуском платы); 4 — то же, и перезапуск платы не помогает (признак — в памяти часов).
 static volatile uint8_t rxTxFake;
+// ---- приёмник: сообщения о себе — на адрес передатчика, с подтверждением (с 2.64)
+// До 2.64 приёмник сообщал о себе так же, как передатчик шлёт звук, — «всем»: такой пакет радио не подтверждает и не
+// повторяет. 10.10 приёмник, которого передатчик слышал на −80 дБм, терял так две трети сообщений (счётчик P за пять
+// минут: получено 47, не дошло 90; с живым входом — 27 и 104); три пропажи подряд — и передатчик писал «не на
+// зв'язку», хотя звук у приёмника шёл (владелец: «при уровне хорошего сигнала очень часто пропадает из сети»).
+// Теперь сообщение идёт на адрес передатчика: его радио подтверждает приём, радио приёмника без подтверждения само
+// повторяет пакет, а итог («дошло / не дошло») приёмник узнаёт из ответа драйвера — и недошедшее шлёт заново через
+// четверть секунды, а не через две. Адрес берётся из пакета звука с верной подписью набора.
+static uint8_t rTxMacSeen[6];                 // адрес передатчика из последнего проверенного пакета звука (пишет задача Wi-Fi)
+static volatile bool rTxMacNew;               // он узнан или сменился — главный цикл заведёт его у драйвера (rxUniReady)
+static portMUX_TYPE rTxMacMux = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t rxPeerMac[6];                  // адрес, заведённый у драйвера (только главный цикл)
+static bool rxPeerOk;                         // заведён; запуск ESP-NOW сбрасывает — драйвер список адресатов при этом теряет
+static volatile bool rxTxLastOk;              // итог последней отправки (у адресной — «передатчик подтвердил»)
+static volatile int8_t rxPowerNow;            // с какой мощностью радио приёмника передаёт сейчас, дБм (см. rxlink.h)
 static void rxOnTxDone(const esp_now_send_info_t *, esp_now_send_status_t status) {
   uint32_t now = millis();
+  rxTxLastOk = status == ESP_NOW_SEND_SUCCESS;
   if ((int32_t)(rxTxPut - rxTxGot) > 0) {
     uint32_t w = now - rxTxFirstMs;
     if (w > rxTxWaitMaxMs && w < 60000) rxTxWaitMaxMs = w;
@@ -197,13 +237,17 @@ static void rxOnTxDone(const esp_now_send_info_t *, esp_now_send_status_t status
   rxTxDoneMs = now;
   if (status != ESP_NOW_SEND_SUCCESS) rxTxFail = rxTxFail + 1;
 }
-// Отправка приёмника (только из главного цикла). Возвращает то же, что esp_now_send.
-static esp_err_t rxSend(const uint8_t *pkt, size_t len) {
-  if (rxTxFake >= 2) return ESP_OK;   // «ушло в никуда»
+// Отправка приёмника (только из главного цикла): to — адрес передатчика или BCAST («всем»). Возвращает то же, что
+// esp_now_send.
+static esp_err_t rxSendTo(const uint8_t *to, const uint8_t *pkt, size_t len) {
+  if (rxTxFake >= 2) {   // «ушло в никуда»: и подтверждения, понятно, нет
+    rxTxLastOk = false;
+    return ESP_OK;
+  }
   if ((int32_t)(rxTxPut - rxTxGot) <= 0) rxTxFirstMs = millis();
   rxTxPut = rxTxPut + 1;
   rxTxPutCount = rxTxPutCount + 1;
-  esp_err_t e = rxTxFake == 1 ? ESP_OK : esp_now_send(BCAST, pkt, len);
+  esp_err_t e = rxTxFake == 1 ? ESP_OK : esp_now_send(to, pkt, len);
   if (e != ESP_OK) {
     rxTxPut = rxTxPut - 1;
     rxTxPutCount = rxTxPutCount - 1;
@@ -212,6 +256,37 @@ static esp_err_t rxSend(const uint8_t *pkt, size_t len) {
     if (rxTxErrRun < 255) rxTxErrRun = rxTxErrRun + 1;
   } else rxTxErrRun = 0;
   return e;
+}
+static inline esp_err_t rxSend(const uint8_t *pkt, size_t len) { return rxSendTo(BCAST, pkt, len); }
+// Адрес передатчика известен и заведён у драйвера (главный цикл; зовётся перед адресной отправкой). Канал адресата —
+// «текущий»: приёмник ходит по каналам сам. Скорость — как у всех ответов приёмника, 1 Мбит/с.
+static bool rxUniReady() {
+  if (rTxMacNew || !rxPeerOk) {
+    uint8_t m[6];
+    portENTER_CRITICAL(&rTxMacMux);
+    memcpy(m, rTxMacSeen, 6);
+    rTxMacNew = false;
+    portEXIT_CRITICAL(&rTxMacMux);
+    if (!(m[0] | m[1] | m[2] | m[3] | m[4] | m[5])) return false;   // передатчика ещё не слышали
+    if (rxPeerOk && memcmp(m, rxPeerMac, 6)) {                       // передатчик другой (заменили плату)
+      esp_now_del_peer(rxPeerMac);
+      rxPeerOk = false;
+    }
+    if (!rxPeerOk) {
+      if (esp_now_is_peer_exist(m)) esp_now_del_peer(m);
+      esp_now_peer_info_t pi = {};
+      memcpy(pi.peer_addr, m, 6);
+      pi.ifidx = WIFI_IF_STA;
+      if (esp_now_add_peer(&pi) != ESP_OK) return false;
+      esp_now_rate_config_t rc = {};
+      rc.phymode = RATES[R_1M].mode;
+      rc.rate = RATES[R_1M].rate;
+      esp_now_set_peer_rate_config(m, &rc);
+      memcpy(rxPeerMac, m, 6);
+      rxPeerOk = true;
+    }
+  }
+  return rxPeerOk;
 }
 // свой пакет ещё у драйвера (и ждёт недолго — вставший драйвер смену канала не задерживает: его перезагрузит сторож)
 static inline bool rxTxBusy() {
@@ -253,7 +328,7 @@ static void radioOnRecv2(const esp_now_recv_info_t *info, const uint8_t *data, i
     if (rOnKeyReq) rOnKeyReq((const KeyReq *)data);
     return;
   }
-  if ((len == (int)sizeof(RxStatus) || len == (int)sizeof(RxStatus2) || len == (int)sizeof(RxInfo)) && h->magic == MAGIC_STATUS && h->ver == PROTO_VER && h->kit == cfg.kit) {
+  if ((len == (int)sizeof(RxStatus) || len == (int)sizeof(RxStatus2) || len == (int)sizeof(RxInfo) || len == (int)sizeof(RxInfo2)) && h->magic == MAGIC_STATUS && h->ver == PROTO_VER && h->kit == cfg.kit) {
     if (cfg.isTx) bbMark(BB_PKT, data[0], len);
     if (rOnStatus) rOnStatus(data, len, info->rx_ctrl->rssi);
     return;
@@ -278,16 +353,20 @@ static void radioOnRecv2(const esp_now_recv_info_t *info, const uint8_t *data, i
   uint8_t aq = len >= (int)sizeof(Hdr) ? h->q & Q_MASK : 255;
   bool ast = len >= (int)sizeof(Hdr) && (h->q & Q_STEREO);
   bool adbl = len >= (int)sizeof(Hdr) && (h->q & Q_DOUBLE);   // два кадра в пакете (с 2.60)
-  if (adbl && rxOldSim) {   // проверка (порт приёмника: n11): вести себя как прошивка до 2.60 — двойных пакетов не знать
+  bool asub = len >= (int)sizeof(Hdr) && (h->q & Q_SUB);      // подполосный кодек (с 2.79)
+  if ((adbl || asub) && rxOldSim) {   // проверка (порт приёмника: n11): вести себя как прошивка до 2.60 — двойных пакетов (и нового кодека) не знать
     rForeign = rForeign + 1;
     return;
   }
-  if (aq >= Q_COUNT || h->magic != MAGIC || h->ver != PROTO_VER || (h->q & ~(Q_MASK | Q_STEREO | Q_LANG_EN | Q_DOUBLE)) || (ast && !qStereoOk(aq)) ||
-      (adbl ? (aq != Q_HI || len != qPktLen2(aq, ast)) : (len != qPktLen(aq, ast) && !(aq == Q_HI && ast && len == qPktLen(aq, ast) + SC_LEN)))) {
+  if (aq >= Q_COUNT || h->magic != MAGIC || h->ver != PROTO_VER || (h->q & ~(Q_MASK | Q_STEREO | Q_LANG_EN | Q_DOUBLE | Q_SUB)) || (ast && !qStereoOk(aq)) ||
+      (asub ? (aq != Q_STD || ast || adbl || len != qPktLenSub())
+            : adbl ? (aq != Q_HI || (len != qPktLen2(aq, ast) && len != qPktLen3(aq, ast))) : (len != qPktLen(aq, ast) && !(aq == Q_HI && ast && len == qPktLen(aq, ast) + SC_LEN)))) {
     rForeign = rForeign + 1;
     return;
   }
   rPktSc = !adbl && len != qPktLen(aq, ast);   // «найвища» стерео с копией разности каналов (с 2.43)
+  rPktDup = adbl && len == qPktLen3(aq, ast);   // двойной пакет с точными копиями прошлого пакета (с 2.77)
+  rPktSub = asub;
   if (!rOnAudio) return;   // передатчику чужой звук не нужен
   rLastAnyMs = millis();
   rAnyCh = h->flags >> 4;
@@ -317,6 +396,12 @@ static void radioOnRecv2(const esp_now_recv_info_t *info, const uint8_t *data, i
   }
   rRssi = info->rx_ctrl->rssi;
   rLastRxMs = millis();
+  if (memcmp(rTxMacSeen, info->src_addr, 6)) {   // адрес передатчика — для адресных сообщений о себе (см. rxSendTo)
+    portENTER_CRITICAL(&rTxMacMux);
+    memcpy(rTxMacSeen, info->src_addr, 6);
+    portEXIT_CRITICAL(&rTxMacMux);
+    rTxMacNew = true;
+  }
   rHeardEpoch = h->boot;
   rHeardSeq = h->seq;
   rAudioCount = rAudioCount + 1;
@@ -327,6 +412,7 @@ static void radioSetParams() {
   rLastChanMs = millis();
   esp_wifi_set_channel(cfg.channel, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_max_tx_power(cfg.powerDbm * 4);
+  rxPowerNow = cfg.powerDbm;
   // приёмник отвечает редко и коротко — всегда на самой стойкой обычной скорости (1 Мбит/с)
   int ri = cfg.isTx ? cfg.rateIdx : R_1M;
   esp_now_rate_config_t rc = {};
@@ -353,6 +439,7 @@ static bool radioStartEspNow() {
   esp_now_register_send_cb(cfg.isTx ? radioOnSent : rxOnTxDone);   // приёмник тоже ждёт ответа на свои отправки (с 2.59)
   esp_now_register_recv_cb(radioOnRecv);   // передатчик тоже слушает: приёмники сообщают о себе
   radioSetParams();
+  rxPeerOk = false;   // список адресатов драйвер начал заново — передатчик заведётся при первой адресной отправке
   rPut = 0;
   rGot = 0;
   rLastDoneMs = millis();
@@ -632,6 +719,7 @@ static void radioSerialBegin() {
   xTaskCreatePinnedToCore(rqTask, "rq", 4096, NULL, 21, NULL, 0);
 }
 
+#define RX_SCAN_AFTER_MS 2500
 // Приёмник: если своего передатчика не слышно, обойти каналы по кругу.
 static void radioScanTick() {
   static uint32_t lastHop;
@@ -647,7 +735,11 @@ static void radioScanTick() {
   // передатчиков рядом может быть несколько, а окно добавления открыто на одном
   if (!secHave && msSince(rLastAnyMs, now) < 300 && now - lastHop < 2500) return;
   if (!secHave && rLastAskMs && msSince(rLastAskMs, now) < 600) return;   // только что попросил доступ — дождаться ответа на этом канале
-  if (!cfg.autoChannel || msSince(rLastRxMs, now) < 600 || now - lastHop < 60) return;
+  // На своём канале ждём 2,5 с тишины (до 2.73 — 0,6 с). При слабом сигнале пакеты пропадают и на секунду-другую
+  // (человек заслонил приёмник собой), а ушедший по кругу приёмник бывает на своём канале 60 мс из 780 — и то, что
+  // он ещё мог бы принять, теряет тоже: звук не «прерывался», а пропадал совсем (владелец 12.10). О смене канала
+  // передатчик объявляет заранее (rxHopCh), так что обход нужен лишь тому, кто объявление пропустил.
+  if (!cfg.autoChannel || msSince(rLastRxMs, now) < RX_SCAN_AFTER_MS || now - lastHop < 60) return;
   lastHop = now;
   cfg.channel = cfg.channel % 13 + 1;
   rLastChanMs = now;

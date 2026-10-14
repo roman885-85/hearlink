@@ -1,8 +1,19 @@
 // Поиск свободного канала: передатчик на две секунды замолкает, слушает каждый из 13 каналов по 150 мс
 // и считает, какую долю времени там кто-то передаёт. Встаёт на тот, где тише всего (с учётом соседних:
 // каналы Wi-Fi перекрываются).
+//
+// СИЛЬНЫЙ СОСЕД (с 2.82). Замер 12.10: рядом с передатчиком точка доступа на канале 10 с уровнем −31 дБм, передатчик
+// стоял на канале 13. По счёту занятости канал 13 был чист (чужих кадров 0,3–0,6 % времени: за три канала кадры уже
+// не разбираются), а пакеты ровно раз в 2,5 с ждали эфира 22–35 мс: когда точка шлёт свои длинные медленные кадры,
+// её энергия занимает и наш канал, и радио честно ждёт. Запас приёмников от этого держался 33–46 мс — это и была
+// задержка звука. На канале 1 (девять каналов от точки) ожидание — 4–6 мс.
+// Поэтому при замере запоминается самый сильный маяк каждой точки доступа и её настоящий канал (он записан в самом
+// маяке), и каждому каналу добавляется «риск от соседа»: чем сильнее точка и чем ближе её канал, тем больше.
+// Насколько сигнал точки слабее через N каналов — оценка по форме спектра Wi-Fi (0, 1, 4, 10, 27, 37, 48 дБ); опытом
+// проверены только два случая: через три канала (мешает) и через девять (не мешает).
 #pragma once
 #include "txaudio.h"
+#include "txpeers.h"
 
 void settingsSave();
 
@@ -26,8 +37,88 @@ static inline uint32_t frameAirUs(const wifi_promiscuous_pkt_t *p) {
   return (uint32_t)(pre + p->rx_ctrl.sig_len * 8 / mbps);
 }
 
-static void scanCb(void *buf, wifi_promiscuous_pkt_type_t) {
-  scanAirUs = scanAirUs + frameAirUs((const wifi_promiscuous_pkt_t *)buf);
+static int8_t scanApRssi[13];                // самый сильный маяк точки доступа, работающей на этом канале, дБм (−127 — не слышно)
+static uint8_t scanNear[13];                 // «риск от сильного соседа», 0…60 — уже прибавлен к scanBusy
+
+static void scanCb(void *buf, wifi_promiscuous_pkt_type_t type) {
+  const wifi_promiscuous_pkt_t *p = (const wifi_promiscuous_pkt_t *)buf;
+  scanAirUs = scanAirUs + frameAirUs(p);
+  if (type != WIFI_PKT_MGMT) return;
+  // маяк (0x80) или ответ на опрос (0x50): заголовок 24 байта, 12 байт постоянных полей, дальше элементы «номер,
+  // длина, данные»; элемент 3 — канал, на котором точка работает на самом деле (слышно её и с соседних)
+  int len = (int)p->rx_ctrl.sig_len - 4;
+  const uint8_t *f = p->payload;
+  if (len < 38 || (f[0] != 0x80 && f[0] != 0x50)) return;
+  if (len > 400) len = 400;
+  for (int i = 36; i + 2 <= len;) {
+    int id = f[i], l = f[i + 1];
+    if (i + 2 + l > len) break;
+    if (id == 3 && l == 1) {
+      int c = f[i + 2];
+      if (c >= 1 && c <= 13 && p->rx_ctrl.rssi > scanApRssi[c - 1]) scanApRssi[c - 1] = p->rx_ctrl.rssi;
+      break;
+    }
+    i += 2 + l;
+  }
+}
+
+// Риск от сильных соседей — после замера всех каналов: к занятости канала прибавляется до 60 % за точку, чья энергия
+// на этом канале сильнее −70 дБм (−55 и сильнее — все 60).
+static void scanNearApply() {
+  static const int8_t ATT[7] = { 0, 1, 4, 10, 27, 37, 48 };
+  for (int ch = 1; ch <= 13; ch++) {
+    int leak = -127;
+    for (int c = 1; c <= 13; c++) {
+      if (scanApRssi[c - 1] <= -127) continue;
+      int d = abs(ch - c), v = scanApRssi[c - 1] - ATT[d > 6 ? 6 : d];
+      if (v > leak) leak = v;
+    }
+    int risk = leak <= -70 ? 0 : (leak + 70) * 4;
+    if (risk > 60) risk = 60;
+    scanNear[ch - 1] = (uint8_t)risk;
+    int b = scanBusy[ch - 1] + risk;
+    scanBusy[ch - 1] = (uint8_t)(b > 100 ? 100 : b);
+  }
+}
+
+// Как пакеты ждут эфира на нынешнем канале — за последнюю минуту работы (для подсказки на странице «Ефір» и для ?).
+// Секунда «с ожиданием», если хоть один пакет ждал 15 мс и дольше: такой задержке приёмник обязан держать запас
+// не меньше — то есть на столько же позже отдаёт звук.
+static volatile uint8_t airSlowSecs;         // секунд с ожиданием из последних airSecs
+static volatile uint8_t airSecs;             // сколько секунд в счёте (до 60)
+static volatile uint16_t airSlowMs;          // среднее из наибольших ожиданий в таких секундах, мс
+static volatile uint32_t airLostMin;         // сколько миллисекунд звука пропало у играющих приёмников за те же секунды
+static void airStatTick(uint32_t airMaxUs, bool valid) {
+  static uint16_t ring[60], lost[60];
+  static uint8_t pos, n, ch, skip;
+  static uint32_t lostSeen;
+  uint32_t lostNow = txLostMsAll, d = lostNow - lostSeen;
+  lostSeen = lostNow;
+  if (ch != cfg.channel) {   // канал сменили — счёт заново; первые секунды не считаем (приёмники перестраиваются)
+    ch = cfg.channel;
+    pos = n = 0;
+    skip = 8;
+  }
+  if (skip) skip--;
+  else if (valid) {
+    uint32_t ms = airMaxUs / 1000;
+    ring[pos] = (uint16_t)(ms > 60000 ? 60000 : ms);
+    lost[pos] = (uint16_t)(d > 60000 ? 60000 : d);
+    pos = (pos + 1) % 60;
+    if (n < 60) n++;
+  }
+  uint32_t cnt = 0, sum = 0, ls = 0;
+  for (int i = 0; i < n; i++) {
+    ls += lost[i];
+    if (ring[i] >= 15) {
+      cnt++;
+      sum += ring[i];
+    }
+  }
+  airSecs = n;
+  airSlowSecs = (uint8_t)cnt;
+  airSlowMs = (uint16_t)(cnt ? sum / cnt : 0);
+  airLostMin = ls;
 }
 
 // Наблюдение за эфиром во время работы — чтобы понять, отчего пакеты ждут: передатчик, не прерывая передачи, слышит
@@ -88,17 +179,155 @@ static volatile bool hopSeamless;            // идущий переход — 
 static volatile uint8_t hopFake;             // отладка (порт: h3): столько ближайших секунд считать плохими — проверить сам счёт затора
 static void scanStart();
 
+// ---- «МЯГКИЙ» УХОД (с 2.83; владелец 12.10: «делай мягкий уход с канала»).
+// Уход при заторе срабатывает, когда пакеты ждут эфира от 45 мс — когда звук уже рвётся. Но и ожидания по 15–35 мс
+// даром не проходят: приёмник обязан держать запас не меньше — и на столько же позже отдаёт звук (замер 12.10: на
+// канале 13 рядом с сильной сетью на канале 10 запас 33–46 мс; на канале 1 опускался до 24). Поэтому при включённой
+// настройке «Канал при заторі»:
+//  — если за последнюю минуту в 15 и более секундах пакет ждал эфира 15 мс и дольше, а по замеру каналов (с учётом
+//    сильных соседей) есть канал заметно свободнее (не меньше чем на треть) или просто чистый — передатчик переходит
+//    туда без паузы;
+//  — это ПРОБА: через минуту на новом канале сравнивается, что вышло. Ожиданий не стало меньше хотя бы на 30 % или у
+//    приёмников звук стал пропадать заметно чаще (вдвое и ещё на 60 мс в минуту) — возвращается обратно и этот
+//    канал полчаса не трогает; главный приоритет — непрерывный звук, а не задержка;
+//  — опыт работы на каждом канале (секунд с ожиданием на минуту) помнится полчаса: канал, где уже было не лучше,
+//    второй раз не пробуется;
+//  — без играющих приёмников не уходит (задержка никому не мешает), первые полторы минуты после включения — тоже.
+// Цена ухода: приёмник на самом краю слышимости может не услышать объявление о переходе и найти канал обходом —
+// это 3–5 с без звука у него одного.
+static volatile bool hopSoft;                // последний уход — «мягкий» (или возврат после его пробы)
+static volatile uint8_t hopBackWhy;          // он — возврат: 1 — на новом канале ожиданий не меньше, 2 — у приёмников звук пропадал чаще
+static uint8_t chExp[13];                    // опыт работы на канале: секунд с ожиданием на минуту (действителен, пока chExpMs свежий)
+static uint32_t chExpMs[13];                 // когда этот опыт получен (0 — не работали)
+static uint8_t softFrom, softTo;             // идёт проба: с какого канала ушли (0 — пробы нет) и на какой
+static uint8_t softSlow;                     //   сколько там было секунд с ожиданием на минуту
+static uint32_t softLost;                    //   и сколько звука пропадало у приёмников за минуту, мс
+static uint8_t softFails;                    // сколько проб подряд кончилось возвратом
+static uint32_t softQuietUntil;              // до этого времени «мягких» уходов не делать
+static volatile bool hopSoftForce;           // с порта (h4): начать пробу сейчас, не глядя на счёт ожиданий и на замер; через минуту — возврат
+
+// оценка канала по замеру: своя занятость и соседних (ближний — наполовину, через один — на четверть)
+static int chanScore(int ch) {
+  int sc = scanBusy[ch - 1] * 4;
+  for (int d = 1; d <= 2; d++) {
+    if (ch - d >= 1) sc += scanBusy[ch - d - 1] * (d == 1 ? 2 : 1);
+    if (ch + d <= 13) sc += scanBusy[ch + d - 1] * (d == 1 ? 2 : 1);
+  }
+  return sc;
+}
+static inline bool chExpFresh(int ch, uint32_t now) {
+  return chExpMs[ch - 1] && now - chExpMs[ch - 1] < 1800000;
+}
+static int peersPlayingNow() {
+  int n = 0;
+  portENTER_CRITICAL(&peerMux);
+  for (auto &p : peers)
+    if (p.used && peerOnline(p) && (p.flags & ST_PLAYING) && !(p.flags & ST_OFF)) n++;
+  portEXIT_CRITICAL(&peerMux);
+  return n;
+}
+// Куда идти «мягко»: канал заметно свободнее по замеру, не «в опале», и по опыту (если он есть) заметно лучше
+// нынешнего. Из знакомых — где ожиданий было меньше всего; иначе — лучший по замеру. 0 — некуда.
+static int hopPickSoft(uint32_t now, int slowNow, bool anyway) {
+  int cur = chanScore(cfg.channel), best = 0, bestKey = 1 << 30;
+  for (int ch = 1; ch <= 13; ch++) {
+    if (ch == cfg.channel || (chBadUntil[ch - 1] && (int32_t)(now - chBadUntil[ch - 1]) < 0)) continue;
+    int sc = chanScore(ch);
+    bool known = chExpFresh(ch, now);
+    if (!anyway) {
+      // заметно свободнее по замеру (на треть) — или просто чистый (оценка до 40: замер такие каналы не различает,
+      // а опыт на нынешнем плохой — остаётся проба)
+      if (sc * 3 > cur * 2 && sc > 40) continue;
+      if (known && chExp[ch - 1] * 10 > slowNow * 7) continue;
+    }
+    int key = known && !anyway ? chExp[ch - 1] : 1000 + sc;   // знакомые хорошие — вперёд (проверке с порта опыт не указ)
+    if (key < bestKey) {
+      bestKey = key;
+      best = ch;
+    }
+  }
+  return best;
+}
+static void hopSoftGo(uint32_t now, int to, uint8_t backWhy) {
+  hopFrom = cfg.channel;
+  hopTo = cfg.channel;
+  hopWaitMs = airSlowMs ? airSlowMs : 1;
+  hopSecs = airSlowSecs;
+  hopStall = false;
+  hopSoft = true;
+  hopBackWhy = backWhy;
+  hopQuietUntil = now + 20000;
+  txHopCh = (uint8_t)to;
+}
+static void hopSoftTick(uint32_t now) {
+  bool force = hopSoftForce;
+  hopSoftForce = false;
+  uint8_t ch = cfg.channel;
+  if (softFrom && ch != softTo) softFrom = 0;   // канал сменили не мы (оператор, затор) — проба отменяется, возвращаться незачем
+  if (softFrom && softFrom != ch) {   // идёт проба нового канала: итог — когда наберётся минута работы на нём
+    if (airSecs < 60) return;
+    int slow = airSlowSecs, from = softFrom;
+    uint32_t lost = airLostMin;
+    softFrom = 0;
+    chExp[ch - 1] = (uint8_t)slow;
+    chExpMs[ch - 1] = now | 1;
+    // «не лучше»: ожиданий не стало меньше хотя бы на 30 % (у пробы с порта softSlow = 0: она всегда кончается возвратом)
+    bool worse = lost > softLost * 2 + 60, noGain = slow * 10 > softSlow * 7 || !softSlow;
+    if (!worse && !noGain) {
+      softFails = 0;
+      softQuietUntil = now + 120000;
+      Serial.printf("м'який перехід: канал %u кращий — секунд з очікуванням на хвилину %d (було %u), у приймачів пропало звуку %u мс (було %u) — лишаюсь\n", ch, slow, softSlow, (unsigned)lost, (unsigned)softLost);
+      return;
+    }
+    if (softFails < 250) softFails++;
+    softQuietUntil = now + (softFails >= 2 ? 3600000 : 600000);
+    chBadUntil[ch - 1] = (now + 1800000) ? now + 1800000 : 1;   // сюда полчаса не ходить
+    chBadUntil[from - 1] = 0;                                    // а туда, откуда пришли, вернуться можно
+    Serial.printf("м'який перехід: канал %u не кращий — секунд з очікуванням на хвилину %d (було %u), у приймачів пропало звуку %u мс (було %u) — повертаюсь на канал %d\n", ch, slow, softSlow, (unsigned)lost, (unsigned)softLost, from);
+    hopSoftGo(now, from, worse ? 2 : 1);
+    return;
+  }
+  softFrom = 0;
+  if (!force) {
+    if (!cfg.autoHop || now < 90000 || airSecs < 60 || airSlowSecs < 15) return;
+    if ((int32_t)(now - softQuietUntil) < 0 || (int32_t)(now - hopQuietUntil) < 0) return;
+    if (!peersPlayingNow()) return;
+  }
+  if (!scanDone) return;
+  chExp[ch - 1] = airSlowSecs;
+  chExpMs[ch - 1] = now | 1;
+  int pick = hopPickSoft(now, airSlowSecs, force);
+  if (!pick) {   // заметно свободнее по замеру нигде нет — остаёмся; спросим снова через десять минут
+    softQuietUntil = now + 600000;
+    Serial.printf("м'який перехід: на каналі %u пакети чекали ефіру 15 мс і довше у %u секундах із 60, але помітно вільнішого каналу за виміром немає — лишаюсь\n", ch, (unsigned)airSlowSecs);
+    return;
+  }
+  softFrom = ch;
+  softTo = (uint8_t)pick;
+  softSlow = force ? 0 : airSlowSecs;   // проба с порта всегда кончается возвратом (см. «не лучше»): прибор остаётся на своём канале
+  softLost = airLostMin;
+  chBadUntil[ch - 1] = (now + 600000) ? now + 600000 : 1;   // как при заторе: десять минут сюда не возвращаться (возврат после пробы это снимает)
+  Serial.printf("м'який перехід: на каналі %u пакети чекали ефіру 15 мс і довше у %u секундах із 60 (до %u мс) — пробую канал %d без паузи\n", ch, (unsigned)airSlowSecs, (unsigned)airSlowMs, pick);
+  hopSoftGo(now, pick, 0);
+}
+static void hopSoftPrint() {
+  uint32_t now = millis();
+  Serial.printf("м'який перехід: %s; секунд з очікуванням 15 мс і довше — %u із %u, у приймачів пропало звуку %u мс; ", softFrom && softFrom != cfg.channel ? "ІДЕ ПРОБА нового каналу" : "проби немає", (unsigned)airSlowSecs, (unsigned)airSecs, (unsigned)airLostMin);
+  if (softFrom && softFrom != cfg.channel) Serial.printf("прийшли з каналу %u (там %u с, %u мс); ", softFrom, softSlow, (unsigned)softLost);
+  Serial.printf("спокій ще %d с; проб із поверненням підряд %u; досвід каналів 1…13 (секунд на хвилину, – немає):", (int32_t)(softQuietUntil - now) > 0 ? (int)((softQuietUntil - now) / 1000) : 0, softFails);
+  for (int c = 1; c <= 13; c++) Serial.printf(chExpFresh(c, now) ? " %u" : " –", chExp[c - 1]);
+  Serial.print("; оцінка каналів за виміром:");
+  for (int c = 1; c <= 13; c++) Serial.printf(" %d", chanScore(c));
+  Serial.println();
+}
+
 // Куда идти: самый свободный канал по последнему замеру (с учётом соседних), кроме нынешнего и тех, что «в опале».
 static int hopPick() {
   uint32_t now = millis();
   int best = 0, bestScore = 1 << 30;
   for (int ch = 1; ch <= 13; ch++) {
     if (ch == cfg.channel || (chBadUntil[ch - 1] && (int32_t)(now - chBadUntil[ch - 1]) < 0)) continue;
-    int sc = scanBusy[ch - 1] * 4;
-    for (int d = 1; d <= 2; d++) {
-      if (ch - d >= 1) sc += scanBusy[ch - d - 1] * (d == 1 ? 2 : 1);
-      if (ch + d <= 13) sc += scanBusy[ch + d - 1] * (d == 1 ? 2 : 1);
-    }
+    int sc = chanScore(ch);
     int far = abs(ch - cfg.channel);   // при равных — тот, что дальше от нынешнего (соседний канал делит с ним эфир)
     sc = sc * 16 - (far > 5 ? 5 : far);
     if (sc < bestScore) {
@@ -156,6 +385,7 @@ static void hopTick(uint32_t airMaxUs, uint32_t thinned, uint32_t skipped, uint3
   // незачем и некуда. 09.10 передатчик со вставшим радио девять минут «скакал по каналам» (7 → 11 → 3), объявляя
   // переходы в эфир, которого не было, и каждый раз записывал новый канал в настройки.
   bool dead = rReviveStep || (refused && msSince(rLastDoneMs) > 300);
+  airStatTick(airMaxUs, !(scanRunning || txHold || txPause || txHopCh || dead) && !hopFake);
   if (scanRunning || txHold || txPause || txHopCh || dead) {
     // Эфир стоит не из-за затора (замер каналов, выключение, раздача прошивки приёмникам): секунды этого времени
     // «плохими» не считать. 07.10 после раздачи прошивки передатчик тут же «ушёл с занятого канала» — затора не было.
@@ -163,7 +393,13 @@ static void hopTick(uint32_t airMaxUs, uint32_t thinned, uint32_t skipped, uint3
     hopQuietUntil = now + 10000;
     return;
   }
-  if (!force && (!cfg.autoHop || n < 5 || now < 30000 || (int32_t)(now - hopQuietUntil) < 0)) return;
+  if (!force && (!cfg.autoHop || n < 5 || now < 30000 || (int32_t)(now - hopQuietUntil) < 0)) {
+    hopSoftTick(now);   // затора нет — может быть, пора уйти «мягко» (или подвести итог пробы)
+    return;
+  }
+  softFrom = 0;   // настоящий затор важнее пробы
+  hopSoft = false;
+  hopBackWhy = 0;
   hopFrom = cfg.channel;
   hopTo = cfg.channel;
   hopWaitMs = byStall ? 1 : worst;   // (0 экран понимает как «проверка с порта»)
@@ -197,6 +433,7 @@ static void scanTask(void *) {
   for (int i = 0; i < 50 && !txPaused; i++) vTaskDelay(pdMS_TO_TICKS(2));
   vTaskDelay(pdMS_TO_TICKS(30));
   bbMark(BB_SCAN, 1);
+  memset(scanApRssi, -127, sizeof(scanApRssi));
   esp_wifi_set_promiscuous_rx_cb(scanCb);
   esp_wifi_set_promiscuous(true);
   for (int ch = 1; ch <= 13; ch++) {
@@ -210,6 +447,7 @@ static void scanTask(void *) {
   }
   esp_wifi_set_promiscuous(false);
   bbMark(BB_SCAN, 0);
+  scanNearApply();
   if (monOn) monSet(true);   // наблюдение за эфиром было включено — вернуть
   if (scanSurvey) {          // только замер (при включении): канал остаётся прежним
     scanSurvey = false;
@@ -224,11 +462,7 @@ static void scanTask(void *) {
   }
   int best = cfg.channel, bestScore = 1 << 30, curScore = 0;
   for (int ch = 1; ch <= 13; ch++) {
-    int sc = scanBusy[ch - 1] * 4;
-    for (int d = 1; d <= 2; d++) {   // соседние каналы мешают: ближний наполовину, через один — на четверть
-      if (ch - d >= 1) sc += scanBusy[ch - d - 1] * (d == 1 ? 2 : 1);
-      if (ch + d <= 13) sc += scanBusy[ch + d - 1] * (d == 1 ? 2 : 1);
-    }
+    int sc = chanScore(ch);   // соседние каналы мешают: ближний наполовину, через один — на четверть
     if (ch == cfg.channel) curScore = sc;
     if (sc < bestScore || (sc == bestScore && ch == cfg.channel)) {
       bestScore = sc;

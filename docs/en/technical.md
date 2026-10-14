@@ -108,7 +108,10 @@ sensor (I2C), microSD card (SPI), CH340 USB bridge, a relay and a speaker amplif
 
 ### Design
 ESP32-S3-DevKitC-1 N16R8 board; SH1106 display (I2C at 800 kHz if the display can handle it, otherwise 400), EC11
-encoder, on-board WS2812 RGB LED. The audio output is one-bit (PDM) on two pins through simple RC filters.
+encoder, on-board WS2812 RGB LED. The audio output is one-bit (PDM) on two pins through simple RC filters, or an
+external DAC: the PCM5102 (I2S at 32 kHz, no master clock — the DAC derives it from BCK) or the CS4344 (since 2.85: I2S at
+31.25 kHz, an 8 MHz master clock on pin 10 — an integer division of 160 MHz by 20; bit clock 2 MHz, 32-clock channel
+word). Why not 32 kHz — see hardware.md, “External CS4344 DAC”.
 
 ### Audio path
 1. **Reception** (Wi-Fi task): own kit and version → signature check → replay protection → decryption.
@@ -121,7 +124,8 @@ encoder, on-board WS2812 RGB LED. The audio output is one-bit (PDM) on two pins 
    by the length of the dropout. The limits depend on the frame length: from 4 + frame/2 to 26 + 2·frame ms.
 5. **Pace adjustment**: the crystals of the two boards run differently, so the receiver plays fractions of a
    percent faster or slower (cubic interpolation), holding the buffer. No more than ±0.3 % — otherwise a "drift" of
-   pitch is audible on music.
+   pitch is audible on music. With the CS4344 (2.85) the same conversion also takes the 32 kHz of the air to the
+   31.25 kHz output: the input step per output sample is 1.024 × (1 ± adjustment).
 6. **Speech clarity**: a "shelf" filter (+12 dB above 2 kHz) and a mix of "the sound + its boosted copy" in a
    proportion of 0.196 / 0.507 / 1 — that is +4 / +8 / +12 dB. "Strong": 1 kHz +0.9 dB, 2 kHz +6.0, 3 kHz +9.8,
    4 kHz +11.2, 8 kHz +12.0.
@@ -153,7 +157,7 @@ encoder, on-board WS2812 RGB LED. The audio output is one-bit (PDM) on two pins 
 SEARCH (splash 4 s, waits up to 10 s) ─signal─► STARTUP (4.4 s; sound from 1.5 s) ─► RUNNING
 RUNNING ─10 s without a signal─► LEAVING (6 s of a message) ─► STANDBY (sleep)
 STANDBY ─heard the transmitter / knob pressed─► WAKE-UP (splash) ─► STARTUP
-any ─"turn off" from the transmitter─► LEAVING ─► STANDBY (woken only by "turn on" or a double press)
+any ─"turn off" from the transmitter─► LEAVING ─► STANDBY (woken only by "turn on" from the transmitter; before 2.65 also by a double press of the knob)
 ```
 The sleep cycle: radio off, light sleep of the processor for 0.5 s (woken by the timer or the knob button), then
 70 ms of listening to its own channel; every fourth cycle — another 12 channels at 25 ms each. If the transmitter is
@@ -366,6 +370,44 @@ the name is the type: 0 — uncompressed sound 32 kHz mono, 1 — MP3.
 | `rxfx.h`, `rxscreens.h`, `ui_rx.h` | receiver screen and menu |
 | `lang.h`, `lang_en.h` | translation of on-screen texts |
 | `dbgair.h`, `dbgtee.h` | debugging over the radio |
+
+## What changed in 2.64–2.85 (technical)
+
+- **Receiver status messages (2.64)** — to the transmitter’s address with acknowledgement and retries, not
+  “to everybody”; with a weak signal the receiver raises its power to 20 dBm by itself (since 2.77 — below −76 dBm,
+  back above −70). `P` shows delivery counters for each receiver.
+- **“The transmitter is in charge” (2.65)** — a receiver turned off from the transmitter cannot be turned on with its
+  own knob; the transmitter brings it back to the set state. **Radio update (2.66–2.67)**: the receiver does not sleep
+  while receiving, the hand-out does not wait for laggards longer than 3 minutes, the “freezes at 99 %” bug is fixed.
+- **Processing “for hearing” (2.68–2.72, `hearlink/nsfx.h`)** — in the receiver: compression instead of
+  “boost + limiter”, the boost removed in speech pauses, spectral noise reduction (FFT 256, the Wiener rule with the
+  decision-directed approach, the noise is learned only in pauses: not silence, flat in spectrum and 15 dB below the
+  loudest of the last 10 minutes — since 2.76); in the transmitter — input noise reduction on the display core. 2.75–2.76
+  fix two bugs that made noise reduction almost inactive on the devices (garbage in the “sample remembered” flag after a
+  restart; no pauses found for 10 minutes after a sound gap).
+- **Rate steps (2.73–2.83, `txpeers.h`, `rateAutoTick`)** — two: the upper (5.5 Mbit/s in “auto” or the one chosen by
+  hand) and 1 Mbit/s. Down: the smoothed signal of the weakest receiver is −75 dBm or weaker, or it loses sound, or a
+  weak receiver has just vanished; up: all at −70 dBm or better for 30 s (if the weakest is −66 or better) or 120 s,
+  doubling the wait if it had to step down again after returning (up to 10 min). A rate or quality chosen by hand steps
+  up at once when possible, otherwise the screen explains why. The `cfg.rateLadder` setting («Слабкий сигнал»). While
+  packets are being lost, the receiver’s buffer does not go below the copy depth + a frame + 2 ms; the channel search
+  starts only after 2.5 s of silence.
+- **«Найвища» (2.77)** — the double packet repeats the previous packet uncompressed: one loss is recovered bit for bit.
+- **The far-mode codec (2.79–2.82, `hearlink/subc.h`)** — eight cosine-modulated bands (an 80-sample window, a 2.25 ms
+  filter-bank delay), a frame of 128 samples = 4 ms, scale and bits of every band anew in every frame, noise fill for
+  bands without bits; a 158-byte packet: frame 46 + copy 46 + copy 32 + coarse copy 12. Since 2.82 analysis, packing and
+  synthesis run from fast memory (IRAM): the ESP32-S3 instruction cache is only 16 KB for both cores, and code from flash
+  cost four times the estimate (encoder 0.58 → 0.16 ms per frame, receiver 0.60 → 0.14 ms per packet).
+- **Channel (2.82–2.83, `txscan.h`)** — the channel scan adds a “strong neighbour risk” from access point beacons and
+  their real channel; the transmitter counts seconds when a packet waited 15 ms or more for the air and shows it on
+  «Ефір»; the soft move is a trial with a return (`hopSoftTick`).
+- **Sound self-recovery (2.84)** — the row number of the tempo-adjustment table is computed in integers (once in ~17 min
+  it rounded up to 128, and the row past the table end was read — the source of a “not-a-number” that silenced the
+  filters for good); not-a-numbers at the processing input, after noise reduction and at the output are replaced with
+  zero and the filter memory is reset; an output watchdog (the output stuck on one value for 1.5 s while loud sound is
+  on air — reset; did not help within 4 s — a quiet restart, no more than once in 10 min); a restart with `CMD_RESTART`
+  from the transmitter and a menu item.
+- **CS4344 (2.85)** — see “Design” above and hardware.md.
 
 ## Quirks and pitfalls
 

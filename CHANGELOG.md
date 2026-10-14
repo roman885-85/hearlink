@@ -1,5 +1,97 @@
 # Changelog / Історія версій
 
+## 2.85 — 2026-10-14 (includes 2.64–2.84, which were not released / містить 2.64–2.84, які не випускались)
+- EN: **receivers no longer drop out of the list with a weak signal (2.64).** A receiver reports about itself to the
+  transmitter’s address with acknowledgement and retries (it used to send “to everybody”, without delivery checks), and
+  raises its own radio power to 20 dBm when the signal is weak. The transmitter counts delivered and lost reports of
+  each receiver (`P`).
+- UK: **приймачі більше не випадають зі списку при слабкому сигналі (2.64).** Приймач повідомляє про себе на адресу
+  передавача з підтвердженням і повторами (раніше — «всім», без перевірки доставки) і сам піднімає потужність радіо до
+  20 дБм при слабкому сигналі. Передавач рахує доставлені й загублені повідомлення кожного приймача (`P`).
+- EN: **“the transmitter is in charge” (2.65–2.67).** A receiver turned off from the transmitter cannot be turned on with
+  its own knob; the transmitter returns it to the state it set. Radio updates: the receiver does not fall asleep while
+  receiving, the hand-out no longer waits for laggards longer than 3 minutes, the “freezes at 99 %” bug is fixed.
+- UK: **«передавач головний» (2.65–2.67).** Приймач, вимкнений із передавача, своєю ручкою не вмикається; передавач сам
+  повертає його в заданий стан. Оновлення по радіо: приймач не засинає під час прийому, роздача не чекає відсталих
+  довше 3 хвилин, виправлено «завмирає на 99 %».
+- EN: **sound processing “for hearing” (2.68–2.72, 2.75–2.76).** In the receiver: compression (quiet sound raised, loud
+  held down), the boost removed in speech pauses, spectral noise reduction; in the transmitter: input noise reduction.
+  Settings on the transmitter screen (receiver window → third sheet «Обробка звуку»; the input equalizer → «Шумозаглушення»),
+  in the receiver menu and from the port. Measured on the devices with a sermon from the card: the noise in pauses is
+  removed by 12.8–13.6 dB. 2.75–2.76 fix two bugs that made the receivers’ noise reduction almost inactive.
+- UK: **обробка звуку «для слуху» (2.68–2.72, 2.75–2.76).** У приймачі: стискання (тихе підсилюється, гучне
+  притискається), зняття підсилення в паузах мови, спектральне шумозаглушення; у передавачі — шумозаглушення входу.
+  Налаштування — на екрані передавача (вікно приймача → третій аркуш «Обробка звуку»; еквалайзер входу →
+  «Шумозаглушення»), у меню приймача й з порту. Виміряно на приладах на проповіді з картки: шум у паузах прибирається
+  на 12,8–13,6 дБ. 2.75–2.76 виправляють дві помилки, через які шумозаглушення приймачів майже не працювало.
+- EN: **continuous sound with a weak signal (2.73–2.78, 2.83).** Measured: at 5.5 Mbit/s the sound breaks off between
+  −77 and −80 dBm, at 1 Mbit/s it holds to about −86. Now the transmitter steps down to 1 Mbit/s by itself for a weak
+  receiver (−75 dBm or weaker, or losing sound) and returns when everybody hears well — also when the rate was chosen by
+  hand (it is the upper step then); a message on the screen names the receiver. Result at −83 dBm: 6.5 % loss and
+  160 ms of lost sound in 75 s where there used to be no sound at all. The receiver keeps a deeper buffer while packets
+  are lost and searches for the channel only after 2.5 s of silence. **New «Слабкий сигнал» (Weak signal) setting** on
+  «Ефір»: lower the rate or always keep the chosen rate and quality; a manual choice of rate or quality takes effect at
+  once when possible, otherwise the screen explains why; the automatic return takes 30 s with a clear margin.
+- UK: **безперервний звук при слабкому сигналі (2.73–2.78, 2.83).** Виміряно: на 5,5 Мбіт/с звук обривається між −77 і
+  −80 дБм, на 1 Мбіт/с тримається приблизно до −86. Тепер передавач сам сходить на 1 Мбіт/с заради слабкого приймача
+  (−75 дБм і слабше або в нього пропадає звук) і повертається, коли всі чують добре, — і тоді, коли швидкість обрано
+  вручну (тоді вона — верхня сходинка); повідомлення на екрані називає приймач. Результат на −83 дБм: 6,5 % втрат і
+  160 мс пропалого звуку за 75 с там, де звуку не було зовсім. Приймач тримає глибший запас, поки губляться пакети, і
+  шукає канал лише після 2,5 с тиші. **Нове налаштування «Слабкий сигнал»** на «Ефірі»: знижувати швидкість чи завжди
+  тримати обрані швидкість і якість; ручний вибір швидкості чи якості діє одразу, коли можна, інакше екран пояснює чому;
+  самостійне повернення — 30 с при доброму запасі.
+- EN: **no rustle on «найвища» with a weak signal (2.77):** the double packet repeats the previous packet uncompressed —
+  a single loss is recovered bit for bit (on the far receiver 870 of 911 recovered frames were exact).
+- UK: **без «шелесту» на «найвищій» при слабкому сигналі (2.77):** подвійний пакет повторює минулий пакет без стиснення —
+  одна втрата відновлюється біт у біт (на далекому приймачі 870 із 911 відновлених кадрів — точні).
+- EN: **a new far-mode codec (2.79–2.82).** At 1 Mbit/s «стандартна» goes with an eight-band codec (4 ms frame, the
+  packet carries the frame and three spare copies — three lost packets in a row cause no dropout). On a sermon:
+  signal-to-noise “as heard through a receiver” 41.6 dB against 30.5 for the former «мова»; on the far receiver at
+  −77…−80 dBm 332 ms of lost sound in 84 s against 4.5 s with «мова». Mono only. 2.82 runs it from fast memory: four
+  times cheaper for the processor.
+- UK: **новий кодек дальнього режиму (2.79–2.82).** На 1 Мбіт/с «стандартна» йде восьмисмуговим кодеком (кадр 4 мс, у
+  пакеті кадр і три запасні копії — три втрачені пакети поспіль не дають провалу). На проповіді: сигнал/шум «на слух
+  приймача» 41,6 дБ проти 30,5 у колишньої «мови»; на далекому приймачі (−77…−80 дБм) 332 мс пропалого звуку за 84 с
+  проти 4,5 с із «мовою». Лише моно. 2.82 виконує його зі швидкої пам'яті — учетверо дешевше для процесора.
+- EN: **delay and channel choice (2.82–2.83).** The “2.5 s interference” is explained: a strong access point nearby
+  (−39 dBm, channel 10) made packets wait 22–35 ms for the air on channel 13 every 2.5 s, and the receivers kept a
+  33–46 ms buffer because of it; on channel 1 there were no such waits. The channel scan now accounts for strong
+  neighbouring networks; «Ефір» shows «канал N: пакети чекають ефіру до X мс»; «Канал при заторі: сам» also performs a
+  soft move when packets often wait 15–35 ms — a trial with a return after a minute if it is not better there.
+- UK: **затримка і вибір каналу (2.82–2.83).** «Завада 2,5 с» пояснена: сильна точка доступу поруч (−39 дБм, канал 10)
+  змушувала пакети на каналі 13 раз на 2,5 с чекати ефіру 22–35 мс, і приймачі через це тримали запас 33–46 мс; на
+  каналі 1 такого чекання немає. Замір каналів тепер враховує сильні сусідні мережі; «Ефір» показує «канал N: пакети
+  чекають ефіру до X мс»; «Канал при заторі: сам» робить і м'який перехід, коли пакети часто чекають по 15–35 мс, —
+  пробу з поверненням за хвилину, якщо там не краще.
+- EN: **sound that vanished until a restart — found and fixed (2.84).** On a live receiver the data line to the DAC was
+  stuck at one: a “not-a-number” had got into the processing filters. Source: the tempo adjustment read a row past the
+  end of its table about once in 17 minutes. Fixed; the processing also replaces not-a-numbers with zero and resets
+  itself, an output watchdog resets the processing and then restarts the receiver quietly if the output is stuck while
+  there is sound on air. New: «Перезапуск» (Restart) in the receiver menu, «Перезапустити» (Restart) in the receiver
+  window on the transmitter, `E2 <number>` from the port.
+- UK: **звук, що пропадав до перезапуску, — знайдено й виправлено (2.84).** На живому приймачі лінія даних до ЦАП стояла
+  в одиниці: у фільтри обробки потрапило «не число». Джерело: підгонка темпу приблизно раз на 17 хвилин читала рядок за
+  краєм своєї таблиці. Виправлено; крім того, обробка замінює «не числа» нулем і сама скидається, а сторож виходу
+  скидає обробку й далі тихо перезапускає приймач, якщо вихід стоїть, хоча в ефірі звук. Нове: «Перезапуск» у меню
+  приймача, «Перезапустити» у вікні приймача на передавачі, `E2 <номер>` з порту.
+- EN: **the CS4344 DAC on receivers (2.85).** A new output type: an 8 MHz master clock on pin 10 by integer division
+  (160 MHz / 20), output at 31,250 Hz (the 32 kHz air is converted by the tempo adjustment), the pin 10 is checked for a
+  short to ground before the clock is driven. Schematic `docs/skhema-priemnik-s3-cs4344.png`, documentation in both
+  languages, documentation in PDF (`tools/docs_pdf.mjs`). Verified in this mode on a receiver with a PCM5102; not on an
+  actual CS4344 module.
+- UK: **ЦАП CS4344 на приймачах (2.85).** Новий вид виходу: головний такт 8 МГц на виводі 10 цілим діленням
+  (160 МГц / 20), вихід 31 250 Гц (32 кГц ефіру перераховує підгонка темпу), вивід 10 перед подачею такту перевіряється
+  на замикання на «землю». Схема `docs/skhema-priemnik-s3-cs4344.png`, опис обома мовами, документація в PDF
+  (`tools/docs_pdf.mjs`). Перевірено в цьому режимі на приймачі з PCM5102; на самому модулі CS4344 — ні.
+- EN: **known issues:** a “graininess” of the sound reported by the owner on 14.10 with an ideal signal, two DACs, medium
+  volume, the test sound and good recordings (noise reduction off) — under investigation; the port commands
+  `i20…i22` are taken by the processing, so three receiver EQ bands cannot be set from the port (they can from the
+  screen); the far-mode codec is mono only.
+- UK: **відомі проблеми:** «зернистість» звуку, яку власник почув 14.10 при ідеальному сигналі, на двох ЦАП, середній
+  гучності, на перевірочному звуці й добрих записах (шумозаглушення вимкнене), — досліджується; команди порту
+  `i20…i22` зайняті обробкою, тож три смуги еквалайзера приймача з порту не задаються (з екрана — задаються); кодек
+  дальнього режиму — лише моно.
+
 ## 2.63 — 2026-10-10 (includes 2.57–2.62, which were not released / містить 2.57–2.62, які не випускались)
 - EN: **two frames per packet on «найвища» (highest) quality.** One call of the radio driver costs the transmitter
   0.7–0.78 ms whatever the packet length, and 500 calls a second kept the radio core 70–93 % busy. Now two adjacent

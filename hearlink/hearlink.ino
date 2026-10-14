@@ -19,15 +19,15 @@
 //                  3 — музыка под голосом, дБ, 4 — пауза между повторами голоса, с, 5 — громкость музыки, дБ,
 //                  6 — громкость голоса, дБ
 //   a<0|1>       — передатчик: вход — встроенный АЦП / внешний PCM1808 (перезапуск)
-//   o<0|1>       — приёмник: выход — PDM / внешний PCM5102 (перезапуск)
+//   o<0|1|2>     — приёмник: выход — PDM / внешний PCM5102 / внешний CS4344 (перезапуск)
 //   d<0|4–40>    — приёмник: запас, мс (0 — сам) l<0–20> — громкость    m — тишина вкл/выкл
 //   m            — передатчик: тишина в эфире вкл/выкл (пакеты идут, звука в них нет)
 //   U<0–5>       — передатчик: открыть вкладку меню (для замеров времени кадра на каждой)
 //   u            — проверка экрана: приёмник — экран, ручка, кнопки; передатчик — экран, сенсор, время кадра, карта
 //   s            — передатчик: найти свободный канал (звук прервётся на две секунды)
 //   H            — передатчик на модуле 4848S040: проверка свободных выводов IO1, IO2, IO40 (25 с)
-//   P            — передатчик: список приёмников;  I — первому из них «покажи себя»;  E<0|1> — выключить/включить его;
-//                  N<имя> — дать ему имя
+//   P            — передатчик: список приёмников (P0 — начать счёт их сообщений заново);  I — первому из них «покажи себя»;  E<0|1> — выключить/включить его;
+//                  N<имя> — дать ему имя;  E<0|1> <номер> — выключить/включить приёмник с этим номером (например E0 4C3B10)
 //   b<0|1>       — плата: 0 — обычная ESP32-S3, 1 — модуль ESP32-4848S040 (перезапуск)
 //   K            — защита: есть ли ключ набора, счётчики отвергнутых пакетов;  K0 — забыть ключ (приёмник попросит
 //                  доступ заново; передатчик заведёт новый ключ — все приёмники придётся подключить снова)
@@ -37,7 +37,9 @@
 //                  ключ набора меняется и сам уходит оставшимся приёмникам
 //   O            — передатчик: выключить (то же, что кнопка в шапке); включает касание экрана
 //   h<0|1|2|3>   — передатчик: сам уходит с занятого канала — выключить / включить; h2 — искать и перейти сейчас;
-//                  h3 — шесть ближайших секунд считать «плохими» (проверка самого счёта затора)
+//                  h3 — шесть ближайших секунд считать «плохими» (проверка самого счёта затора);
+//                  h4 — «мягкий» уход сейчас: проба лучшего по замеру канала и через минуту возврат (проверка хода);
+//                  h без числа — состояние, в том числе «мягкого» ухода и опыт работы на каналах
 //   L<0|1>       — язык надписей: 0 — українська, 1 — English (ставится на передатчике, приёмники берут его сами)
 //   S<имя>       — передатчик: назвать источник звука (надпись на кнопке вместо «З пульта»); S без имени — вернуть
 //   D            — передатчик: что с картой памяти (отвечает ли, объём, разметка)
@@ -58,6 +60,7 @@ uint32_t phy_get_cca_cnt(uint32_t *out);
 #include "soc/gpio_struct.h"   // для проверки настройки вывода кнопки (команда n8)
 #include "hal/gpio_ll.h"       // сброс прерываний выводов при запуске
 #include "driver/gpio.h"
+#include "soc/i2s_struct.h"   // проверка n8=7 у приёмника с CS4344: делитель главного такта (I2S0.tx_clkm_…)
 #include <Preferences.h>
 #include "config.h"
 
@@ -112,6 +115,25 @@ static void rxHealRestart() {
   rRebooting = true;
   ESP.restart();
 }
+// Приёмник: выход звука стоял при звуке в эфире, сброс обработки не помог (сторож в rxaudio.h) — перезапуск без заставки.
+static void rxSoundRestart(const char *why) {
+  rxHealBootMagic = RX_SOUND_BOOT;
+  rxSoundBootCount = rxSoundBootCount + 1;
+  Serial.printf("%s — перезапускаю плату\n", why);
+  Serial.flush();
+  settingsSave();
+  rRebooting = true;
+  ESP.restart();
+}
+// Приёмник: перезапуск по просьбе — с передатчика (без заставки: слушателю нужен звук, а не картинка) или из меню.
+static void rxAskedRestart(bool fromTx) {
+  if (fromTx) rxHealBootMagic = RX_ASKED_BOOT;
+  Serial.println(fromTx ? "передавач попросив перезапуститися — перезапускаю плату" : "перезапуск із меню — перезапускаю плату");
+  Serial.flush();
+  settingsSave();
+  rRebooting = true;
+  ESP.restart();
+}
 static void radioDead() {
   bbRefresh();
   quickBootMagic = QUICK_BOOT;
@@ -158,6 +180,8 @@ static void settingsLoad() {
   utf8Clean(cfg.nameLong);
   utf8Clean(cfg.srcName);
   if (cfg.rateIdx >= N_RATES) cfg.rateIdx = 2;
+  if (cfg.rateTop != 255 && cfg.rateTop >= N_RATES) cfg.rateTop = 255;
+  if (cfg.rateLadder > 1) cfg.rateLadder = 1;
   if ((cfg.depthMs && cfg.depthMs < 4) || cfg.depthMs > 40) cfg.depthMs = 0;
   if (cfg.volume > 20) cfg.volume = 16;
   if (cfg.tone >= TEST_COUNT) cfg.tone = 0;
@@ -188,6 +212,14 @@ static void settingsLoad() {
   if (cfg.txLowCut > 1) cfg.txLowCut = 0;
   if (cfg.rxLock > 3) cfg.rxLock = 0;
   if (cfg.rxBoost > 12) cfg.rxBoost = 0;
+  if (cfg.txNs > 3) cfg.txNs = 0;
+  if (cfg.rxNs > 3) cfg.rxNs = 0;
+  if (cfg.rxComp > 3) cfg.rxComp = 1;
+  if (cfg.rxGate > 3) cfg.rxGate = 0;
+  if (cfg.txNsSens > 4) cfg.txNsSens = 2;
+  if (cfg.rxNsSens > 4) cfg.rxNsSens = 2;
+  if (cfg.rxGateThr > 4) cfg.rxGateThr = 1;
+  if (cfg.rxGateRel > 2) cfg.rxGateRel = 1;
   // До 2.40 «звук как есть» был шаг 12 (60 %), с 2.40 — шаг 20 (100 %). Чтобы после обновления приёмник звучал как до
   // него, шаг и предел сдвигаются на 8; всё, что стояло выше 60 % (там было усиление с ограничителем), становится 100 %.
   if (oldVolScale) {
@@ -271,8 +303,14 @@ static void help() {
   Serial.printf("запуск через: %s; працює %u с\n", resetReason(), (unsigned)(millis() / 1000));
   Serial.printf("версія %s, %s, набір %u, канал %u%s, швидкість %s Мбіт/с%s, потужність %d дБм\n", FW_VERSION,
                 cfg.isTx ? "ПЕРЕДАВАЧ" : "ПРИЙМАЧ", cfg.kit, cfg.channel, !cfg.isTx && cfg.autoChannel ? " (пошук сам)" : "",
-                RATES[cfg.rateIdx].name, cfg.isTx && cfg.rateAuto ? " (обирається сама)" : "", cfg.powerDbm);
+                RATES[cfg.rateIdx].name, !cfg.isTx ? "" : cfg.rateAuto ? " (обирається сама)" : cfg.rateTop < N_RATES && cfg.rateTop != cfg.rateIdx ? " (обрано більшу — знижено заради слабкого приймача)" : " (обрано вручну)", cfg.powerDbm);
   Serial.printf("плата: %s; зібрано ядром Arduino %s (ESP-IDF %s)\n", cfg.board == BOARD_4848 ? "ESP32-4848S040" : "ESP32-S3", ESP_ARDUINO_VERSION_STR, esp_get_idf_version());
+  if (cfg.isTx) {   // чому передавач стоїть на цій швидкості (rateAutoTick, txpeers.h)
+    static const char *const WHY[] = { "приймачів на зв'язку немає", "усі приймачі чують добре", "найслабший приймач чує слабо", "у слабкого приймача пропадає звук", "слабкий приймач зник зі зв'язку — три хвилини тримаємо нижчу", "сигнал уже добрий — чекаємо строку повернення", "нижчої ступені немає або її вимкнено (налаштування «Слабкий сигнал» чи Ql0)" };
+    Serial.printf("швидкість: верхня ступінь %s Мбіт/с (%s), зараз %s Мбіт/с — %s; найслабший із тих, що грають: %02X%02X%02X, %d дБм; змін швидкості від увімкнення: %u\n", RATES[cfg.rateAuto || cfg.rateTop >= N_RATES ? (cfg.rateAuto ? (int)R_5M : (int)cfg.rateIdx) : (int)cfg.rateTop].name, cfg.rateAuto ? "сама" : "обрано вручну", RATES[cfg.rateIdx].name, WHY[rateWhy > 6 ? 0 : rateWhy], rateWhyId[0], rateWhyId[1], rateWhyId[2], (int)rateWhyRssi, (unsigned)rateSteps);
+  }
+  if (cfg.isTx) Serial.printf("слабкий сигнал: швидкість заради далекого приймача %s (екран: «Ефір» › «Слабкий сигнал»; порт: Ql3 / Ql2)\n", cfg.rateLadder ? "ЗНИЖУЄТЬСЯ сама" : "НЕ знижується — завжди як обрано");
+  if (cfg.isTx) Serial.printf("очікування ефіру на каналі %u: за останні %u с пакет чекав 15 мс і довше у %u секундах (у таких — у середньому до %u мс)%s\n", cfg.channel, (unsigned)airSecs, (unsigned)airSlowSecs, (unsigned)airSlowMs, airSecs >= 20 && airSlowSecs * 60 >= airSecs * 10 ? " — поруч сильна мережа або канал зайнятий: приймачі тримають більший запас, звук затримується; спробуйте інший канал" : "");
   if (cfg.isTx) Serial.printf("сторож задач: стежить за задачею передачі — %s (код 0x%x); за холостою задачею ядра радіо — %s\n", txWdtErr == 0 ? "так" : "НІ", (unsigned)txWdtErr, txIdleWdtOff ? "ні (знято)" : "так");
   Serial.printf("захист: ключ набору %s%s\n", secHave ? "є" : "НЕМАЄ", cfg.isTx || secHave ? "" : " — приймач не підключено до набору, просить доступ");
   if (cfg.isTx) {
@@ -296,24 +334,30 @@ static void help() {
     bool st = txStNow;
     {
       bool db = txDblNow && q == Q_HI;   // два кадра в пакете (proto.h, Q_DOUBLE)
-      int pl = db ? qPktLen2(q, st) : qPktLen(q, st);
+      bool dp = db && txDupNow;          // двойной пакет с точными копиями прошлого (с 2.77)
+      bool sb = txSubNow && q == Q_STD;   // «стандартна» подполосным кодеком (с 2.79)
+      int pl = sb ? qPktLenSub() : dp ? qPktLen3(q, st) : db ? qPktLen2(q, st) : qPktLen(q, st);
       uint32_t per = qFrameUs(q) * (db ? 2 : 1);
       if (q == Q_HI && !db && txDoubleMode == 1 && txDoubleWhy == 1) Serial.printf("два кадри в пакеті поки не можна: приймач %02X%02X%02X зі списку не повідомляв версію 2.60 або новішу (оновиться сам, щойно вийде на зв'язок; якщо його вже немає — видаліть зі списку)\n", txDoubleWho[0], txDoubleWho[1], txDoubleWho[2]);
       else if (q == Q_HI && !db && txDoubleMode == 1 && txDoubleWhy == 2) Serial.println("два кадри в пакеті поки не можна: відкрите вікно додавання приймачів");
       Serial.printf("якість звуку: %s%s — %u Гц, кадр %u мс, %s, пакет %d байт, в ефірі %u мкс із %u (%u %%)\n", Q_NAME[q],
                     q != cfg.quality ? " (знижено: обрана не вміщається в цю швидкість)" : "", QDEF[q].sr, (unsigned)(qFrameUs(q) / 1000),
-                    db ? "ДВА кадри в пакеті" : "один кадр у пакеті", pl, (unsigned)airUs(pl, cfg.rateIdx), (unsigned)per, (unsigned)(airUs(pl, cfg.rateIdx) * 100 / per));
+                    sb ? "новий кодек (вісім смуг), у пакеті кадр і три запасні копії" : dp ? "ДВА кадри в пакеті, минулий пакет повторено без стиснення" : db ? "ДВА кадри в пакеті (копії стиснені)" : "один кадр у пакеті", pl, (unsigned)airUs(pl, cfg.rateIdx), (unsigned)per, (unsigned)(airUs(pl, cfg.rateIdx) * 100 / per));
     }
     Serial.printf("стерео в ефір: %s; зараз в ефірі %s%s\n", cfg.stereo ? "увімкнено" : "вимкнено", st ? "СТЕРЕО" : "моно",
                   cfg.stereo && !st ? " (джерело моно або якість «дальня»)" : "");
+    txNsPrint();
   }
-  else Serial.printf("ім'я: «%s»%s; вихід: %s, %s, запас %s, гучність %u з 20\n", rxName(), cfg.off ? " (ВИМКНЕНИЙ з передавача)" : "", cfg.output == OUT_I2S ? "PCM5102 (I2S)" : "PDM",
-                     cfg.rxStereo ? "ДВА КАНАЛИ (навушники напряму або стерео)" : cfg.output == OUT_I2S ? "моно" : "ПРОТИФАЗА (підсилювач з різницевим входом)",
+  else Serial.printf("ім'я: «%s»%s; вихід: %s, %s, запас %s, гучність %u з 20\n", rxName(), cfg.off ? " (ВИМКНЕНИЙ з передавача)" : "", cfg.output == OUT_CS4344 ? "CS4344 (I2S, 31 250 Гц, головний такт 8 МГц на виводі 10)" : cfg.output == OUT_I2S ? "PCM5102 (I2S)" : "PDM",
+                     cfg.rxStereo ? "ДВА КАНАЛИ (навушники напряму або стерео)" : cfg.output != OUT_PDM ? "моно" : "ПРОТИФАЗА (підсилювач з різницевим входом)",
                      cfg.depthMs ? (String(cfg.depthMs) + " мс").c_str() : "підбирається сам", cfg.volume);
   if (!cfg.isTx) {   // здоровье радио приёмника (с 2.59): свои отправки и слышит ли его передатчик
     uint32_t now = millis();
     Serial.printf("радіо приймача: надіслано пакетів %u, відповідей драйвера %u, відмов %u, «не пішло» %u, найдовше чекання %u мс; перезавантажень радіо %u (не відповідало) + %u (передавач не чув); перезапусків плати через це %u\n", (unsigned)rxTxPutCount, (unsigned)rxTxDoneCount, (unsigned)rxTxErr, (unsigned)rxTxFail, (unsigned)rxTxWaitMaxMs, (unsigned)rxHealStuck, (unsigned)rxHealUnseen, (unsigned)rxHealBootCount);
     Serial.printf("  передавач мене чує: %s; оголошень «кого чую» прийнято %u; повідомлень про себе надіслано %u\n", !rxRosterMs ? "невідомо (передавач до 2.59 цього не оголошує)" : msSince(rxRosterMs, now) > 5000 ? "невідомо (оголошень зараз немає)" : rxSeenMs && msSince(rxSeenMs, now) < 9000 ? "ТАК" : rxRosterFull ? "ні (у передавача список приймачів повний)" : "НІ", (unsigned)rxRosterN, (unsigned)rxStatusSent);
+    Serial.printf("  повідомлення про себе на адресу передавача: підтверджено %u (у середньому за %u мс, найдовше %u), не підтверджено %u (найдовше %u мс), без відповіді драйвера %u; надіслано «всім» %u; останнє підтвердження %s\n", (unsigned)rxUniOk, rxUniOk ? (unsigned)(rxUniMsSum / rxUniOk) : 0u, (unsigned)rxUniMsMax, (unsigned)rxUniFail, (unsigned)rxUniFailMsMax, (unsigned)rxUniLate, (unsigned)rxUniAll, !rxAckMs ? "не було" : (String(msSince(rxAckMs, now) / 1000.0f, 1) + " с тому").c_str());
+    Serial.printf("  потужність радіо зараз %d дБм (налаштована %d; до повної піднімалась %u разів), передавача чую на %d дБм%s\n", (int)rxPowerNow, (int)cfg.powerDbm, (unsigned)rxPowerUps, (int)rRssi, rxUniOff ? "; ПЕРЕВІРКА: повідомлення йдуть по-старому, «всім» (n13=0 — вимкнути)" : "");
+    rxFxPrint();
   }
   if (!cfg.isTx) {   // чем громкость оборачивается на деле: шкала 0…100 % растянута на 0…«межа гучності»
     float g = rxVolumeGain(rxVolumeScaled(cfg.volume));
@@ -469,6 +513,31 @@ static void fmUpload(const String &path, uint32_t size, uint32_t baud) {
   hwSerial.printf("\nUPLOAD %s %u з %u байт, повторів %u\n", ok ? "DONE" : "FAIL", (unsigned)got, (unsigned)size, (unsigned)bad);
 }
 
+// Обработка «для слуха» (nsfx.h): что включено и что она делает прямо сейчас.
+static void txNsPrint() {
+  static const char *const LV[] = { "вимкнено", "слабке (до −8 дБ)", "середнє (до −14 дБ)", "сильне (до −20 дБ)" };
+  uint32_t n = txNsCalls, sum = txNsUsSum, mx = txNsUsMax;
+  txNsCalls = 0;
+  txNsUsSum = 0;
+  txNsUsMax = 0;
+  Serial.printf("шумозаглушення входу: %s (e6=0…3), чутливість %u (e8=0…4); шум %s (e7=1 — запам'ятати зараз, e7=0 — сам); зараз прибирає %.1f дБ, кроків у паузах %u; час на кадр (на ядрі екрана) сер. %u, найдовше %u мкс; не встигло кадрів %u\n", LV[cfg.txNs > 3 ? 0 : cfg.txNs], cfg.txNsSens, txNsFrozen ? "запам'ятовано на прохання" : "запам'ятовується сам у паузах", cfg.txNs ? -txNsRedDb : 0.0f, (unsigned)txNsPauseHops, n ? (unsigned)(sum / n) : 0u, (unsigned)mx, (unsigned)txNsLate);
+}
+static void rxFxPrint() {
+  uint32_t n = rxNsCalls, sum = rxNsUsSum, mx = rxNsUsMax;
+  float red = rxDynRedDb, gate = rxGateRedDb;
+  rxNsCalls = 0;
+  rxNsUsSum = 0;
+  rxNsUsMax = 0;
+  rxDynRedDb = 0;
+  rxGateRedDb = 0;
+  Serial.printf("обробка звуку: 16 шумозаглушення %u (зараз прибирає %.1f дБ, кроків у паузах %u, час на блок сер. %u, найдовше %u мкс); 17 стискання %u (найбільше з минулого разу −%.1f дБ); 18 у паузах %u (найбільше −%.1f дБ, дно шуму %.0f дБ); обмежувач найглибше %.1f дБ; 19 чутливість %u, 20 поріг пауз +%u дБ, 21 закриття пауз %u, 22 зразок шуму %s\n", cfg.rxNs, cfg.rxNs ? -rxNsRedDb : 0.0f, (unsigned)rxNsPauseHops, n ? (unsigned)(sum / n) : 0u, (unsigned)mx, cfg.rxComp, red, cfg.rxGate, gate, rxGateFloorDb, 20 * log10f(rxLimLow > 0.001f ? rxLimLow : 0.001f), cfg.rxNsSens, 3 + 3 * cfg.rxGateThr, cfg.rxGateRel, rxNsFrozen ? "запам'ятовано" : "сам");
+}
+
+// Проба нейросети ESP-SR над файлом с карты (итог 11.10 — в ЖУРНАЛе): в обычную сборку не входит (она тянет 139 КБ
+// кода); включается строкой #define HL_NSNET_TEST перед этим местом.
+#ifdef HL_NSNET_TEST
+#include "nsnettest.h"
+#endif
 // Файловый менеджер карты — с порта (для проверки без рук). Ждёт конца работы и печатает итог.
 static void fmSerial(const String &arg) {
   char c = arg.length() ? arg[0] : 0;
@@ -493,6 +562,49 @@ static void fmSerial(const String &arg) {
   if (c == 'u') {   // Fu<путь>|<размер>|<скорость> — принять файл с компьютера (tools/sendfile.py)
     int b2 = q.indexOf('|');
     fmUpload(p, (uint32_t)q.toInt(), b2 >= 0 ? (uint32_t)q.substring(b2 + 1).toInt() : 115200);
+    return;
+  }
+#ifdef HL_NSNET_TEST
+  if (c == 'n') {   // Fn<вход.wav>|<выход.wav>|<с секунды>|<секунд> — проба нейросетевого шумоподавления над файлом (nsnettest.h)
+    nsnetTest(p, q);
+    return;
+  }
+#endif
+  if (c == 'x') {   // Fx<файл>|<смещение>|<длина> — отдать кусок любого файла с карты на компьютер (tools/getfile.py):
+                    // строки «=<48 байт в base64>*<сумма байтов, 4 знака>»; так снимаются записи звука для разбора
+    int b2 = q.indexOf('|');
+    uint32_t off = (uint32_t)strtoul(q.c_str(), NULL, 10), len = b2 >= 0 ? (uint32_t)strtoul(q.c_str() + b2 + 1, NULL, 10) : 0, total = 0;
+    char full[300];
+    snprintf(full, sizeof(full), "/sd%s", p.c_str());
+    FILE *f = fopen(full, "rb");
+    if (!f) {
+      Serial.println("файл не відкрився");
+      return;
+    }
+    fseek(f, 0, SEEK_END);
+    uint32_t size = (uint32_t)ftell(f);
+    fseek(f, off, SEEK_SET);
+    static uint8_t raw[48];
+    static char b64[72];
+    while (total < len) {
+      size_t n = fread(raw, 1, len - total < 48 ? len - total : 48, f), o = 0;
+      if (!n) break;
+      uint32_t sum = 0;
+      for (size_t i = 0; i < n; i++) sum += raw[i];
+      static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = raw[i] << 16 | (i + 1 < n ? raw[i + 1] << 8 : 0) | (i + 2 < n ? raw[i + 2] : 0);
+        b64[o++] = T[v >> 18];
+        b64[o++] = T[(v >> 12) & 63];
+        b64[o++] = i + 1 < n ? T[(v >> 6) & 63] : '=';
+        b64[o++] = i + 2 < n ? T[v & 63] : '=';
+      }
+      b64[o] = 0;
+      Serial.printf("=%s*%04X\n", b64, (unsigned)(sum & 0xFFFF));
+      total += n;
+    }
+    fclose(f);
+    Serial.printf("— кінець шматка: %u байт від %u; розмір файла %u —\n", (unsigned)total, (unsigned)off, (unsigned)size);
     return;
   }
   if (c == 't') {   // Ft<файл> — напечатать текстовый файл с карты целиком (журнал работы после зала)
@@ -632,12 +744,20 @@ static void command(String s) {
     case 'v': {   // v0 — скорость выбирается сама
       int i = 0;
       while (i < N_RATES && arg != RATES[i].name) i++;
-      if (arg == "0") cfg.rateAuto = 1;
-      else if (i == N_RATES) return;
-      else {
+      if (arg == "0") {
+        cfg.rateAuto = 1;
+        cfg.rateTop = 255;
+        rateKick = 1;
+      } else if (i == N_RATES) return;
+      else {   // выбранная вручную — верхняя ступень: ради слабого приёмника передатчик опустится с неё сам (Ql0 — запретить)
         cfg.rateAuto = 0;
-        cfg.rateIdx = i;
-        rApply = true;
+        cfg.rateTop = i;
+        // как с экрана (ui_tx.h): стоим внизу ради слабого приёмника — наверх ведёт rateAutoTick (сразу, если уже можно)
+        if (!(cfg.isTx && rateHeldLow())) {
+          cfg.rateIdx = i;
+          rApply = true;
+        }
+        rateKick = 1;
       }
       break;
     }
@@ -663,6 +783,7 @@ static void command(String s) {
     case 'q':   // якість звуку: 0 найвища … 3 дальня
       if (v < 0 || v >= Q_COUNT) return;
       cfg.quality = v;
+      if (cfg.isTx && rateHeldLow()) rateKick = 1;   // как с экрана: подняться с нижней ступени, если приёмники уже слышат
       break;
     case 'p':
       if (v < 2 || v > 20) return;
@@ -703,7 +824,7 @@ static void command(String s) {
       txI2sNoMclk = v == 2 ? I2S_NO_MCLK : 0;
       restart = true;
       break;
-    case 'o': cfg.output = v ? OUT_I2S : OUT_PDM; restart = true; break;
+    case 'o': cfg.output = v == 2 ? OUT_CS4344 : v ? OUT_I2S : OUT_PDM; restart = true; break;
     case 'd':
       if (v != 0 && (v < 4 || v > 40)) return;
       cfg.depthMs = v;
@@ -845,6 +966,7 @@ static void command(String s) {
       }
       return;
     case 'F':   // передатчик: файловый менеджер карты с порта — Fl<папка> список, Fi<файл> сведения, Fp<файл> в эфир, Fs стоп,
+                // Fx<файл>|<смещение>|<длина> — кусок файла на компьютер (tools/getfile.py),
                 // Fm<папка> создать, Fd<путь> удалить, Fc<файл>|<папка> копировать; F — что сейчас в эфире. Форматирования с порта нет.
       if (cfg.isTx && cfg.board == BOARD_4848) fmSerial(arg);
       return;
@@ -885,8 +1007,10 @@ static void command(String s) {
         else if (v == 3) {            // шесть «плохих» секунд подряд — проверить счёт затора (паузу после прошлой попытки снять)
           hopFake = 6;
           hopQuietUntil = 0;
-        } else if (arg.length()) cfg.autoHop = v ? 1 : 0;
-        Serial.printf("канал при заторі: %s%s\n", cfg.autoHop ? "міняю сам" : "не міняю", v == 2 ? "; пошук почнеться за секунду" : v == 3 ? "; шість секунд вважаю поганими" : "");
+        } else if (v == 4) hopSoftForce = true;   // «мягкий» уход сейчас: проба лучшего по замеру канала, через минуту работы на нём — возврат (проверка хода)
+        else if (arg.length()) cfg.autoHop = v ? 1 : 0;
+        Serial.printf("канал при заторі: %s%s\n", cfg.autoHop ? "міняю сам" : "не міняю", v == 2 ? "; пошук почнеться за секунду" : v == 3 ? "; шість секунд вважаю поганими" : v == 4 ? "; м'яка проба почнеться за секунду, за хвилину повернуся" : "");
+        hopSoftPrint();
         if (v < 2 && arg.length()) settingsSave();
       }
       return;
@@ -909,7 +1033,13 @@ static void command(String s) {
         Serial.printf("спостереження за ефіром %s\n", monOn ? "увімкнено" : "вимкнено");
       }
       return;
-    case 'P': peersPrint(); return;
+    case 'P':
+      if (cfg.isTx && arg == "0") {
+        peersStatZero();
+        Serial.println("лічбу повідомлень приймачів почато заново");
+      }
+      peersPrint();
+      return;
     case 'n':   // приёмник: настройки «для слуха и удобства» — n показать; n<номер>=<значение> сменить; n9=1 / n9=0 — проверка наушников
       if (!cfg.isTx) {
         int p = -1, val = 0;
@@ -927,8 +1057,17 @@ static void command(String s) {
             static const char *const FK[] = { "вимкнено", "драйвер «узяв пакет і мовчить»", "пакети «йдуть у нікуди» (до перезавантаження радіо)", "пакети «йдуть у нікуди» (до перезапуску плати)", "пакети «йдуть у нікуди» (і після перезапуску плати)" };
             Serial.printf("перевірка радіо приймача: %s\n", FK[rxTxFake]);
           }
+          else if (p == 13) {   // n13=<0|1> — проверка: сообщать о себе по-старому, «всем», без подтверждения (см. rxSendTo в radio.h)
+            rxUniOff = val ? 1 : 0;
+            Serial.printf("повідомлення про себе: %s\n", rxUniOff ? "по-старому, «всім» (перевірка)" : "на адресу передавача, з підтвердженням");
+          }
           else if (p == 7) rxUiAsk = (uint8_t)val;   // n7=1 меню, n7=2 «Зв'язок», n7=3 главный экран — для замеров
           else if (p == 8) {   // n8=1 — как настроен вывод кнопки ручки; n8=<мс> — «нажать» её программно на столько миллисекунд
+            if (val >= 11 && val <= 14) {   // n8=11 — «не число» на вход обработки, 12 — в память эквалайзера, 13 — держать выход на одном числе, 14 — снять
+              rxFakeNan = val == 14 ? 0 : (uint8_t)val;
+              Serial.printf("перевірка сторожа звуку: %s; скидань через «не число» %u, через стоячий вихід %u, спіймано на вході %u\n", val == 11 ? "«не число» на вхід обробки" : val == 12 ? "«не число» в пам'ять еквалайзера" : val == 13 ? "вихід тримаю на одному числі (n8=14 — зняти)" : "знято", (unsigned)rxFxNan, (unsigned)rxFxStuck, (unsigned)rxBadIn);
+              return;
+            }
             if (val == 9) {   // n8=9 — «логический анализатор»: что на самом деле идёт на ЦАП по выводам BCK, LRCK и данных
               if (cfg.output != OUT_I2S) {
                 Serial.println("вихід не PCM5102 — знімати нічого");
@@ -996,16 +1135,22 @@ static void command(String s) {
               uint32_t in = rxInSamples, out = rxOutSamples;
               if (t0) {
                 double sec = (t - t0) / 1e6, fin = (in - in0) / sec, fout = (out - out0) / sec;
-                Serial.printf("за %.1f с: з ефіру %.2f відліків/с (%+.0f ppm від 32000), на вихід %.2f відліків/с (%+.0f ppm), вихід відносно ефіру %+.0f ppm; темп %+.0f ppm\n",
-                              sec, fin, (fin / 32000 - 1) * 1e6, fout, (fout / 32000 - 1) * 1e6, (fout / fin - 1) * 1e6, (double)rxRatioPpm);
+                Serial.printf("за %.1f с: з ефіру %.2f відліків/с (%+.0f ppm від 32000), на вихід %.2f відліків/с (%+.0f ppm від %u), вихід відносно ефіру %+.0f ppm; темп %+.0f ppm\n",
+                              sec, fin, (fin / 32000 - 1) * 1e6, fout, (fout / rxOutRate - 1) * 1e6, (unsigned)rxOutRate, (fout / (fin / rxRateBase) - 1) * 1e6, (double)rxRatioPpm);
               }
               if (t0) {
                 Serial.printf("вихід лишався без даних %u раз із %u порцій по 1 мс\n", (unsigned)(rxOutStarved - st0), (unsigned)(rxOutSent - sn0));
                 float low = rxLimLow;
                 Serial.printf("обмежувач: працював %.1f %% часу, найбільше −%.1f дБ; гучність %u, чіткість %u\n", (out - out0) ? 100.0 * rxLimBusy / (out - out0) : 0.0,
                               low < 1 ? -20 * log10f(low) : 0.0f, cfg.volume, cfg.rxClarity);
-                Serial.printf("кадрів із запасних копій: зі стерео %u, у моно %u; подвійних пакетів (два кадри в пакеті) прийнято %u\n", (unsigned)rxScCount, (unsigned)rxMonoRec, (unsigned)rxDblCount);
+                Serial.printf("кадрів із запасних копій: %u, із них без стиснення (точних) %u; зі стерео %u, у моно %u; подвійних пакетів (два кадри в пакеті) прийнято %u\n", (unsigned)rxRecAll, (unsigned)rxExactRec, (unsigned)rxScCount, (unsigned)rxMonoRec, (unsigned)rxDblCount);
+                if (rxSubCalls) Serial.printf("новий кодек: пакетів розібрано %u, час на пакет сер. %u, найдовше %u мкс\n", (unsigned)rxSubCalls, (unsigned)(rxSubUsSum / rxSubCalls), (unsigned)rxSubUsMax);
+                rxSubCalls = 0;
+                rxSubUsSum = 0;
+                rxSubUsMax = 0;
                 rxDblCount = 0;
+                rxRecAll = 0;
+                rxExactRec = 0;
                 rxScCount = 0;
                 rxMonoRec = 0;
               }
@@ -1033,15 +1178,23 @@ static void command(String s) {
                 Serial.printf("вивід %d: одиниць %u %%, перепадів за 20 мс %u (≈%u Гц), опитувань %u\n", pin, (unsigned)(n ? ones * 100 / n : 0), (unsigned)edges,
                               (unsigned)(edges * 25), (unsigned)n);
               }
-              Serial.printf("вихід: %s, %s; XSMT (вивід %d): %d\n", cfg.output == OUT_I2S ? "PCM5102 (I2S): BCK 11, LRCK 12, DIN 13; вивід 10 — нуль для SCK" : "PDM: 17, 18",
+              Serial.printf("вихід: %s, %s; XSMT (вивід %d): %d\n", cfg.output == OUT_CS4344 ? "CS4344 (I2S): MCLK 10 (8 МГц), SCLK 11, LRCK 12, SDIN 13; XSMT не потрібен" : cfg.output == OUT_I2S ? "PCM5102 (I2S): BCK 11, LRCK 12, DIN 13; вивід 10 — нуль для SCK" : "PDM: 17, 18",
                             rxOutLive() ? "живий" : "СТОЇТЬ", PIN_DAC_XSMT, gpio_get_level((gpio_num_t)PIN_DAC_XSMT));
+              if (cfg.output == OUT_CS4344) {   // делитель главного такта: целый ли (дробный даёт неровные периоды)
+                uint32_t n = I2S0.tx_clkm_conf.tx_clkm_div_num, z = I2S0.tx_clkm_div_conf.tx_clkm_div_z, y = I2S0.tx_clkm_div_conf.tx_clkm_div_y;
+                uint32_t x = I2S0.tx_clkm_div_conf.tx_clkm_div_x, b = I2S0.tx_conf1.tx_bck_div_num + 1, sel = I2S0.tx_clkm_conf.tx_clk_sel;
+                Serial.printf("головний такт: джерело %s, ділення %u%s (дробу z=%u y=%u x=%u) → %.3f МГц; такт бітів = головний / %u; частота виходу %u Гц; %s\n", sel == 2 ? "PLL 160 МГц" : sel == 0 ? "XTAL 40 МГц" : "інше", (unsigned)n, z || y || x ? " з дробом" : " ціле", (unsigned)z, (unsigned)y, (unsigned)x, (sel == 2 ? 160.0 : 40.0) / n, (unsigned)b, (unsigned)rxOutRate, rxMclkGrounded ? "ВИВІД 10 НА «ЗЕМЛІ» — такт на нього не подається" : "такт виходить на вивід 10");
+              }
               return;
             }
             if (val == 2) gpio_wakeup_enable((gpio_num_t)PIN_ENC_SW, GPIO_INTR_LOW_LEVEL);   // n8=2 — оставить вывод таким, каким его оставлял сон до 2.32
-            if (val == 5 || val == 6) {   // n8=5 — «нажать» ручку на секунду, не задерживая главный цикл; n8=6 — то же через 30 с
+            if (val == 5 || val == 6 || val == 10) {   // n8=5 — «нажать» ручку на секунду, не задерживая главный цикл; n8=6 — то же через 30 с;
+              // n8=10 — через 30 с нажать и держать 11 с (проверка «держать 10 с — забыть набор» у выключенного приёмника)
               // (во сне порт не слушает, поэтому пробуждение кнопкой проверяется нажатием, назначенным заранее)
               static esp_timer_handle_t rel;
               static volatile bool down;
+              static volatile uint32_t holdUs;
+              holdUs = val == 10 ? 11000000 : 1200000;
               if (!rel) {
                 esp_timer_create_args_t ta = {};
                 ta.callback = [](void *) {
@@ -1049,7 +1202,7 @@ static void command(String s) {
                     down = true;
                     gpio_set_direction((gpio_num_t)PIN_ENC_SW, GPIO_MODE_INPUT_OUTPUT_OD);
                     gpio_set_level((gpio_num_t)PIN_ENC_SW, 0);
-                    esp_timer_start_once(rel, 1200000);
+                    esp_timer_start_once(rel, holdUs);
                   } else {       // пора отпустить
                     down = false;
                     gpio_set_level((gpio_num_t)PIN_ENC_SW, 1);
@@ -1061,8 +1214,8 @@ static void command(String s) {
               }
               esp_timer_stop(rel);
               down = false;
-              esp_timer_start_once(rel, val == 6 ? 30000000 : 1000);
-              Serial.printf("ручку буде натиснуто на секунду %s\n", val == 6 ? "через 30 с" : "зараз");
+              esp_timer_start_once(rel, val == 5 ? 1000 : 30000000);
+              Serial.printf("ручку буде натиснуто на %s %s\n", val == 10 ? "11 с" : "секунду", val == 5 ? "зараз" : "через 30 с");
               return;
             }
             if (val == 3 || val == 4) {   // n8=3 / n8=4 — «повернуть» ручку на щелчок в одну и в другую сторону (выводы сами замыкаются на «землю»)
@@ -1093,7 +1246,8 @@ static void command(String s) {
           }
           else if (rxParamSet((uint8_t)p, val)) settingsSave();
         }
-        Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s; підсилення +%u дБ (зараз %+.1f); блокування %u; еквалайзер %d %d %d %d %d дБ, зріз низів %u; рівень до нього %.1f дБ, після %.1f дБ\n",
+rxFxPrint();
+                Serial.printf("налаштування: 0 чіткість %u, 1 баланс %d, 2 межа гучності %u (гучність %u, звук %.1f дБ), 3 вигляд %u, 4 світлодіод %u, 5 мова %u (на екрані %s)%s; підсилення +%u дБ (зараз %+.1f); блокування %u; еквалайзер %d %d %d %d %d дБ, зріз низів %u; рівень до нього %.1f дБ, після %.1f дБ\n",
                       cfg.rxClarity, cfg.rxBalance, cfg.rxVolMax, cfg.volume, cfg.volume ? 20 * log10f(rxVolumeGain(rxVolumeScaled(cfg.volume))) : -99.0f, cfg.rxView, cfg.rxLed, cfg.rxLang, uiLang ? "English" : "українська",
                       rxEarTest ? "; ІДЕ ПЕРЕВІРКА НАВУШНИКІВ" : "", cfg.rxBoost * 2, 20 * log10f(rxBoostNow > 0.01f ? rxBoostNow : 0.01f), cfg.rxLock, (cfg.rxEq[0] - 6) * 2, (cfg.rxEq[1] - 6) * 2, (cfg.rxEq[2] - 6) * 2,
                       (cfg.rxEq[3] - 6) * 2, (cfg.rxEq[4] - 6) * 2, cfg.rxLowCut,
@@ -1107,6 +1261,21 @@ static void command(String s) {
       if (cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b == 9) {   // e9=1 — проба: эквалайзер и на тоне 1 кГц
         txEqOnTone = val != 0;
         Serial.printf("еквалайзер входу на перевірочному тоні: %u\n", (unsigned)txEqOnTone);
+        return;
+      }
+      if (cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b == 8) {   // e8=<0…4> — чувствительность шумозаглушения входа
+        cfg.txNsSens = (uint8_t)constrain(val, 0, 4);
+        txNsPrint();
+        break;
+      }
+      if (cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && (b == 6 || b == 7)) {
+        // e6=<0…3> — шумозаглушение входа: выключено / слабое / среднее / сильное; e7=1 — запомнить шум сейчас (в эфире
+        // должна быть только тишина с шумом), e7=0 — снова оценивать его самому, в паузах
+        if (b == 6) cfg.txNs = (uint8_t)constrain(val, 0, 3);
+        else if (val) txNsLearnAsk = true;
+        else txNsFrozen = false;
+        txNsPrint();
+        if (b == 6) break;
         return;
       }
       bool set = cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b >= 0 && b <= 5;
@@ -1131,6 +1300,10 @@ static void command(String s) {
           snprintf(idx, sizeof(idx), "%02X%02X%02X", peers[i].id[0], peers[i].id[1], peers[i].id[2]);
           if (who[0] && strcasecmp(who, idx)) continue;
           if (!peers[i].hasInfo) continue;   // понимают приёмники с версии 2.32 — они сообщают свои настройки
+          if (p >= RXP_Y_NS && p <= RXP_Y_LEARN) {   // i16 шумозаглушение, i17 сжатие, i18 «в паузах» — по 0…3 (приёмники с 2.68); с 2.72 —
+            // i19 чувствительность 0…4, i20 порог пауз 0…4, i21 закрытие пауз 0…2, i22 образец шума (2 — запомнить сейчас, 0 — сам)
+            peerCommand(peers[i].id, CMD_SET2, (uint8_t)(((p - 16) << 5) | constrain(val, 0, 4)));
+          } else
           if (p == 7) {   // i7=<дБ 0…24> — усиление приёмника (с 2.48)
             peerCommand(peers[i].id, CMD_SET, (uint8_t)((RXP_X_BOOST << 5) | constrain(val / 2, 0, 12)));
           } else
@@ -1156,6 +1329,27 @@ static void command(String s) {
     case 'V':
     case 'X':
     case 'N':
+      if (c == 'E' && arg.indexOf(' ') > 0) {   // E<0|1> <номер> — выключить/включить именно этот приёмник (на связи он или нет)
+        String h = arg.substring(arg.indexOf(' ') + 1);
+        h.trim();
+        uint8_t id[3] = {};
+        if (h.length() == 6)
+          for (int k = 0; k < 3; k++) id[k] = (uint8_t)strtol(h.substring(k * 2, k * 2 + 2).c_str(), NULL, 16);
+        int i = h.length() == 6 ? peerFind(id) : -1;
+        if (i < 0) Serial.println("такого приймача в наборі немає");
+        else {
+          if (v == 2) {   // E2 <номер> — перезапустить этот приёмник (как кнопкой «Перезапустити» в его окне)
+            peerCommand(peers[i].id, CMD_RESTART, 0);
+            Serial.printf("приймач %02X%02X%02X: надіслано команду «перезапуститися»\n", peers[i].id[0], peers[i].id[1], peers[i].id[2]);
+            return;
+          }
+          peerCommand(peers[i].id, CMD_ENABLE, v ? 1 : 0);
+          peers[i].wantOff = !v;
+          peersDirty = true;
+          Serial.printf("приймач %02X%02X%02X: з передавача задано «%s»\n", peers[i].id[0], peers[i].id[1], peers[i].id[2], v ? "увімкнений" : "вимкнений");
+        }
+        return;
+      }
       for (int i = 0; i < PEERS_MAX; i++)
         if (peers[i].used && peerOnline(peers[i])) {
           if (c == 'W' && peers[i].fw < 11) continue;   // стерео понимают приёмники с версии 1.1
@@ -1165,7 +1359,6 @@ static void command(String s) {
           if (c == 'E') {   // как выключатель на экране: команда повторяется, пока приёмник (он может спать) не подтвердит
             peerCommand(peers[i].id, CMD_ENABLE, v ? 1 : 0);
             peers[i].wantOff = !v;
-            peers[i].enforceUntil = millis() + 15000;
             peersDirty = true;
           }
           if (c == 'W') peerCommand(peers[i].id, CMD_STEREO, v ? 1 : 0);
@@ -1219,9 +1412,32 @@ static void command(String s) {
           return;
         }
         if (arg.length() >= 2 && arg[0] == 'd') {   // Qd0 / Qd1 / Qd2 — два кадра в пакете: никогда / когда все приёмники умеют / всегда
-          txDoubleMode = arg[1] == '2' ? 2 : arg[1] == '1' ? 1 : 0;
-          Serial.printf("два кадри в пакеті: %s; приймачі: %s; зараз в ефірі %s пакети\n", txDoubleMode == 2 ? "завжди (перевірка)" : txDoubleMode ? "коли всі приймачі зі списку вміють" : "ні",
-                        txDoubleOk ? "усі зі списку вміють (2.60+)" : txDoubleWhy == 2 ? "відкрите вікно додавання" : "у списку є зі старішою або невідомою прошивкою", txDblNow ? "ПОДВІЙНІ" : "одиночні");
+          txDoubleMode = arg[1] == '3' ? 3 : arg[1] == '2' ? 2 : arg[1] == '1' ? 1 : 0;
+          Serial.printf("два кадри в пакеті: %s; приймачі: %s; зараз в ефірі %s пакети\n", txDoubleMode == 3 ? "завжди, копії лише стиснені (перевірка)" : txDoubleMode == 2 ? "завжди, з точними копіями (перевірка)" : txDoubleMode ? "коли всі приймачі зі списку вміють" : "ні",
+                        txDupOk ? "усі зі списку вміють і точні копії (2.77+)" : txDoubleOk ? "усі зі списку вміють (2.60+), точних копій — не всі" : txDoubleWhy == 2 ? "відкрите вікно додавання" : "у списку є зі старішою або невідомою прошивкою", txDupNow ? "ПОДВІЙНІ з точними копіями" : txDblNow ? "ПОДВІЙНІ" : "одиночні");
+          return;
+        }
+        if (arg.length() >= 2 && arg[0] == 'c') {   // Qc0 / Qc1 — подполосный кодек не применять / применять (сравнение на слух с прежним сжатием; не запоминается)
+          txSubOff = arg[1] == '0';
+          Serial.printf("новий кодек для «стандартна»: %s; приймачі: %s; зараз в ефірі %s\n", txSubOff ? "ВИМКНЕНО (перевірка; Qc1 — повернути)" : "дозволено", txSubOk ? "усі зі списку вміють (2.79+)" : "не всі вміють", txSubNow ? "він" : "не він");
+          return;
+        }
+        if (arg.length() >= 4 && arg[0] == 'p' && cfg.board == BOARD_4848) {   // Qp<настройка>=<значение> — выбор «как с экрана» (проверка обработки без касаний; номера — enum Param в txui.h)
+          int eq = arg.indexOf('=');
+          if (eq > 1) {
+            ui::out.setValue = arg.substring(eq + 1).toInt();
+            ui::out.setParam = arg.substring(1, eq).toInt();
+            Serial.printf("вибір як з екрана: налаштування %d = %d\n", (int)ui::out.setParam, (int)ui::out.setValue);
+          }
+          return;
+        }
+        if (arg.length() >= 2 && arg[0] == 'l') {   // Ql0 / Ql1 — нижнюю ступень скорости запретить / разрешить (для замеров на заданной скорости; не запоминается)
+          if (arg[1] == '2' || arg[1] == '3') {   // Ql2 / Ql3 — настройка «Слабкий сигнал»: не снижать / снижать (запоминается, как с экрана)
+            cfg.rateLadder = arg[1] == '3';
+            rateKick = 1;
+            settingsSave();
+          } else rateLadderOff = arg[1] == '0';
+          Serial.printf("нижча ступінь швидкості заради слабкого приймача: %s; налаштування «Слабкий сигнал»: %s\n", rateLadderOff ? "ВИМКНЕНА (перевірка; Ql1 — повернути)" : "дозволена", cfg.rateLadder ? "знижувати" : "не знижувати");
           return;
         }
         if (arg.length() >= 2 && arg[0] == 's') {   // Qs1 / Qs0 — отправка по одному / как до 2.52 (для сравнения)
@@ -1301,18 +1517,19 @@ static void logEmit() {
     head = true;
     o += snprintf(t + o, cap - o, "# hearlink %s; запуск: %s; рядки раз на 10 с: час с, канал, швидкість, якість, пакетів, відмов, не пішло, перезапусків радіо, "
                   "до ефіру сер./макс. мс, черга, проріджено, пропущено, рівень дБ, джерело, запис, шум радіо дБм | приймач: зв'язок, сон, сигнал там/тут дБм, запас мс, втрати %%, "
-                  "пропусків, провалів мс\n", FW_VERSION, resetReason());
+                  "пропусків, провалів мс, повідомлень про себе отримано/не дійшло\n", FW_VERSION, resetReason());
   }
   const LogAcc &a = logAcc;
   o += snprintf(t + o, cap - o, "t=%u к=%u шв=%s як=%u пак=%u відм=%u неп=%u рест=%u еф=%.1f/%.1f черга=%d прор=%u проп=%u рів=%.0f дж=%s зап=%u шум=%.0f", (unsigned)(millis() / 1000),
                 cfg.channel, RATES[cfg.rateIdx].name, (unsigned)txQNow, (unsigned)a.frames, (unsigned)a.refused, (unsigned)a.air, (unsigned)rRestarts,
                 a.airN ? a.airSumUs / 1000.0f / a.airN : 0.0f, a.airMaxUs / 1000.0f, a.pendMax, (unsigned)a.thinned, (unsigned)a.skipped,
                 a.pk > 0 ? 20 * log10f(a.pk / 32768.0f) : -99.0f, fm.playing ? "файл" : cfg.tone ? "перевірка" : txMute ? "тиша" : "вхід", recOn ? 1u : 0u, phy_get_noise_floor() / 4.0f);
-  for (int i = 0; i < PEERS_MAX && o < cap - 90; i++) {
-    const Peer &p = peers[i];
+  for (int i = 0; i < PEERS_MAX && o < cap - 104; i++) {
+    Peer &p = peers[i];
     if (!p.used) continue;
-    o += snprintf(t + o, cap - o, " | %02X%02X%02X зв=%u сон=%u с=%d/%d зап=%u втр=%.1f проп=%u пров=%u", p.id[0], p.id[1], p.id[2], peerOnline(p) ? 1u : 0u,
-                  p.flags & ST_SLEEP ? 1u : p.flags & ST_OFF ? 2u : 0u, p.rssi, p.rssiHere, p.depthMs, p.lossPm / 10.0f, p.lostFrames, p.underMs);
+    o += snprintf(t + o, cap - o, " | %02X%02X%02X зв=%u сон=%u с=%d/%d зап=%u втр=%.1f проп=%u пров=%u ст=%u/%u", p.id[0], p.id[1], p.id[2], peerOnline(p) ? 1u : 0u,
+                  p.flags & ST_SLEEP ? 1u : p.flags & ST_OFF ? 2u : 0u, p.rssi, p.rssiHere, p.depthMs, p.lossPm / 10.0f, p.lostFrames, p.underMs, (unsigned)p.stGot10, (unsigned)p.stMiss10);
+    p.stGot10 = p.stMiss10 = 0;
   }
   if (o > cap - 2) o = cap - 2;
   t[o++] = '\n';
@@ -1573,9 +1790,15 @@ void setup() {
     if (esp_reset_reason() == ESP_RST_POWERON) {   // память часов после подачи питания — случайная
       rxHealBootMagic = 0;
       rxHealBootCount = 0;
+      rxSoundBootCount = 0;
       rxFakeKeep = 0;
     }
     rxHealBoot = rxHealBootMagic == RX_HEAL_BOOT;
+    rxSoundBoot = rxHealBootMagic == RX_SOUND_BOOT;
+    if (rxSoundBoot || rxHealBootMagic == RX_ASKED_BOOT) {   // сторож звука или просьба передатчика: звук вернуть сразу, без заставки
+      rxQuietBoot = true;
+      Serial.println(rxSoundBoot ? "запуск після перезапуску сторожем звуку — без заставки" : "запуск після перезапуску з передавача — без заставки");
+    }
     rxHealBootMagic = 0;
     if (rxHealBoot) {
       rxQuietBoot = true;
@@ -1650,13 +1873,56 @@ void loop() {
       uint32_t now = millis();
       char t[DBG_LINE + 1];
       if (why == 1) snprintf(t, sizeof(t), "приймач: радіо не відповідало на надсилання (у драйвера %u, мовчало %u мс, код 0x%x) — перезавантажено за %u мс; канал міняли %u мс тому, запис %u мс тому; разів %u+%u", (unsigned)rxHealPend, (unsigned)rxHealQuietMs, (unsigned)rxTxLastErr, (unsigned)rxHealTookMs, (unsigned)(rLastChanMs ? now - rLastChanMs : 0), (unsigned)(rLastNvsMs ? now - rLastNvsMs : 0), (unsigned)rxHealStuck, (unsigned)rxHealUnseen);
-      else snprintf(t, sizeof(t), "приймач: передавач мене не чув — радіо перезавантажено за %u мс; пакетів надіслано %u, відповідей драйвера %u, відмов %u; разів %u+%u", (unsigned)rxHealTookMs, (unsigned)rxTxPutCount, (unsigned)rxTxDoneCount, (unsigned)rxTxErr, (unsigned)rxHealStuck, (unsigned)rxHealUnseen);
+      else snprintf(t, sizeof(t), "приймач: передавач мене не чув%s — радіо перезавантажено за %u мс; пакетів надіслано %u, відповідей драйвера %u, відмов %u; разів %u+%u", rxUnseenStage == 3 ? " (хоч його радіо приймання підтверджувало)" : "", (unsigned)rxHealTookMs, (unsigned)rxTxPutCount, (unsigned)rxTxDoneCount, (unsigned)rxTxErr, (unsigned)rxHealStuck, (unsigned)rxHealUnseen);
       Serial.println(t);
       dbgEvent(t);
       static char bb[2048];
       if (bbSnapMagic == BB_MAGIC) {
         bbFormat(bbSnap, bb, sizeof(bb), false);
         Serial.print(bb);
+      }
+    }
+    {   // звук: просьбы о перезапуске, сторожа и сообщения о самовосстановлении (rxaudio.h, «ЗВУК ПРОПАЛ ДО ПЕРЕЗАГРУЗКИ»)
+      if (rxRestartAsk) {
+        uint8_t w = rxRestartAsk;
+        rxRestartAsk = 0;
+        rxAskedRestart(w == 1);
+      }
+      // сторож попросил перезапуск: не чаще раза в 10 минут (иначе при неустранимой причине плата перезапускалась бы без конца)
+      if (rxSoundRestartAsk) {
+        rxSoundRestartAsk = false;
+        if (!rxSoundBoot || millis() > 600000) rxSoundRestart("вихід звуку стояв при звуці в ефірі, скидання обробки не допомогло");
+      }
+      {   // выход на ЦАП перестал забирать данные (порции по 1 мс не уходят 5 с, хотя звук включён) — тоже перезапуск
+        static uint32_t sentSeen, sentAt;
+        uint32_t sn = rxOutSent, nowS = millis();
+        if (sn != sentSeen || !rxAudioOn || rxAudioStopped || cfg.output == OUT_PDM || rxOtaMute || !sentAt) {
+          sentSeen = sn;
+          sentAt = nowS ? nowS : 1;
+        } else if (nowS - sentAt > 5000 && (!rxSoundBoot || nowS > 600000)) rxSoundRestart("вихід на ЦАП не забирає звук 5 с");
+      }
+      static uint32_t toldNan, toldStuck, toldIn;
+      static bool toldBoot;
+      char t[DBG_LINE + 1];
+      if (rxFxNan != toldNan) {
+        toldNan = rxFxNan;
+        snprintf(t, sizeof(t), "приймач: в обробці звуку застрягло «не число» — пам'ять фільтрів скинуто, звук повернуто (%u-й раз)", (unsigned)toldNan);
+        Serial.println(t);
+        dbgEvent(t);
+      } else if (rxFxStuck != toldStuck) {
+        toldStuck = rxFxStuck;
+        snprintf(t, sizeof(t), "приймач: вихід стояв при звуці в ефірі — обробку скинуто (%u-й раз)", (unsigned)toldStuck);
+        Serial.println(t);
+        dbgEvent(t);
+      } else if (rxBadIn != toldIn) {
+        toldIn = rxBadIn;
+        snprintf(t, sizeof(t), "приймач: на вході обробки спіймано «не число» і замінено нулем (усього %u)", (unsigned)toldIn);
+        Serial.println(t);
+        dbgEvent(t);
+      } else if (rxSoundBoot && !toldBoot && rxPower == PW_RUN) {
+        toldBoot = true;
+        snprintf(t, sizeof(t), "приймач: плату перезапустив сторож звуку (%u-й раз від увімкнення живлення)", (unsigned)rxSoundBootCount);
+        dbgEvent(t);
       }
     }
     if (rxHealBoot) {   // запуск после перезапуска «передатчик не слышал» — один раз сообщить передатчику

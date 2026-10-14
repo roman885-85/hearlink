@@ -12,6 +12,7 @@ void settingsSave();
 static uint8_t rxId[3];
 static volatile bool rxSaveAsked;
 static volatile bool rxForgetAsked;        // передатчик удалил приёмник из набора: стереть ключи (делает главный цикл)
+static volatile uint8_t rxRestartAsk;      // перезапустить плату: 1 — попросил передатчик (запуск без заставки), 2 — выбрано в меню (обычный запуск)
 static uint32_t lkFrames, lkRecovered, lkLost, lkUnder;   // накоплено с прошлого сообщения
 
 static const char *rxName() {
@@ -36,6 +37,13 @@ static int rxParamGet(uint8_t p) {
     case RXP_LANG: return cfg.rxLang;
     case RXP_X_LOCK: return cfg.rxLock;
     case RXP_X_BOOST: return cfg.rxBoost;
+    case RXP_Y_NS: return cfg.rxNs;
+    case RXP_Y_COMP: return cfg.rxComp;
+    case RXP_Y_GATE: return cfg.rxGate;
+    case RXP_Y_SENS: return cfg.rxNsSens;
+    case RXP_Y_GTHR: return cfg.rxGateThr;
+    case RXP_Y_GREL: return cfg.rxGateRel;
+    case RXP_Y_LEARN: return rxNsFrozen ? 1 : 0;
   }
   return 0;
 }
@@ -55,6 +63,16 @@ static bool rxParamSet(uint8_t p, int v) {   // значение приводи�
       break;
     case RXP_X_LOCK: cfg.rxLock = lim(v, 0, 3); break;
     case RXP_X_BOOST: cfg.rxBoost = lim(v, 0, 12); break;
+    case RXP_Y_NS: cfg.rxNs = lim(v, 0, 3); break;
+    case RXP_Y_COMP: cfg.rxComp = lim(v, 0, 3); break;
+    case RXP_Y_GATE: cfg.rxGate = lim(v, 0, 3); break;
+    case RXP_Y_SENS: cfg.rxNsSens = lim(v, 0, 4); break;
+    case RXP_Y_GTHR: cfg.rxGateThr = lim(v, 0, 4); break;
+    case RXP_Y_GREL: cfg.rxGateRel = lim(v, 0, 2); break;
+    case RXP_Y_LEARN:   // 2 — запомнить шум сейчас (секунду в эфире должна быть только тишина с шумом), 0 — снова сам
+      if (v >= 2) rxNsLearnAsk = true;
+      else if (v == 0) rxNsAutoAsk = true;
+      break;
     default: return false;
   }
   return true;
@@ -142,8 +160,14 @@ static void rxOnCommand(const uint8_t *data, int len) {
       rxSaveAsked = true;
       break;
     case CMD_FORGET: rxForgetAsked = true; break;
+    case CMD_RESTART:   // первые 10 с после запуска не слушаем: команда идёт в эфир четыре раза, и повтор не должен перезапустить снова
+      if (millis() > 10000) rxRestartAsk = 1;
+      break;
     case CMD_SET:
       if (rxParamSet(c->arg >> 5, (c->arg & 31) - ((c->arg >> 5) == RXP_BALANCE ? 5 : 0))) rxSaveAsked = true;
+      break;
+    case CMD_SET2:
+      if (rxParamSet(16 + (c->arg >> 5), c->arg & 31)) rxSaveAsked = true;
       break;
     case CMD_EARTEST:
       if (rxPower != PW_STANDBY && !cfg.off) rxEarStart(c->arg != 0);
@@ -281,6 +305,15 @@ static void rxPairTick() {
 }
 
 static volatile uint32_t rxStatusSent;   // сколько раз приёмник сообщил о себе
+// Сообщения на адрес передатчика, с подтверждением (с 2.64, см. radio.h): итоги — для отчёта и для сверки ниже
+static volatile uint32_t rxUniOk, rxUniFail, rxUniLate;   // подтверждено / не подтверждено / ответа драйвера не дождались
+static volatile uint32_t rxUniAll;                        // сколько сообщений ушло по-старому, «всем»
+static volatile uint32_t rxUniMsSum, rxUniMsMax;          // сколько шла подтверждённая отправка, мс: сумма и наибольшее
+static volatile uint32_t rxUniFailMsMax;                  // и наибольшее у неподтверждённой (сколько радио повторяло само)
+static volatile uint32_t rxAckMs;                         // когда передатчик последний раз подтвердил сообщение (0 — ни разу)
+static volatile uint32_t rxPowerUps;                      // сколько раз мощность передачи поднималась до полной
+static volatile uint8_t rxUniOff;                         // проверка (порт: n13=1): сообщать о себе по-старому, «всем»
+#define RX_POWER_MAX 20                                   // полная мощность радио, дБм
 // ---- «кого слышу» (proto.h, TxSeen): слышит ли нас передатчик
 static volatile uint32_t rxSeenMs;       // когда мы последний раз были в списке передатчика (0 — ни разу)
 static volatile uint32_t rxRosterMs;     // когда пришло последнее объявление (0 — ни разу: передатчик до 2.59)
@@ -317,28 +350,39 @@ static void rxOnSeen(const uint8_t *data, int len) {
 }
 
 // Сверка (главный цикл, приёмник в работе). Передатчик слышен и объявляет, кого слышит; мы за это время не меньше
-// четырёх раз сообщили о себе — а нас в списке нет дольше RX_UNSEEN_MS. Значит, наши сообщения до него не доходят:
+// восьми раз сообщили о себе — а нас в списке нет дольше RX_UNSEEN_MS. Значит, наши сообщения до него не доходят:
 //   1) перезагрузить радио (около 20 мс без приёма);
-//   2) не помогло за следующие RX_UNSEEN_MS — перезапустить плату без заставки (2–3 с без звука). Один раз: если и
+//   2) не помогло за следующие RX_UNSEEN2_MS — перезапустить плату без заставки (2–3 с без звука). Один раз: если и
 //      после перезапуска нас не слышат, дело не в нас (например, передатчик дальше, чем достаёт приёмник), и снова
 //      перезапускаться — только рвать звук; остаётся изредка перезагружать радио (через 1, 2, 4, 8, потом по 10 минут).
 // Всё забывается, когда нас слышат десять минут подряд. Повторный перезапуск — не раньше чем через полчаса работы и
 // только если после прошлого нас хоть раз услышали.
-#define RX_UNSEEN_MS 12000
+// До 2.64 сроки были 12 и 12 с, и приёмник со слабым сигналом (сообщения доходят через раз) попадал под эту сверку
+// без всякой неисправности. С 2.64 сообщения подтверждаются радио передатчика (radio.h), сроки — 30 и 60 с, а если
+// подтверждения идут, а в списке нас нет, — наше радио исправно: плату не перезапускаем, радио перезагружаем раз в
+// пять минут.
+#define RX_UNSEEN_MS 30000
+#define RX_UNSEEN2_MS 60000
 #define RX_HEAL_BOOT 0x52584842u
+#define RX_SOUND_BOOT 0x52585344u   // перезапуск сторожем звука (rxaudio.h): выход стоял, сброс обработки не помог
+#define RX_ASKED_BOOT 0x52584153u   // перезапуск по команде передатчика («Перезапустити» в окне приёмника)
 RTC_NOINIT_ATTR static uint32_t rxHealBootMagic;   // плата перезапущена оттого, что передатчик не слышал приёмник
 RTC_NOINIT_ATTR static uint32_t rxHealBootCount;   // сколько таких перезапусков с включения питания
 RTC_NOINIT_ATTR static uint32_t rxFakeKeep;        // проверка n12=4: «неисправность» переживает перезапуск платы
 static bool rxHealBoot;                            // этот запуск — после такого перезапуска
+RTC_NOINIT_ATTR static uint32_t rxSoundBootCount;  // сколько раз плату перезапускал сторож звука (с включения питания)
+static bool rxSoundBoot;                           // этот запуск — после перезапуска сторожем звука
 static bool rxQuietBoot;                           // и потому без заставки и «запуска» (до первого выхода в работу)
 static void (*rxSelfRestart)();                    // перезапустить плату (ставит hearlink.ino); не возвращается
-static volatile uint8_t rxUnseenStage;             // для отчёта: 0 — порядок, 1 — радио перезагружали, 2 — плату перезапускали
+static volatile uint8_t rxUnseenStage;             // для отчёта: 0 — порядок, 1 — радио перезагружали, 2 — плату перезапускали,
+                                                   // 3 — радио перезагружали, хотя передатчик приём подтверждал
 static void rxSeenTick() {
-  static uint32_t since, statusAt, seenSince, backoffMs = 60000;
+  static uint32_t since, statusAt, seenSince, backoffMs = 60000, ackedSince;
   static bool everSeen, reinitDone;
   uint32_t now = millis();
   if (rxSeenMs && msSince(rxSeenMs, now) < 9000) {   // нас слышат (передатчик помнит приёмник 7 с, объявляет раз в 2 с)
     since = 0;
+    ackedSince = 0;
     everSeen = true;
     if (!seenSince) seenSince = now ? now : 1;
     else if (now - seenSince > 600000) {
@@ -352,6 +396,7 @@ static void rxSeenTick() {
   bool roster = rxRosterMs && msSince(rxRosterMs, now) < 5000;
   if (rxPower != PW_RUN || !secHave || cfg.off || rxOtaMute || !roster || rxRosterFull || msSince(rLastRxMs, now) > 400) {
     since = 0;
+    ackedSince = 0;
     return;
   }
   if (!since) {
@@ -359,7 +404,17 @@ static void rxSeenTick() {
     statusAt = rxStatusSent;
     return;
   }
-  if (now - since < RX_UNSEEN_MS || rxStatusSent - statusAt < 4) return;
+  if (now - since < (reinitDone ? RX_UNSEEN2_MS : RX_UNSEEN_MS) || rxStatusSent - statusAt < 8) return;
+  if (rxAckMs && msSince(rxAckMs, now) < 10000) {   // радио передатчика нас принимает, а в списке нас нет — см. выше
+    if (!ackedSince) ackedSince = now ? now : 1;
+    else if (now - ackedSince > 300000) {
+      ackedSince = now ? now : 1;
+      rxUnseenStage = 3;
+      rxRadioHeal(2);
+    }
+    return;
+  }
+  ackedSince = 0;
   since = 0;
   if (!reinitDone) {
     reinitDone = true;
@@ -505,6 +560,11 @@ static bool rxSleepCycle() {
 // Переходы между состояниями приёмника. Вызывать из основного цикла.
 static void rxPowerTick() {
   static uint32_t sigSince;
+  // Идёт обновление по радио (ota.h): состояние не трогаем и не спим. Звука в эфире в это время нет, и до 2.66
+  // приёмник через 10 с «терял сигнал» и уходил в круг сна, а спящий (в том числе выключенный с передатчика) так и
+  // оставался в нём: прошивку он принимал урывками, по 70 мс из 600. 11.10 выключенный приёмник со слабым сигналом
+  // набрал так 30 % за шесть минут, и всё это время раздача держала звук всего набора остановленным.
+  if (rxOtaMute) return;
   uint32_t now = millis(), in = now - rxPowerAt;
   bool heard = rLastRxMs && msSince(rLastRxMs, now) < 250;
   if (!heard) sigSince = 0;
@@ -612,10 +672,12 @@ static void rxLinkTick() {
     }
   }
   static uint32_t lastEcho = 0xFFFFFFFF;
+  static uint8_t quick;   // сколько раз подряд сообщение не подтверждено и повторено «вскоре»
   // Передатчика не слышно — молчим. Порог 400 мс (до 2.59 — секунда): через 600 мс тишины приёмник начинает обходить
   // каналы, и сведения, отправленные между 600-й и 1000-й миллисекундой, попадали под смену канала.
   if (now < nextMs || msSince(rLastRxMs, now) > 400 || !secHave) return;
   if (rxHopCh) return;                 // объявлен переход на другой канал — сообщим о себе уже там
+  if ((int32_t)(rxTxPut - rxTxGot) > 0) return;   // прошлая отправка ещё у драйвера (адресную он повторяет сам) — вторую поверх не кладём
   if (rHeardSeq == lastEcho) return;   // одноразовое число сведений — номер услышанного пакета: дважды одно не используем
   nextMs = now + 2000 + (esp_random() % 300);   // и в ожидании так же: иначе передатчик сочтёт приёмник пропавшим
   RxStatus2 st = {};   // длинного вида: передатчик по длине узнаёт, что этому приёмнику можно слать длинное имя
@@ -631,22 +693,77 @@ static void rxLinkTick() {
              (cfg.rxStereo ? ST_STEREO : 0) | (rxPower == PW_STANDBY || rxPower == PW_GOING ? ST_SLEEP : 0) | (rxOutLive() ? ST_OUTLIVE : 0);
   st.rssi = rRssi;
   st.depthMs = (uint8_t)(rxTargetMs + 0.5f);
-  uint32_t total = lkFrames + lkRecovered + lkLost;
-  uint32_t pm = total ? (lkRecovered + lkLost) * 1000 / total : 0;
+  uint32_t f0 = lkFrames, r0 = lkRecovered, l0 = lkLost, u0 = lkUnder;   // что уходит в этом сообщении
+  uint32_t total = f0 + r0 + l0;
+  uint32_t pm = total ? (r0 + l0) * 1000 / total : 0;
   st.lossPm = pm > 255 ? 255 : pm;
-  st.lostFrames = lkLost > 255 ? 255 : lkLost;
-  uint32_t um = lkUnder * 1000 / SRATE;
+  st.lostFrames = l0 > 255 ? 255 : l0;
+  uint32_t um = u0 * 1000 / SRATE;
   st.underMs = um > 255 ? 255 : um;
   st.uptimeMin = now / 60000;
   st.fw = (uint8_t)lroundf(atof(FW_VERSION) * 10);
   utf8Copy(st.name, rxName(), NAME_LONG);
-  lkFrames = lkRecovered = lkLost = lkUnder = 0;
   if (!secSeal(SEC_STATUS, st.echoEpoch, st.echoSeq, st.id, (const uint8_t *)&st, ST_CLEAR, &st.volume, ST2_BODY, st.tag)) return;
-  if (rxSend((const uint8_t *)&st, sizeof(st)) != ESP_OK) return;   // драйвер не взял — сторож отправок разберётся (radio.h)
+  bool noAck = rxAckMs ? msSince(rxAckMs, now) > 5000 : rxUniFail + rxUniLate >= 2;
+  {   // Мощность передачи приёмника: рядом с передатчиком — как настроено (обычно 15 дБм), при слабом сигнале или
+      // без подтверждений — полная. Передатчик шлёт на 20 дБм, и до 2.64 он слышал приёмник на 8–12 дБ хуже, чем
+      // приёмник его: звук ещё шёл, а сообщения приёмника уже не доходили.
+    // С 2.77 по одному уровню сигнала мощность поднимается только у края (слабее −76 дБм; было −62): на −62…−76
+    // сообщения и на 15 дБм доходят с подтверждением (замер 12.10: 4105 из 4105), а полная мощность — это вдвое
+    // больше тока в каждой передаче рядом со звуковым выходом. Не подтверждаются — поднимаем сразу, как и раньше.
+    int8_t want = rxPowerNow;
+    if (rRssi < -76 || noAck) want = RX_POWER_MAX;
+    else if (rRssi > -70) want = cfg.powerDbm;
+    if (want < cfg.powerDbm) want = cfg.powerDbm;
+    if (want != rxPowerNow) {
+      esp_wifi_set_max_tx_power(want * 4);
+      if (want > rxPowerNow) rxPowerUps = rxPowerUps + 1;
+      rxPowerNow = want;
+    }
+  }
+  // Адресно — когда адрес передатчика известен. Если подтверждений нет дольше шести секунд, через раз шлём и
+  // по-старому, «всем»: хуже, чем до 2.64, не должно быть ни при каком раскладе.
+  bool uni = !rxUniOff && rxUniReady();
+  if (uni && (rxAckMs ? msSince(rxAckMs, now) > 6000 : rxUniFail + rxUniLate >= 3)) {
+    static bool alt;
+    alt = !alt;
+    if (alt) uni = false;
+  }
+  uint32_t t0 = millis();
+  if (rxSendTo(uni ? rxPeerMac : BCAST, (const uint8_t *)&st, sizeof(st)) != ESP_OK) return;   // драйвер не взял — сторож отправок разберётся (radio.h)
   rxStatusSent = rxStatusSent + 1;
-  // Второй пакет — только когда первый ушёл (ждём ответа драйвера, обычно 2–4 мс, не дольше 25): до 2.59 оба шли
-  // подряд, и второй всегда ложился драйверу поверх ещё не ушедшего первого.
-  for (int i = 0; i < 25 && rxTxBusy(); i++) delay(1);
+  // Ждём ответа драйвера: у отправки «всем» это 2–4 мс (не дольше 25), у адресной — с повторами — до 60. Второй пакет
+  // идёт, только когда первый ушёл: до 2.59 оба шли подряд, и второй ложился драйверу поверх ещё не ушедшего первого.
+  for (int i = 0; i < (uni ? 60 : 25) && rxTxBusy(); i++) delay(1);
+  bool delivered = !uni;   // у отправки «всем» итог неизвестен — как и раньше, считаем, что ушло
+  if (uni) {
+    uint32_t ms = millis() - t0;
+    if ((int32_t)(rxTxPut - rxTxGot) > 0) rxUniLate = rxUniLate + 1;
+    else if (rxTxLastOk) {
+      rxUniOk = rxUniOk + 1;
+      rxUniMsSum = rxUniMsSum + ms;
+      if (ms > rxUniMsMax) rxUniMsMax = ms;
+      rxAckMs = millis() ? millis() : 1;
+      delivered = true;
+    } else {
+      rxUniFail = rxUniFail + 1;
+      if (ms > rxUniFailMsMax) rxUniFailMsMax = ms;
+    }
+  } else rxUniAll = rxUniAll + 1;
+  if (!delivered) {
+    // Не дошло: счёт потерь не сбрасываем (уйдёт со следующим сообщением), а следующее — через четверть секунды, а
+    // не через две. После трёх таких подряд — обычный срок: передатчик, видимо, вне досягаемости, эфир зря не занимаем.
+    if (quick < 3) {
+      quick++;
+      nextMs = millis() + 200 + (esp_random() % 150);
+    } else quick = 0;
+    return;
+  }
+  quick = 0;
+  lkFrames -= f0;
+  lkRecovered -= r0;
+  lkLost -= l0;
+  lkUnder -= u0;
   // и вслед — настройки «для слуха и удобства»: по ним окно приёмника на передатчике показывает, что сейчас выбрано
   RxInfo in = {};
   in.magic = MAGIC_STATUS;
@@ -666,6 +783,23 @@ static void rxLinkTick() {
   in.spare[2] = (uint8_t)(cfg.rxEq[0] | (cfg.rxEq[1] << 4));
   in.spare[3] = (uint8_t)(cfg.rxEq[2] | (cfg.rxEq[3] << 4));
   in.spare[4] = (uint8_t)(cfg.rxEq[4] | (cfg.rxLowCut ? 0x10 : 0) | ((cfg.rxLock & 3) << 5) | 0x80);   // старший бит — «эквалайзер есть»
-  if (secSeal(SEC_RXINFO, in.echoEpoch, in.echoSeq, in.id, (const uint8_t *)&in, ST_CLEAR, in.p, INFO_BODY, in.tag)) rxSend((const uint8_t *)&in, sizeof(in));
-  for (int i = 0; i < 25 && rxTxBusy(); i++) delay(1);   // и его дождаться: следом может идти смена канала или сон
+  if (secSeal(SEC_RXINFO, in.echoEpoch, in.echoSeq, in.id, (const uint8_t *)&in, ST_CLEAR, in.p, INFO_BODY, in.tag)) rxSendTo(uni ? rxPeerMac : BCAST, (const uint8_t *)&in, sizeof(in));
+  for (int i = 0; i < (uni ? 60 : 25) && rxTxBusy(); i++) delay(1);   // и его дождаться: следом может идти смена канала или сон
+  // и настройки обработки «для слуха» (с 2.68) — третьим пакетом
+  RxInfo2 i2 = {};
+  i2.magic = MAGIC_STATUS;
+  i2.ver = PROTO_VER;
+  i2.kit = cfg.kit;
+  memcpy(i2.id, rxId, 3);
+  i2.echoEpoch = st.echoEpoch;
+  i2.echoSeq = st.echoSeq;
+  i2.fx[0] = cfg.rxNs;
+  i2.fx[1] = cfg.rxComp;
+  i2.fx[2] = cfg.rxGate;
+  i2.spare[0] = cfg.rxNsSens;
+  i2.spare[1] = cfg.rxGateThr;
+  i2.spare[2] = cfg.rxGateRel;
+  i2.spare[3] = rxNsFrozen ? 1 : 0;
+  if (secSeal(SEC_RXINFO2, i2.echoEpoch, i2.echoSeq, i2.id, (const uint8_t *)&i2, ST_CLEAR, i2.fx, INFO2_BODY, i2.tag)) rxSendTo(uni ? rxPeerMac : BCAST, (const uint8_t *)&i2, sizeof(i2));
+  for (int i = 0; i < (uni ? 60 : 25) && rxTxBusy(); i++) delay(1);
 }

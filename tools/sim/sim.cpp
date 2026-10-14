@@ -322,10 +322,50 @@ int main() {
     { Box b = rxsBox(ID_RXS_PLUS + 6); tap(b.x + 20, b.y + 20); }                              // язык надписей: українська
     printf("язык приёмника: команда %d, значение %d\n", out.rxCmd, out.rxArg);
     save("18g-ekvalaizer");
+    {   // третий лист — «Обробка звуку» (приёмники с 2.68): кнопка листов теперь ведёт на него
+      View::Rx &q = view.rx[rxFind(rxSelId)];
+      q.hasFx = true;
+      q.fx[0] = 0;
+      q.fx[1] = 1;
+      q.fx[2] = 0;
+      modalAgain = true;
+      drawModal();
+      modalAgain = false;
+      fakeMs += 60;
+      frame(false, 0, 0);
+      save("18g2-ekvalaizer-z-knopkoyu-obrobky");
+      { Box b = rxsBox(ID_RXS_PAGE); tap(b.x + 20, b.y + 20); }
+      q.fx[3] = 2;   // чувствительность «середня», порог пауз +6 дБ, закрытие «середньо»
+      q.fx[4] = 1;
+      q.fx[5] = 1;
+      { Box b = rxsBox(ID_RXS_PLUS + 0); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }   // шумозаглушение: середнє
+      { Box b = rxsBox(ID_RXS_PLUS + 1); tap(b.x + 20, b.y + 20); }                            // чувствительность: висока
+      { Box b = rxsBox(ID_RXS_PLUS + 2); tap(b.x + 20, b.y + 20); }                            // образец шума: запомнить сейчас
+      { Box b = rxsBox(ID_RXS_PLUS + 4); tap(b.x + 20, b.y + 20); }                            // в паузах: без підсилення
+      { Box b = rxsBox(ID_RXS_PLUS + 5); tap(b.x + 20, b.y + 20); }                            // порог пауз: +9 дБ
+      printf("обработка звука: команда %d, значение %d\n", out.rxCmd, out.rxArg);
+      save("18i-obrobka-zvuku");
+    }
     { Box b = rxsBox(ID_RXS_PAGE); tap(b.x + 20, b.y + 20); }
     save("18h-nazad-do-nalashtuvan");
     { Box b = rxsBox(ID_RXS_OK); tap(b.x + 20, b.y + 20); }
     save("18f-nazad-u-vikno-pryimacha");
+    {   // 2.84: у приёмника с новой прошивкой в окне пять рядов кнопок, слева в четвёртом — «Перезапустити»
+      View::Rx &q = view.rx[rxFind(rxSelId)];
+      uint8_t minWas = q.fwMin;
+      q.fwMin = 84;
+      needFull = true;
+      frame(false, 0, 0);
+      save("18j-pryimach-vikno-perezapustyty");
+      { Box bx = rxBtn(ID_RX_RESTART); tap(bx.x + 30, bx.y + 20); }
+      printf("перезапуск приёмника: команда %d\n", out.rxCmd);
+      for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
+      save("18k-pryimach-perezapuskaietsia");
+      toastUntil = 0;
+      q.fwMin = minWas;
+      needFull = true;
+      frame(false, 0, 0);
+    }
     r.hasInfo = false;
   }
   tap(340, 290);   // «Перейменувати»
@@ -356,6 +396,13 @@ int main() {
   { Box b = txeqBox(ID_TXEQ_PLUS + 3); tap(b.x + 20, b.y + 20); }                                                       // 2,5 кГц: +2 дБ
   { Box b = txeqBox(ID_TXEQ_PLUS + 5); tap(b.x + 20, b.y + 20); }                                                       // срез низов
   save("03b-ekvalaizer-vkhodu-pislya-natyskan");
+  { Box b = txeqBox(ID_TXEQ_PAGE); tap(b.x + 20, b.y + 20); }                                                           // второй лист: шум входа
+  { Box b = txeqBox(ID_TXEQ_PLUS + 0); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }                               // шумозаглушение: середнє
+  { Box b = txeqBox(ID_TXEQ_PLUS + 1); tap(b.x + 20, b.y + 20); }                                                       // чувствительность: висока
+  { Box b = txeqBox(ID_TXEQ_PLUS + 2); tap(b.x + 20, b.y + 20); }                                                       // образец шума: запомнить
+  printf("шум входа: поле %d, значение %d\n", out.eqBand, out.eqVal);
+  save("03c-shum-vkhodu");
+  { Box b = txeqBox(ID_TXEQ_PAGE); tap(b.x + 20, b.y + 20); }
   printf("эквалайзер входа: запрошено полоса %d значение %d\n", out.eqBand, out.eqVal);
   { Box b = txeqBox(ID_TXEQ_OK); tap(b.x + 20, b.y + 20); }
   save("03c-zvuk-pislya-ekvalaizera");
@@ -419,16 +466,128 @@ int main() {
   qualNow = 2;          // затем скорость стала мала — в эфир идёт «мова»
   for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }   // без полной перерисовки и без нажатия: строка обязана обновиться сама
   save("05b-zvuk-yakist-znyzhena");
+  {   // с 2.78: скорость выбрана вручную (5,5), а передатчик сам опустился до 1 Мбит/с ради слабого приёмника —
+      // строка скорости показывает обе, на экране сообщение в две строки
+    int rateWas = view.val[P_RATE];
+    const char *nowWas = rateNowText, *topWas = rateTopText;
+    view.val[P_RATE] = 6;
+    rateTopText = "5.5";
+    rateNowText = "1";
+    toast2(tr("«Зал, 2 ряд. 4 місце» чує слабо"), tr("Швидкість 1 Мбіт/с, щоб звук не зникав"), 6000);
+    for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
+    save("05c-shvydkist-znyzhena-slabkyi-pryimach");
+    toastUntil = 0;
+    needFull = true;
+    frame(false, 0, 0);
+    save("05d-shvydkist-znyzhena-ryadok");
+    toast2(tr("Усі приймачі чують добре"), tr("Швидкість знову 5.5 Мбіт/с"), 6000);
+    rateNowText = "5.5";
+    for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
+    save("05e-shvydkist-povernulas");
+    toastUntil = 0;
+    view.val[P_RATE] = rateWas;
+    rateNowText = nowWas;
+    rateTopText = topWas;
+    needFull = true;
+    frame(false, 0, 0);
+  }
   qualNow = -1;
   needFull = true;
   frame(false, 0, 0);
 
   tap(40 + 240, 450);
   save("06-efir-ne-miryaly");
+  {   // с 2.78: строка скорости, когда выбрана 5,5, а работаем на 1 Мбит/с ради слабого приёмника
+    int rateWas = view.val[P_RATE];
+    const char *nowWas = rateNowText, *topWas = rateTopText;
+    view.val[P_RATE] = 6;
+    rateTopText = "5.5";
+    rateNowText = "1";
+    needFull = true;
+    frame(false, 0, 0);
+    save("06a-efir-shvydkist-znyzhena");
+    view.val[P_RATE] = rateWas;
+    rateNowText = nowWas;
+    rateTopText = topWas;
+    needFull = true;
+    frame(false, 0, 0);
+  }
   view.scanned = true;
   needFull = true;
   frame(false, 0, 0);
   save("07-efir");
+  {   // подсказка: на нынешнем канале пакеты подолгу ждут эфира (сильная соседняя сеть) — с 2.82
+    view.airSlowSecs = 24;
+    view.airSlowMs = 27;
+    needFull = true;
+    frame(false, 0, 0);
+    save("07a-efir-chekaie");
+    uiLang = 1;
+    needFull = true;
+    frame(false, 0, 0);
+    save("07b-efir-chekaie-en");
+    uiLang = 0;
+    view.airSlowSecs = 0;
+    view.airSlowMs = 0;
+    needFull = true;
+    frame(false, 0, 0);
+  }
+  {   // с 2.83: плитка «Слабкий сигнал», сообщение «почему скорость не поднимается» и «мягкий» уход с канала
+    int rateWas = view.val[P_RATE], chWas = view.val[P_CHANNEL];
+    const char *nowWas = rateNowText, *topWas = rateTopText;
+    View was = view;
+    view.val[P_RATE] = 6;
+    rateTopText = "5.5";
+    rateNowText = "1";
+    view.val[P_WEAK] = 1;
+    needFull = true;
+    frame(false, 0, 0);
+    save("07c-efir-slabkyi-syhnal");
+    char l1[96];
+    snprintf(l1, sizeof(l1), tr("«%s» чує слабо: %d дБм"), "Зал, 2 ряд. 4 місце", -77);
+    toast2(l1, tr("Тому швидкість 1 Мбіт/с. Вимкнути: «Слабкий сигнал»"), 9000);
+    for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
+    save("07d-chomu-shvydkist-ne-pidnimaietsia");
+    uiLang = 1;
+    snprintf(l1, sizeof(l1), tr("«%s» чує слабо: %d дБм"), "Hall, row 2, seat 4", -77);
+    toast2(l1, tr("Тому швидкість 1 Мбіт/с. Вимкнути: «Слабкий сигнал»"), 9000);
+    needFull = true;
+    for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
+    save("07d-en-why-rate-stays");
+    uiLang = 0;
+    toastUntil = 0;
+    needFull = true;
+    frame(false, 0, 0);
+    { Box bx = itemBox(ID_ROW + P_WEAK); tap(bx.x + 40, bx.y + 20); }
+    save("07e-vikno-slabkyi-syhnal");
+    modal = M_NONE;
+    view.val[P_WEAK] = 0;
+    rateNowText = "5.5";
+    needFull = true;
+    frame(false, 0, 0);
+    save("07f-efir-ne-znyzhuiu");
+    view.val[P_WEAK] = 1;
+    // «мягкий» уход: проба нового канала и возврат
+    view.hopSeq = 5; view.hopResult = 1; view.hopFrom = 13; view.hopTo = 1; view.val[P_CHANNEL] = 1; view.hopWaitMs = 25;
+    view.hopStall = false; view.hopSoft = true; view.hopBack = 0; view.hopAgoS = 0;
+    needFull = true;
+    for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
+    save("07g-miakyi-perekhid");
+    view.hopSeq = 6; view.hopFrom = 1; view.hopTo = 13; view.val[P_CHANNEL] = 13; view.hopBack = 2;
+    for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
+    save("07h-miakyi-povernuvsia");
+    toastUntil = 0;
+    uint32_t seq = view.hopSeq;
+    view = was;
+    view.hopSeq = seq;   // сообщение уже показано
+    view.val[P_RATE] = rateWas;
+    view.val[P_CHANNEL] = chWas;
+    view.val[P_WEAK] = 1;
+    rateNowText = nowWas;
+    rateTopText = topWas;
+    needFull = true;
+    frame(false, 0, 0);
+  }
   tap(240, 245);
   save("08-efir-poshuk-pytannya");
   modal = M_NONE;

@@ -8,6 +8,8 @@
 #pragma once
 #include "radio.h"
 #include "lang.h"
+#include "nsfx.h"
+#include "subc.h"
 #include "driver/i2s_pdm.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -71,6 +73,33 @@ static void rxEarStart(bool on) {
 }
 static volatile uint16_t rxVuL, rxVuR;     // наибольший отсчёт левого и правого канала с прошлого чтения экраном (стрелки)
 static volatile bool rxPattern;           // проверка n8=9: на выход идут постоянные числа (левый 0x5A01, правый 0xA5F3)
+// ---- ЗВУК ПРОПАЛ ДО ПЕРЕЗАГРУЗКИ (владелец 12.10: «сейчас не идет звук с приемников… устройства собраны, доступа к
+// кнопке нет… исключить подобную проблему в будущем (она уже встречалась ранее, но не была озвучена)»).
+// Что было на приборе (4C3B10, снято по радио до перезапуска): приём, запас, уровни до громкости — в порядке; ЦАП
+// открыт, такты идут, а линия данных к ЦАП стоит в единице — все отсчёты 0xFFFF. Запрос n: «рівень до еквалайзера
+// −4,5 дБ, після — nan», сжатие «не видит» звука. То есть в цепочке обработки застряло «не число» (NaN): одного
+// такого отсчёта довольно — фильтры с обратной связью (эквалайзер, «чёткость») помнят прошлое, и «не число» остаётся
+// в них навсегда; в отсчёт для ЦАП оно превращается как −1.
+// Откуда отсчёт: подгонка темпа брала номер строки своей таблицы умножением дробным числом, и раз в ~17 минут
+// (128 значений из 2^32) номер округлялся до 128 — тогда читалась строка 129, за краем таблицы. Множитель при ней
+// в этот миг ноль, и обычно это безвредно, но если в чужой памяти за таблицей лежит «не число» или бесконечность —
+// «ноль × бесконечность» даёт «не число». Что там лежит, зависит от запуска; поэтому беда случалась «иногда».
+// (Источник найден по коду и проверен счётом на компьютере; саму память того запуска посмотреть было уже нельзя.)
+// Сделано в 2.84:
+//  1) номер строки таблицы считается целыми числами — за край не выходит;
+//  2) на входе в обработку, после шумозаглушения и на самом выходе «не числа» и бесконечности заменяются нулём;
+//  3) заметив такое на выходе, приёмник сам сбрасывает память всех фильтров (звук возвращается через доли секунды);
+//  4) сторож выхода: в эфире громкий звук, громкость не на нуле, а на выход 1,5 с идёт одно и то же число — сброс
+//     обработки; не помогло за 4 с — приёмник перезапускает себя сам, без заставки (не чаще раза в 10 минут);
+//  5) о каждом таком случае приёмник сообщает передатчику (в порт и в журнал на карте);
+//  6) в меню приёмника — «Перезапуск», в окне приёмника на передатчике — «Перезапустити».
+static volatile uint32_t rxFxNan;         // сколько раз обработку сбрасывали из-за «не числа»
+static volatile uint32_t rxFxStuck;       // и из-за того, что выход стоял при звуке в эфире
+static volatile uint32_t rxBadIn;         // сколько «не чисел» поймано на входе в обработку (после подгонки темпа)
+static volatile uint32_t rxFxHealMs;      // когда был последний сброс
+static volatile bool rxSoundRestartAsk;   // сброс не помог — главный цикл перезапустит плату (rxSoundRestart)
+static volatile uint8_t rxFakeNan;        // проверка (порт: n8=11…13): подложить «не число» на вход обработки (11), в память
+                                          // эквалайзера (12); 13 — держать выход на одном числе, пока не снимут (n8=14)
 static volatile uint32_t rxLimBusy;        // сколько отсчётов ограничитель убавлял звук (обнуляет проверка n8=8)
 static volatile float rxLimLow = 1;       // наименьшее усиление ограничителя за это время
 static volatile uint32_t rxInSamples, rxOutSamples;   // сколько отсчётов принято из эфира и отдано на выход (замер настоящих частот, n8=8)
@@ -142,6 +171,8 @@ static volatile uint8_t rxQ = 255;            // вид пакетов, в ко�
 static volatile uint32_t rxDblCount;         // сколько принято «двойных» пакетов (два кадра в пакете, с 2.60)
 static volatile float rxFrameMs = 2;          // сколько звука в пакете, мс — от этого зависит наименьший запас
 static volatile float rxSeqMs = 2;            // длительность одного кадра (одного номера), мс: в двойном пакете их два
+static volatile uint32_t rxGapMs;             // когда последний раз пакет пропал и кадры пришлось брать из запасных копий
+static volatile float rxCopyMs = 8;           // на сколько миллисекунд назад достают запасные копии одного пакета
 static Interp2 rxUp, rxUpS;
 
 // Положить кадр в запас: 16 кГц перед этим переводятся в 32. sd — разность каналов или NULL.
@@ -164,6 +195,10 @@ static void rxEmit(int16_t *x, int16_t *sd, const QDef &d, bool fadeIn) {
 }
 
 static volatile uint32_t rxScCount, rxMonoRec;   // кадров из копий: со стерео (копия разности) и в моно — для n8=8
+static volatile uint32_t rxRecAll, rxExactRec;   // всего кадров из копий и из них без сжатия (пакет «с точными копиями», с 2.77) — для n8=8
+static SubcDec rxSubDec;                         // сборка звука подполосного кодека (с 2.79); работает в задаче Wi-Fi
+static volatile bool rxSubNow;                   // идёт пакетами подполосного кодека — для запаса (см. задачу звука) и отчёта
+static volatile uint32_t rxSubUsSum, rxSubUsMax, rxSubCalls;   // сколько времени задача Wi-Fi тратит на разбор пакета нового кодека — для n8=8
 // Вызывается из задачи Wi-Fi на каждый свой пакет.
 static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
   static int16_t tmp[Q_MAX_N], tmpS[Q_MAX_N];
@@ -192,6 +227,7 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
     }
   }
   uint8_t hq = h->q & ~(Q_LANG_EN | Q_DOUBLE);   // вид пакета без признака языка и без «упаковки по два» (кадры те же)
+  bool sub = rPktSub;   // подполосный кодек: признак Q_SUB входит в hq — смена кодека начинает приём заново
   int32_t gap = (int32_t)(h->seq - rxLastSeq);
   bool fresh = !rxHave || h->boot != rxBoot;   // начало приёма или новое включение передатчика
   if (!fresh && gap <= 0) return;              // повтор или пакет из прошлого (в том числе записанный и подсунутый снова)
@@ -202,20 +238,83 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
     rxAirStereo = st;
     rxUp.reset();
     rxUpS.reset();
+    subcInit();
+    rxSubDec.reset();
     rxNeedPrime = true;
     sResync = sResync + 1;
     gap = 1;
   }
   if (gap <= 0) return;   // повтор или старый пакет
+  rxSubNow = sub;
+  if (sub) {
+    uint32_t subT0 = (uint32_t)esp_timer_get_time();
+    // Подполосный кодек (proto.h, Q_SUB): новый кадр, прошлый тем же числом байт, позапрошлый попроще и ещё один
+    // грубо. Кадры собираются строго по порядку — у сборки общее перекрытие окон. Пропавший совсем кадр — «пустой»
+    // вызов: набор доигрывает хвост и плавно уходит в тишину, а следующий кадр так же плавно входит (щелчка нет).
+    rxFlags = h->flags & 0x0F;
+    rxSeqMs = d.n * 1000.0f / d.sr;
+    rxFrameMs = rxSeqMs;
+    rxCopyMs = SUB_COPIES * rxSeqMs;
+    static const uint8_t LEN[1 + SUB_COPIES] = { SUB_F0, SUB_F0, SUB_F2, SUB_F3 };
+    const uint8_t *fp[1 + SUB_COPIES];
+    fp[0] = payload;
+    for (int k = 1; k <= SUB_COPIES; k++) fp[k] = fp[k - 1] + LEN[k - 1];
+    if (gap >= 2) {
+      rxGapMs = millis() ? millis() : 1;
+      int rec = gap - 1 < SUB_COPIES ? gap - 1 : SUB_COPIES;
+      int32_t lost = gap - 1 - rec, fill = lost * outN;
+      if (lost > 0) {
+        sLostFrames = sLostFrames + lost;
+        portENTER_CRITICAL(&rxMux);
+        int32_t dd = rxDebt < fill ? rxDebt : fill;   // что выход уже сыграл впустую — не доигрываем
+        rxDebt -= dd;
+        portEXIT_CRITICAL(&rxMux);
+        for (int32_t f = 0; f < lost; f++) {
+          if (f < 2) rxSubDec.decode(NULL, 0, false, tmp);   // хвост прошлого звука и тишина
+          else memset(tmp, 0, sizeof(int16_t) * outN);
+          int32_t skip = dd < outN ? dd : outN;
+          dd -= skip;
+          if (skip < outN) rxPush(tmp + skip, NULL, outN - skip);
+        }
+        rxLastSample = 0;
+      }
+      for (int k = rec; k >= 1; k--) {   // от давнего кадра к недавнему
+        rxSubDec.decode(fp[k], LEN[k], k == SUB_COPIES, tmp);
+        rxPush(tmp, NULL, outN);
+        rxRecAll = rxRecAll + 1;
+        if (k == 1) rxExactRec = rxExactRec + 1;   // копия прошлого кадра — той же точности, что сам кадр
+        if (h->flags & FLAG_THIN) sThinned = sThinned + 1;
+        else sRecovered = sRecovered + 1;
+      }
+    }
+    rxSubDec.decode(fp[0], LEN[0], false, tmp);
+    rxLastSample = tmp[outN - 1];
+    rxPush(tmp, NULL, outN);
+    rxInSamples = rxInSamples + (uint32_t)gap * outN;
+    rxLastSeq = h->seq;
+    sFrames = sFrames + 1;
+    {
+      uint32_t du = (uint32_t)esp_timer_get_time() - subT0;
+      rxSubUsSum = rxSubUsSum + du;
+      rxSubCalls = rxSubCalls + 1;
+      if (du > rxSubUsMax) rxSubUsMax = du;
+    }
+    return;
+  }
   rxFlags = h->flags & 0x0F;
   rxSeqMs = d.n * 1000.0f / d.sr;
   rxFrameMs = (dbl ? 2 : 1) * rxSeqMs;   // звука в пакете (от этого зависит наименьший запас)
   bool fadeIn = false;
   int copies = dbl ? DBL_COPIES : qCopies(q, st);
+  rxCopyMs = copies * rxSeqMs;
   int fl = qMainLen(q) + (st ? qBlock(q) : 0);        // один кадр в пакете: середина и, в стерео, разность
   const uint8_t *cp = payload + (dbl ? 2 : 1) * fl;   // запасные копии: от ближнего кадра к дальнему
-  const uint8_t *scp = cp + copies * qBlock(q);       // копии разности (двойной пакет — всех тех же кадров; одиночный — одного)
+  // «двойной с точными копиями» (с 2.77, proto.h): первые DUP_PCM копий — кадры без сжатия, за ними сжатые
+  int dupN = dbl && rPktDup ? DUP_PCM : 0;
+  const uint8_t *cpA = cp + dupN * qMainLen(q);       // сжатые копии: кадры дальше dupN
+  const uint8_t *scp = cpA + (copies - dupN) * qBlock(q);   // копии разности (двойной пакет — всех тех же кадров; одиночный — одного)
   if (gap >= 2) {
+    rxGapMs = millis() ? millis() : 1;   // для запаса: пока пакеты теряются, он держится глубже (см. задачу звука)
     // пропали кадры: последние есть в запасных копиях, остальные заменить тишиной
     // (за вычетом того, что выход уже сыграл впустую)
     int rec = gap - 1 < copies ? gap - 1 : copies;
@@ -242,7 +341,11 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
       rxUpS.reset();
     }
     for (int k = rec; k >= 1; k--) {   // от давнего кадра к недавнему; копии несут только середину — кадр выйдет в моно
-      adpcmDecodeBlock(cp + (k - 1) * qBlock(q), d.n, tmp);
+      rxRecAll = rxRecAll + 1;
+      if (k <= dupN) {   // точная копия: кадр выйдет таким же, каким шёл в пропавшем пакете
+        memcpy(tmp, cp + (k - 1) * qMainLen(q), d.n * 2);
+        rxExactRec = rxExactRec + 1;
+      } else adpcmDecodeBlock(cpA + (k - 1 - dupN) * qBlock(q), d.n, tmp);
       bool sc = st && q == Q_HI && (dbl || (rPktSc && k == 1));   // у кадра есть и копия разности — он выйдет в стерео
       if (sc) {
         scDecode(scp + (dbl ? (k - 1) * SC_LEN : 0), tmpS);
@@ -325,13 +428,60 @@ static bool IRAM_ATTR rxOnSent(i2s_chan_handle_t, i2s_event_data_t *, void *) {
   return false;
 }
 
+// Частота выхода. У PCM5102 и однобитного выхода — те же 32 кГц, что в эфире. У CS4344 (с 2.85) — 31 250 Гц:
+// этому ЦАП обязателен главный такт (MCLK), кратный частоте каналов (описание DS613F2, раздел 4.1 и таблица 1:
+// «MCLK/LRCK must be an integer ratio»). Для 32 кГц это 8,192 МГц, а у ESP32-S3 его можно получить только дробным
+// делителем из 160 МГц (19,53…) — периоды такта неровные; в 2.35–2.37 ровно такой такт на PCM5102 давал хрип.
+// 160 МГц / 20 = 8 МГц делится без остатка, и 8 МГц / 256 = 31 250 Гц. Звук из эфира (32 кГц) приводит к этой частоте
+// та же подгонка темпа, что держит запас: шаг по входу на отсчёт выхода не 1, а 32 000 / 31 250 = 1,024.
+static uint32_t rxOutRate = SRATE;
+static double rxRateBase = 1.0;   // отсчётов эфира на один отсчёт выхода (без подстройки под часы передатчика)
+static bool rxMclkGrounded;       // выбран CS4344, а вывод 10 замкнут на «землю» — главный такт туда не подаётся (см. ниже)
+
 static bool rxOutBegin() {
   i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   cc.dma_desc_num = 2;          // в очереди на выход не больше 2 мс
   cc.dma_frame_num = OUT_BLOCK;
   cc.auto_clear = true;
   if (i2s_new_channel(&cc, &rxI2s, NULL) != ESP_OK) return false;
-  if (cfg.output == OUT_I2S) {
+  rxOutRate = SRATE;
+  rxRateBase = 1.0;
+  if (cfg.output == OUT_CS4344) {
+    // Внешний ЦАП CS4344 (Cirrus Logic; модули вроде Digilent Pmod I2S и его копий). По описанию DS613F2:
+    //  — главный такт обязателен и должен быть целым кратным частоты каналов; 256 × 31 250 Гц = 8 МГц = 160 МГц / 20;
+    //  — такт бит подаём свой (режим «External SCLK»: ЦАП переходит в него, увидев 16 перепадов за полупериод LRCK):
+    //    64 такта на кадр, слово канала — 32 такта (ЦАП берёт до 24 бит, наши 16 — старшие, дальше нули);
+    //  — LRCK обязан быть «ровным», 45–55 %: длина сигнала каналов — те же 32 такта, а не 16 (ошибка 2.38 с PCM5102);
+    //  — входы: «единица» — от 60 % напряжения питания ЦАП; при питании 3,3 В это 2 В, выводы ESP32-S3 подходят с запасом.
+    rxOutRate = 31250;
+    rxRateBase = (double)SRATE / rxOutRate;
+    // Вывод 10 до 2.85 был «землёй» для SCK модуля PCM5102, и SCK могли завести и проводом на вывод 10, и каплей
+    // припоя на «землю» на самом модуле. Подать туда такт 8 МГц — значит гнать вывод в замыкание. Поэтому сначала
+    // проверка: вывод — вход с подтяжкой к питанию; если он всё равно читается нулём, его держит «земля» — такт не
+    // подаём (ЦАП CS4344 без него молчит, а PCM5102, выбранный здесь по ошибке, сыграет и так — от BCK).
+    pinMode(PIN_I2S_MCLK, INPUT_PULLUP);
+    delay(3);
+    int ones = 0;
+    for (int k = 0; k < 8; k++) {
+      ones += digitalRead(PIN_I2S_MCLK);
+      delayMicroseconds(200);
+    }
+    rxMclkGrounded = ones == 0;
+    pinMode(PIN_I2S_MCLK, INPUT);
+    i2s_std_config_t sc = {};
+    sc.clk_cfg.sample_rate_hz = rxOutRate;
+    sc.clk_cfg.clk_src = I2S_CLK_SRC_PLL_160M;
+    sc.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+    sc.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+    sc.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+    sc.slot_cfg.ws_width = 32;
+    sc.gpio_cfg.mclk = rxMclkGrounded ? I2S_GPIO_UNUSED : (gpio_num_t)PIN_I2S_MCLK;
+    sc.gpio_cfg.bclk = (gpio_num_t)PIN_I2S_BCK;
+    sc.gpio_cfg.ws = (gpio_num_t)PIN_I2S_WS;
+    sc.gpio_cfg.dout = (gpio_num_t)PIN_I2S_DOUT;
+    sc.gpio_cfg.din = I2S_GPIO_UNUSED;
+    if (i2s_channel_init_std_mode(rxI2s, &sc) != ESP_OK) return false;
+  } else if (cfg.output == OUT_I2S) {
     // внешний ЦАП PCM5102
     i2s_std_config_t sc = {};
     sc.clk_cfg.sample_rate_hz = SRATE;
@@ -519,6 +669,11 @@ static inline float rxVolumeScaled(int step) {
 // Шесть звеньев второго порядка подряд: срез низов 100 Гц (12 дБ на октаву) и пять полос — «полка» 125 Гц, колокола
 // 400 Гц, 1 и 2,5 кГц (добротность 1), «полка» 6 кГц; каждая −12…+12 дБ шагом 2. Стоит после подгонки темпа и перед
 // «чёткостью», громкостью и ограничителем: подъём полос ограничитель удержит в шкале.
+// обработка «для слуха» (nsfx.h) — для отчёта: на сколько сейчас убавляют шумозаглушение (в среднем, дБ), сжатие и
+// приглушение в паузах (наибольшее с прошлого отчёта, дБ), где сейчас «дно шума», и сколько занимает шумозаглушение
+static volatile float rxNsRedDb, rxDynRedDb, rxGateRedDb, rxGateFloorDb;
+static volatile bool rxNsLearnAsk, rxNsAutoAsk, rxNsFrozen;   // образец шума: «запомнить сейчас» / «снова сам» / запомнен ли
+static volatile uint32_t rxNsUsSum, rxNsUsMax, rxNsCalls, rxNsPauseHops;
 static volatile float rxBoostNow = 1;   // во сколько раз усиление действует сейчас (оно меняется плавно) — для отчёта
 static bool rxQuietToSave(uint32_t dueMs, uint32_t maxMs);   // можно ли сейчас писать настройки (пауза в звуке) — см. ниже
 static volatile int rxEqPkIn, rxEqPkOut;   // наибольший отсчёт середины до и после эквалайзера с прошлого запроса n7=3
@@ -581,6 +736,14 @@ static void rxTask(void *) {
   // на 1,5 мс вперёд): треска нет, но на сильном усилении с громкой музыкой звук становится плотнее и «дышит» —
   // расплата за громкость, и убавить её может сам слушатель той же настройкой.
   float bK = 1, boostWant = 1;
+  // сжатие и паузы — вместо «множитель + ограничитель»; спектральное шумозаглушение (память под него берётся, когда
+  // его впервые включат)
+  static NsDyn dyn;
+  static NsSpec *ns;
+  static float nsWork[2 * NSX_N] __attribute__((aligned(16)));
+  static float nsM[OUT_BLOCK], nsS[OUT_BLOCK];
+  bool nsWas = false;
+  float dynG = 1;
   uint8_t boostStep = 255;
   bool rsOk = rsBegin();   // памяти не нашлось — останется прежняя, кубическая
   if (!rxOutBegin()) {
@@ -588,7 +751,7 @@ static void rxTask(void *) {
     vTaskDelete(NULL);
   }
   uint32_t frac = 0;
-  uint64_t step = 1ULL << 32;
+  uint64_t step = (uint64_t)(rxRateBase * 4294967296.0);   // у CS4344 вход идёт чуть быстрее выхода (см. rxOutRate)
   float last = 0, integ = 0, fillSm = 0, env = 0, gain = 0, fade = 0;
   // Плавный старт: выводы поднимаются от нуля до середины (1,65 В) за 0,7 с. Иначе разделительные конденсаторы
   // заряжаются рывком через наушники или усилитель — хлопок при включении.
@@ -640,7 +803,10 @@ static void rxTask(void *) {
   for (int i = 0; i < LIM_LA; i++) limNeed[i] = 1;
   int limPos = 0, limMinAge = 0;
   float limMin = 1, limG = 1;
-  const float LIM_ATT = 1 - expf(-1.0f / 10.0f), LIM_REL = 1 - expf(-1.0f / (SRATE * 0.25f));
+  // Со сжатием (с 2.68) ограничителю достаются только выбросы первых полутора миллисекунд, и возвращать усиление
+  // четверть секунды незачем: после каждого такого выброса звук «проседал» бы на те же четверть секунды. Со
+  // сжатием отпускание — 40 мс; без него (сжатие выключено) — как было.
+  const float LIM_ATT = 1 - expf(-1.0f / 10.0f), LIM_REL = 1 - expf(-1.0f / (SRATE * 0.25f)), LIM_REL_FAST = 1 - expf(-1.0f / (SRATE * 0.04f));
   // «Авто»: запас держится таким, какой был нужен за последнюю минуту, плюс 4 мс. Раз в пять секунд смотрим, как
   // глубоко запас проседал (пакеты приходят неровно: эфир занят — они ждут и приходят пачкой), и помним двенадцать
   // таких замеров. Провал звука — запас сразу вырастает на длину провала.
@@ -689,12 +855,30 @@ static void rxTask(void *) {
       continue;
     }
     // кадр длиннее — запас больше: звук приходит порциями, и между порциями запас тает на целый кадр
-    float frameMs = rxFrameMs, autoLo = 4 + frameMs / 2, autoHi = 26 + frameMs * 2;
+    // Потолок запаса: у длинных кадров (8 и 12 мс — «мова» и «дальня», на них передатчик уходит ради слабого
+    // приёмника) он выше — 58 и 74 мс вместо 42 и 50. На 1 Мбит/с пакет занимает эфир 2,3 мс и ждёт свободного
+    // эфира дольше: замер 12.10 — до 35–49 мс, и при потолке 42 мс у обоих приёмников выходило 8–18 мс провалов
+    // в минуту. Запас растёт до потолка, только когда столько понадобилось, и сам ужимается обратно.
+    float frameMs = rxFrameMs, autoLo = 4 + frameMs / 2, autoHi = 26 + frameMs * (frameMs >= 7.5f ? 4 : 2);
+    if (rxSubNow) autoHi = 46;   // подполосный кодек идёт и на 1 Мбит/с, где пакет ждёт эфира до 30–35 мс (кадр у него 4 мс)
     static float lastFrameMs = 2;
     if (frameMs != lastFrameMs) {   // качество сменили — подобрать запас заново
+      // Кадр стал длиннее — значит, передатчик перешёл на нижнюю ступень из-за слабого приёмника (или так выбрал
+      // оператор): начинаем с глубокого запаса и ужимаем по замерам, а не с мелкого, который тут же провалится.
+      autoMs = autoLo + 3 + (frameMs > lastFrameMs ? 2 * frameMs : 0);
+      if (autoMs > autoHi) autoMs = autoHi;
       lastFrameMs = frameMs;
-      autoMs = autoLo + 3;
       for (float &v : need) v = autoLo - 1;
+    }
+    // Пока пакеты теряются (за последнюю минуту кадры приходилось брать из запасных копий), запас не опускается ниже
+    // того, что нужно, чтобы дождаться пакета с копиями: глубина копий + один пакет + 2 мс. До 2.73 запас за
+    // минуту-другую ужимался до наименьшего, и первая же пара потерянных подряд пакетов давала провал звука, хотя
+    // кадры были целы в копиях. Замер 12.10, приёмник на −77 дБм, потери 3 %: провалы в каждой пятой десятисекундке
+    // при том, что пропавших кадров не было вовсе.
+    {
+      float lossLo = rxGapMs && msSince(rxGapMs) < 60000 ? rxCopyMs + frameMs + 2 : 0;
+      if (lossLo > autoHi) lossLo = autoHi;
+      if (autoMs < lossLo) autoMs = lossLo;
     }
     float targetMs = cfg.depthMs ? (float)cfg.depthMs : autoMs;
     uint32_t target = (uint32_t)(targetMs * SRATE / 1000);
@@ -768,7 +952,7 @@ static void rxTask(void *) {
       float adj = err * 5e-6f + integ;
       if (adj > 0.0045f) adj = 0.0045f;
       if (adj < -0.0045f) adj = -0.0045f;
-      step = (uint64_t)((1.0 + (double)adj) * 4294967296.0);
+      step = (uint64_t)(rxRateBase * (1.0 + (double)adj) * 4294967296.0);
       rxRatioPpm = adj * 1e6f;
       rxFillSm = fillSm;
       if (fill < rxFillMin) rxFillMin = fill;
@@ -794,10 +978,36 @@ static void rxTask(void *) {
         boostWant = powf(10.0f, bs * 0.1f);   // шаг 2 дБ
       }
       rxBoostNow = bK;
+      dyn.boostDb = bs * 2.0f;
+      dyn.comp = cfg.rxComp > 3 ? 1 : cfg.rxComp;
+      dyn.gate = cfg.rxGate > 3 ? 0 : cfg.rxGate;
+      dyn.gateThr = cfg.rxGateThr > 4 ? 1 : cfg.rxGateThr;
+      dyn.gateRel = cfg.rxGateRel > 2 ? 1 : cfg.rxGateRel;
     }
+    float limRel = dyn.comp && boostStep ? LIM_REL_FAST : LIM_REL;   // без усиления всё как до 2.68
+    bool nsOn = cfg.rxNs >= 1 && cfg.rxNs <= 3;
+    if (nsOn && !ns) {
+      ns = (NsSpec *)heap_caps_malloc(sizeof(NsSpec), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      if (ns) ns->reset();
+    }
+    if (nsOn && ns && !nsWas) ns->reset();   // включили: оценка шума и очередь — с чистого листа
+    nsWas = nsOn && ns;
+    if (nsWas) {
+      ns->level = cfg.rxNs;
+      ns->sens = cfg.rxNsSens > 4 ? 2 : cfg.rxNsSens;
+      if (rxNsLearnAsk) {
+        rxNsLearnAsk = false;
+        ns->learnStart();
+      }
+      if (rxNsAutoAsk) {
+        rxNsAutoAsk = false;
+        if (!ns->learnLeft) ns->frozen = false;
+      }
+      rxNsFrozen = ns->frozen;
+    } else rxNsFrozen = false;
     if (eqGen != rxEqGen) {   // настройку эквалайзера сменили — пересчитать звенья (состояние остаётся: без щелчка)
       eqGen = rxEqGen;
-      eq.build(cfg.rxEq, cfg.rxLowCut != 0);
+      eq.build(cfg.rxEq, cfg.rxLowCut != 0, (float)rxOutRate);
     }
     // звук — только в работе: во время заставки и сообщений тихо (выход уже включён, вход плавный)
     uint32_t nowMs = millis();
@@ -837,9 +1047,11 @@ static void rxTask(void *) {
         if (!priming) under++;
         fade = 0;
       } else if (rsOk) {
-        float ph = frac * (RXRS_PH / 4294967296.0f);
-        int pi = (int)ph;
-        float a = ph - pi, accM = 0, accS = 0;
+        // Номер строки таблицы и доля до следующей — целыми числами (с 2.84). До этого было «frac × 128 / 2^32»
+        // дробным числом: при frac от 0xFFFFFF80 оно округлялось до 128, и вторая строка бралась за краем таблицы.
+        static_assert(RXRS_PH == 128, "номер строки — старшие 7 бит");
+        uint32_t pi = frac >> 25;
+        float a = (float)(frac & 0x1FFFFFFu) * (1.0f / 33554432.0f), accM = 0, accS = 0;
         const float *c0 = rxRsTab + pi * RXRS_TAPS, *c1 = c0 + RXRS_TAPS;
         uint32_t base = tail - (RXRS_TAPS / 2 - 1);
         for (int j = 0; j < RXRS_TAPS; j++) {
@@ -890,6 +1102,37 @@ static void rxTask(void *) {
         }
         last = y;
       }
+      if (rxFakeNan == 11) {   // проверка: одно «не число» на вход обработки
+        rxFakeNan = 0;
+        y = NAN;
+      }
+      // «не число» или бесконечность дальше не идут: в фильтрах с обратной связью они остались бы навсегда
+      if (!(fabsf(y) < 1e6f)) {
+        y = 0;
+        last = 0;
+        rxBadIn = rxBadIn + 1;
+      }
+      if (!(fabsf(ys) < 1e6f)) ys = 0;
+      nsM[i] = y;
+      nsS[i] = ys;
+    }
+    if (nsWas) {   // спектральное шумозаглушение — над целым блоком, до эквалайзера и усиления (задержка 7 мс)
+      uint32_t t0 = (uint32_t)esp_timer_get_time();
+      ns->runF(nsM, nsS, OUT_BLOCK, stOut, nsWork);
+      uint32_t d = (uint32_t)esp_timer_get_time() - t0;
+      rxNsUsSum = rxNsUsSum + d;
+      rxNsCalls = rxNsCalls + 1;
+      if (d > rxNsUsMax) rxNsUsMax = d;
+      rxNsRedDb = ns->redDb;
+      rxNsPauseHops = ns->pauseHops;
+    }
+    bool healAsk = false;   // в этом блоке на выходе обработки оказалось «не число» — сбросить её память
+    for (int i = 0; i < OUT_BLOCK; i++) {
+      float y = nsM[i], ys = nsS[i];
+      if (!(fabsf(y) < 1e6f) || !(fabsf(ys) < 1e6f)) {   // шумозаглушение отдало «не число» — его память тоже под сброс
+        y = ys = 0;
+        healAsk = true;
+      }
       // для спектра, индикатора и проверки тона — звук до громкости
       int yi = (int)y;
       if (rxSpecOn) {
@@ -935,11 +1178,13 @@ static void rxTask(void *) {
       float yc = y + clK * (shM.run(y) - y), ysc = stOut ? ys + clK * (shS.run(ys) - ys) : 0;
       // левый и правый; в моно оба равны середине. Ограничитель общий — по большему из двух, чтобы не сдвигать звук вбок
       float vl = (yc + ysc) * gain, vr = (yc - ysc) * gain, av = fabsf(vl) > fabsf(vr) ? fabsf(vl) : fabsf(vr);
-      {   // усиление («trim», см. выше): меняется плавно — около 15 мс на шаг, без щелчка
+      {   // усиление: меняется плавно — около 15 мс на шаг, без щелчка; у края шкалы и в паузах его убавляет
+          // сжатие (nsfx.h, NsDyn) — оно смотрит на звук до усиления
         bK += (boostWant - bK) * 0.002f;
+        dynG = dyn.run(av, (float)a, bK);
         vl *= bK;
         vr *= bK;
-        av *= bK;
+        av *= bK * dyn.tRed;   // каким этот отсчёт станет, когда сжатие дойдёт до своей цели
       }
       {
         float need = av > limit ? limit / av : 1.0f;   // во сколько раз надо убавить, чтобы этот отсчёт уложился
@@ -962,16 +1207,16 @@ static void rxTask(void *) {
             }
           }
         }
-        limG += (limMin - limG) * (limMin < limG ? LIM_ATT : LIM_REL);
-        vl = dl * limG;
-        vr = dr * limG;
+        limG += (limMin - limG) * (limMin < limG ? LIM_ATT : limRel);
+        vl = dl * limG * dynG;
+        vr = dr * limG * dynG;
         if (limG < 0.999f) limBusy++;
         if (limG < limLow) limLow = limG;
       }
       if (ear || earL > 1 || earR > 1) {   // проверка наушников: тон в одно ухо (при выходе «протифаза» канал один — в оба)
         earL += ((earSide == 1 || (earSide == 2 && !stOut) ? earAmp : 0) - earL) * 0.004f;
         earR += ((earSide == 2 ? earAmp : 0) - earR) * 0.004f;
-        earPh += 2 * PI * 660.0f / SRATE;
+        earPh += 2 * PI * 660.0f / rxOutRate;
         if (earPh > 2 * PI) earPh -= 2 * PI;
         float sn = sinf(earPh);
         vl += earL * sn;
@@ -992,6 +1237,10 @@ static void rxTask(void *) {
         vr *= PDM_K;
       }
       float ol = vl, orr = stOut ? vr : cfg.output == OUT_PDM ? -vl : vl;
+      if (!(fabsf(ol) < 1e9f) || !(fabsf(orr) < 1e9f)) {   // «не число» прошло обработку: в ЦАП — ноль, память фильтров — под сброс
+        ol = orr = 0;
+        healAsk = true;
+      }
       if (dcStart < 0) {   // первые 0,7 с после включения
         dcStart += 32768.0f / (SRATE * 0.7f);
         if (dcStart > 0) dcStart = 0;
@@ -1007,10 +1256,78 @@ static void rxTask(void *) {
         out[2 * i + 1] = (int16_t)0xA5F3;
       }
     }
+    {   // сторож выхода и сброс обработки (см. «ЗВУК ПРОПАЛ ДО ПЕРЕЗАГРУЗКИ» в начале файла)
+      static uint16_t stuckMs;        // сколько блоков подряд (по 1 мс) выход стоял при громком звуке
+      static int16_t stuckL, stuckR;
+      static uint32_t healedAt;       // когда сторож сбрасывал обработку в прошлый раз
+      if (rxFakeNan == 12) {          // проверка: «не число» прямо в память эквалайзера и «чёткости»
+        rxFakeNan = 0;
+        eq.z[0][0][0] = NAN;
+        shM.z1 = NAN;
+      }
+      if (rxFakeNan == 13)            // проверка: выход держится на одном числе (как при «не числе» до 2.84)
+        for (int i = 0; i < OUT_BLOCK * 2; i++) out[i] = -1;
+      bool same = true;
+      for (int i = 1; i < OUT_BLOCK && same; i++) same = out[2 * i] == out[0] && out[2 * i + 1] == out[1];
+      // «должно звучать»: в эфире громко (−24 дБ и выше), громкость не убрана, звук уже вошёл, проверок нет
+      bool loud = pk > 2000 && want > 0.01f && gain > 0.01f && !priming && fade >= 1 && dcStart >= 0 && !ear && !beep && !rxPattern;
+      if (!same || (stuckMs && (out[0] != stuckL || out[1] != stuckR))) stuckMs = 0;
+      else if (loud) {
+        if (!stuckMs) {
+          stuckL = out[0];
+          stuckR = out[1];
+        }
+        if (stuckMs < 60000) stuckMs++;
+      }
+      bool stuck = stuckMs >= 1500;
+      if (healAsk || stuck) {
+        uint32_t nowH = millis();
+        if (stuck) {
+          stuckMs = 0;
+          rxFxStuck = rxFxStuck + 1;
+          // сброс уже был только что, а выход снова стоит — дело не в памяти фильтров: перезапуск (главный цикл)
+          if (healedAt && nowH - healedAt < 4000) rxSoundRestartAsk = true;
+          healedAt = nowH ? nowH : 1;
+        } else rxFxNan = rxFxNan + 1;
+        rxFxHealMs = nowH ? nowH : 1;
+        // память всего, что помнит прошлое: фильтры, сжатие, ограничитель, плавные множители, шумозаглушение
+        memset(eq.z, 0, sizeof(eq.z));
+        shM.z1 = shM.z2 = shS.z1 = shS.z2 = 0;
+        memset(limL, 0, sizeof(limL));
+        memset(limR, 0, sizeof(limR));
+        for (int i = 0; i < LIM_LA; i++) limNeed[i] = 1;
+        limPos = limMinAge = 0;
+        limMin = limG = 1;
+        dyn.env = dyn.envIn = 0;
+        dyn.gRed = dyn.gGate = dyn.tRed = dyn.tGate = 1;
+        dyn.floorDb = -50;
+        dyn.tick = dyn.hold = dyn.envHold = 0;
+        dynG = 1;
+        gain = 0;                 // громкость войдёт плавно
+        bK = boostWant;
+        clK = 0;
+        balL = balR = 1;
+        earL = earR = earPh = 0;
+        last = prev1 = prev2 = 0;
+        if (dcStart < 0 || !(dcStart == dcStart)) dcStart = 0;
+        if (!(integ == integ) || !(fillSm == fillSm)) {   // и подгонка темпа, если «не число» добралось до неё
+          integ = 0;
+          fillSm = (float)(rxHead - rxTail);
+          step = (uint64_t)(rxRateBase * 4294967296.0);
+        }
+        if (ns) ns->reset();
+        for (int i = 0; i < OUT_BLOCK * 2; i++) out[i] = 0;   // этот блок — тишина
+      }
+    }
     rxPeak = pk > 32767 ? 32767 : pk;
     if (pk > 300 && !(rxFlags & FLAG_MUTE)) rxSoundMs = millis() ? millis() : 1;   // −40 дБ и громче — «в эфире звук»
     rxPeakL = pkL > 32767 ? 32767 : pkL;
     rxPeakR = pkR > 32767 ? 32767 : pkR;
+    if (dyn.redLowDb > rxDynRedDb) rxDynRedDb = dyn.redLowDb;   // читающий (команда ?) обнуляет
+    if (dyn.gateLowDb > rxGateRedDb) rxGateRedDb = dyn.gateLowDb;
+    dyn.redLowDb = 0;
+    dyn.gateLowDb = 0;
+    rxGateFloorDb = dyn.floorDb;
     rxLimBusy = rxLimBusy + limBusy;                     // для проверки n8=8: сколько отсчётов ограничитель убавлял звук
     if (limLow < rxLimLow) rxLimLow = limLow;
     if (vuL > rxVuL) rxVuL = vuL > 65535 ? 65535 : vuL;   // экран забирает и обнуляет
