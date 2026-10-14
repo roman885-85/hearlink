@@ -925,6 +925,14 @@ static void otaAutoTick() {
         if (p.used && !(p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 79))) subOk = false;
       portEXIT_CRITICAL(&peerMux);
       txSubOk = subOk;
+      // «Найвища» стерео с разностью без сжатия (proto.h — qPktLen4) — по тому же правилу: все сообщали 2.87+ (вид 2.86,
+      // 968 байт, с 4-битной разностью в копиях, больше не шлётся — у приёмника 2.86 будет прежний вид, 750)
+      bool pcmSOk = !why;
+      portENTER_CRITICAL(&peerMux);
+      for (auto &p : peers)
+        if (p.used && !(p.fwMaj > 2 || (p.fwMaj == 2 && p.fwMin >= 87))) pcmSOk = false;
+      portEXIT_CRITICAL(&peerMux);
+      txPcmSOk = pcmSOk;
     }
   }
   if (!cfg.autoUpd || now < 20000 || otaTxActive() || txPause || (lastStart && now - lastStart < 120000)) return;

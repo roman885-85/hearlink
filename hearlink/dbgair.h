@@ -203,8 +203,11 @@ static void dbgRemote(const String &s) {
 
 // Передатчик: пакеты шлёт задача передачи звука (после очередного пакета звука), не чаще одного в 20 мс.
 static void (*dbgPrevAfter)();
+// Наибольший пакет отладки: заголовок, текст (длина — один байт) и подпись. До 2.86 буферы были размером с наибольший
+// пакет звука (PKT_MAX) — по 1000 байт постоянной внутренней памяти на ровном месте (у передатчика её мало).
+#define DBG_PKT_MAX (sizeof(DbgMsg) + 255 + SEC_TAG)
 static void dbgAfterSend() {
-  static uint8_t pkt[PKT_MAX];
+  static uint8_t pkt[DBG_PKT_MAX];
   static uint32_t last;
   if (dbgPrevAfter) dbgPrevAfter();
   if (millis() - last < 20) return;
@@ -216,7 +219,7 @@ static void dbgAfterSend() {
 }
 // Приёмник: шлёт главный цикл, не чаще одного пакета в 15 мс.
 static void dbgPumpRx() {
-  static uint8_t pkt[PKT_MAX];
+  static uint8_t pkt[DBG_PKT_MAX];
   static uint32_t last;
   if (rxPower == PW_STANDBY || millis() - last < 15) return;
   if (rxTxBusy()) return;   // прошлый пакет ещё у драйвера — следующий не кладём поверх (см. rxSend в radio.h)

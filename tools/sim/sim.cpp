@@ -561,6 +561,18 @@ int main() {
     { Box bx = itemBox(ID_ROW + P_WEAK); tap(bx.x + 40, bx.y + 20); }
     save("07e-vikno-slabkyi-syhnal");
     modal = M_NONE;
+    needFull = true;
+    frame(false, 0, 0);
+    { Box bx = itemBox(ID_ROW + P_HOP); tap(bx.x + 40, bx.y + 20); }   // описание с 2.88 длиннее — поместилось ли
+    save("07e2-vikno-kanal-pry-zatori");
+    modal = M_NONE;
+    uiLang = 1;
+    needFull = true;
+    frame(false, 0, 0);
+    { Box bx = itemBox(ID_ROW + P_HOP); tap(bx.x + 40, bx.y + 20); }
+    save("07e3-vikno-kanal-pry-zatori-en");
+    modal = M_NONE;
+    uiLang = 0;
     view.val[P_WEAK] = 0;
     rateNowText = "5.5";
     needFull = true;
@@ -576,6 +588,13 @@ int main() {
     view.hopSeq = 6; view.hopFrom = 1; view.hopTo = 13; view.val[P_CHANNEL] = 13; view.hopBack = 2;
     for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
     save("07h-miakyi-povernuvsia");
+    // 2.88: уход из-за потерь пакетов у приёмника с хорошим сигналом (помехи у него) и возврат, когда там не лучше
+    view.hopSeq = 7; view.hopFrom = 1; view.hopTo = 5; view.val[P_CHANNEL] = 5; view.hopBack = 0; view.hopLossPm = 23;
+    for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
+    save("07i-miakyi-cherez-vtraty");
+    view.hopSeq = 8; view.hopFrom = 5; view.hopTo = 1; view.val[P_CHANNEL] = 1; view.hopBack = 3; view.hopLossPm = 0;
+    for (int k = 0; k < 10; k++) { fakeMs += 20; frame(false, 0, 0); }
+    save("07j-povernuvsia-vtraty-ne-menshi");
     toastUntil = 0;
     uint32_t seq = view.hopSeq;
     view = was;

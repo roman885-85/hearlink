@@ -40,7 +40,7 @@ It acts on the input sound; the test sound and card files are not touched.
 
 | Quality | On air | Added delay | Lowest radio rate | When to choose |
 |---|---|---|---|---|
-| «найвища» (highest) | 32 kHz uncompressed; two frames per packet, the previous packet repeated uncompressed (since 2.77) | 2 ms | 5.5 Mbit/s | hall up to ~15 m, clean air, music |
+| «найвища» (highest) | 32 kHz uncompressed; two frames per packet, the previous packet repeated uncompressed (since 2.77); in stereo since 2.86 the channel difference is uncompressed too — the receiver plays the very L and R of the input | 2 ms | 5.5 Mbit/s | hall up to ~15 m, clean air, music |
 | «стандартна» (standard) | 32 kHz ADPCM; at 1 Mbit/s — the new “eight bands” codec (since 2.79) | 4 ms | 1 Mbit/s | the usual choice |
 | «мова» (speech) | 16 kHz ADPCM (up to 7 kHz) | 8 ms | 1 Mbit/s | sermon, busy air |
 | «дальня» (far) | 16 kHz ADPCM | 12 ms | 0.5 Mbit/s | the longest range, mono only |
@@ -70,8 +70,11 @@ copies — three lost packets in a row cause no dropout. On a sermon recording i
   freer channel by itself without a pause (the move is announced to the receivers in advance and they follow). Since
   2.83 — also when packets merely wait 15–35 ms often (the sound is delayed): this is a **trial** — after a minute on
   the new channel the transmitter compares and goes back if the waits are no smaller there or the receivers lose
-  sound more often. A message on the screen tells about the move and its reason. A channel left because of congestion
-  is not chosen for ten minutes; a failed trial channel — for half an hour.
+  sound more often. Since 2.88 a trial also starts when **a receiver with a good signal** (−62 dBm or stronger) loses
+  1.5 % of packets a minute or more: that is interference near it (clicks are heard) which the transmitter neither
+  hears nor sees in its channel scan. The transmitter then tries the best of the other channels by its scan and stays
+  there if the losses dropped by at least a third. A message on the screen tells about the move and its reason. A
+  channel left because of congestion is not chosen for ten minutes; a failed trial channel — for half an hour.
 - **«Швидкість радіо» (Radio rate)**. «Сама» (auto): 5.5 Mbit/s, and for a weak receiver (−75 dBm or weaker, or losing
   sound) — 1 Mbit/s, which reaches farther (since 2.73). Back up when everybody hears well: after 30 s if the weakest
   is −66 dBm or better, after 2 min when closer to the limit (since 2.83). A rate chosen by hand is the upper step:

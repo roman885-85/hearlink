@@ -123,7 +123,9 @@ word). Why not 32 kHz — see hardware.md, “External CS4344 DAC”.
    The «сам» (auto) mode: buffer = the deepest dip over the last minute + 4 ms; after a dropout it immediately grows
    by the length of the dropout. The limits depend on the frame length: from 4 + frame/2 to 26 + 2·frame ms.
 5. **Pace adjustment**: the crystals of the two boards run differently, so the receiver plays fractions of a
-   percent faster or slower (cubic interpolation), holding the buffer. No more than ±0.3 % — otherwise a "drift" of
+   percent faster or slower, holding the buffer (the conversion is a windowed-sinc table, Kaiser window, since 2.44;
+   since 2.86 — 48 taps × 128 phases with the cutoff at 15 kHz: error no worse than −77 dB up to 15 kHz, the top above
+   14 kHz rolls off smoothly, −5.6 dB at 15 kHz). No more than ±0.3 % — otherwise a "drift" of
    pitch is audible on music. With the CS4344 (2.85) the same conversion also takes the 32 kHz of the air to the
    31.25 kHz output: the input step per output sample is 1.024 × (1 ± adjustment).
 6. **Speech clarity**: a "shelf" filter (+12 dB above 2 kHz) and a mix of "the sound + its boosted copy" in a
@@ -141,15 +143,18 @@ word). Why not 32 kHz — see hardware.md, “External CS4344 DAC”.
    next item). In 2.48–2.56 the boost was applied “with a hold” — only within the headroom left below full scale: at
    100 % volume with full-scale music only +0.2 dB of a +14 dB setting acted, and that looked like “the setting does
    not work”.
-8. **Look-ahead limiter** (since 2.37) — common to both channels. The audio passes through a 1.5 ms delay
-   (48 samples) and the gain is computed from the largest sample in that window: it goes down smoothly BEFORE the
-   peak arrives and comes back slowly (a quarter of a second). When there is nothing to limit, the audio passes
+8. **Look-ahead limiter** (since 2.37) — common to both channels. The audio passes through a 3 ms delay
+   (96 samples; before 2.86 — 1.5 ms) and the gain is computed from the largest sample in that window: it goes down
+   BEFORE the peak arrives — since 2.86 as the average over the whole window, i.e. exactly to the value needed at the
+   peak and never over full scale — and comes back slowly (a quarter of a second; 40 ms with compression). When there is nothing to limit, the audio passes
    unchanged. Since 2.40 the threshold is full scale, so without “Clarity” and “Boost” the limiter does not work at all (the
    one-bit output still gets no more than 30 000 of 32 767). The previous limiter (instant attack, 80 ms release) clipped the top of each peak and its gain
    wandered by 1–2 dB within one bass period — with the DAC this was heard as overload in the bass, especially
    with “Clarity” switched on.
 9. **Balance** — attenuation of one channel by 3 dB per step.
-10. **Output**: PDM 32 kHz on pins 17/18. After power-on the pins rise to mid-level in 0.7 s; before sleep they
+10. **Output**: PDM 32 kHz on pins 17/18 (16 bits, since 2.86 rounded instead of truncated) or I2S to an external
+    DAC — since 2.86 **24 bits in a 32-bit word** (before 2.86 — 16 bits: the receiver volume is digital, and at 2 of
+    20 only 10 bits of the sound were left). After power-on the PDM pins rise to mid-level in 0.7 s; before sleep they
     drop to ground in 0.5 s — so that the capacitors do not click in the headphones.
 
 ### States
@@ -234,6 +239,8 @@ sample), in stereo — a block of the channel difference, then the spare copies,
 | Quality | Frame | Copies (mono/stereo) | Packet | Packets/s | Stream |
 |---|---|---|---|---|---|
 | «найвища» (highest, since 2.63) | 64 samples, 2 ms; **two frames per packet** | copies of the four previous frames (the two previous packets) | 418 / 564 bytes (mono / stereo) | 250 | ~840 / ~1130 kbit/s |
+| highest (since 2.77, exact copies) | the same; the previous packet once more uncompressed | 2 exact + 2 compressed | 604 / 750 | 250 | ~1210 / ~1500 |
+| highest stereo (since 2.87) | the same; **channel difference uncompressed** — in the frames and in the copies of the previous packet | 2 exact (mid and difference) + 2 compressed (mid only) | 1116 | 250 | ~2230 |
 | «найвища» (before 2.63 and for old receivers) | 64 samples, 2 ms | 2 / 1 | ~220 bytes | 500 | ~850 kbit/s |
 | «стандартна» (standard) | 128, 4 ms | 2 / 1 | ~223 | 250 | ~430 |
 | «мова» (speech) | 128 @16 kHz, 8 ms | 2 / 1 | ~223 | 125 | ~215 |
@@ -269,8 +276,15 @@ is awake stays in touch by it. A receiver that no longer exists but is still in 
 single packets — delete it from the list. A pause-free channel hop is scheduled on a pair boundary.
 
 **Stereo**: what goes on air is the "mid" (L+R)/2 — the same sound as in mono — and the "difference" (L−R)/2. A
-receiver in mono mode does not touch the difference; the spare copies carry only the mid (a recovered frame sounds
-in mono).
+receiver in mono mode does not touch the difference. Before 2.86 the difference was ADPCM (4 bits per sample); since
+2.86 on "найвища" it goes **uncompressed**, like the mid: in stereo the receiver gets the same L and R that left the
+transmitter (up to the least significant bit lost when dividing by 2). The packet (since 2.87) is 1116 bytes: header · two frames
+(mid 128 + difference 128) · mid of N−1, N−2 uncompressed · mid of N−3, N−4 — ADPCM · difference of N−1, N−2
+uncompressed · tag. A single loss is restored bit for bit in stereo; when two packets in a row are lost, frames N−3,
+N−4 play in mono, the difference fading out and back in within 1 ms. At 5.5 Mbit/s it is 1878 µs of 4000 (47 % of the
+air; the previous kind — 34 %). In 2.86 the packet was 968 bytes and the copies of the difference stayed 4-bit — on the
+clean sound every loss sounded like a rustle. The transmitter uses the new kind when every receiver on the list has
+reported 2.87+; serial `Qr0` — temporarily the old way (to compare by ear).
 
 **Channel number in the header**: adjacent Wi-Fi channels overlap, and a receiver may hear a packet while sitting
 on an adjacent one; by this number it tunes exactly.
@@ -400,7 +414,11 @@ the name is the type: 0 — uncompressed sound 32 kHz mono, 1 — MP3.
   cost four times the estimate (encoder 0.58 → 0.16 ms per frame, receiver 0.60 → 0.14 ms per packet).
 - **Channel (2.82–2.83, `txscan.h`)** — the channel scan adds a “strong neighbour risk” from access point beacons and
   their real channel; the transmitter counts seconds when a packet waited 15 ms or more for the air and shows it on
-  «Ефір»; the soft move is a trial with a return (`hopSoftTick`).
+  «Ефір»; the soft move is a trial with a return (`hopSoftTick`). Since 2.88 also by the packet losses of receivers
+  with a good signal (`airLossPm`: every second the largest of the latest loss shares among those playing at −62 dBm
+  or stronger, averaged over a minute; threshold 15 ‰; stay if on the new channel the losses are at least 30 % smaller
+  and not larger by 1 %). Measured 14.10: on channel 1 the near receiver (−47 dBm) lost 1–6 % of packets, on channel 5 —
+  0 %; by its own scan the transmitter considered channel 1 the best.
 - **Sound self-recovery (2.84)** — the row number of the tempo-adjustment table is computed in integers (once in ~17 min
   it rounded up to 128, and the row past the table end was read — the source of a “not-a-number” that silenced the
   filters for good); not-a-numbers at the processing input, after noise reduction and at the output are replaced with
@@ -408,6 +426,17 @@ the name is the type: 0 — uncompressed sound 32 kHz mono, 1 — MP3.
   on air — reset; did not help within 4 s — a quiet restart, no more than once in 10 min); a restart with `CMD_RESTART`
   from the transmitter and a menu item.
 - **CS4344 (2.85)** — see “Design” above and hardware.md.
+- **“Graininess” (2.86)** — the owner: with an ideal signal, on both DACs, on the test sound and on a good recording —
+  “unpleasant graininess”. The chain was reproduced on a computer (`tools/host/rxchain.cpp`) and the error of each
+  stage measured per frequency band. Four causes: (1) **the 4-bit channel difference in stereo** — its noise is flat in
+  frequency while the top of music is quiet: in the 2–16 kHz bands the noise was only 27…2 dB below the music, and at
+  15–16 kHz louder than it; (2) **16 bits with truncation after the digital volume** — at volume 2 of 20 only 5–10 bits
+  of the sound were left, and the distortion followed the sound; (3) **the limiter** with +24 dB “Boost” and no
+  compression could not keep up with its 0.3 ms attack: 1426 samples in 87 s went over full scale and were clipped
+  hard; (4) **the 24-tap pace conversion** — image frequencies at 14–16 kHz (−26…−6 dB). Fixed: uncompressed
+  difference (2.87: in the copies too; a 1116-byte packet), 24 bits to the DAC, a limiter with a 3 ms window average (over full scale — a few
+  samples, intermodulation −48 → −59 dB), a 48-tap table. Packet check — `tools/host/dbl.cpp`: the difference arrives
+  bit for bit.
 
 ## Quirks and pitfalls
 

@@ -43,6 +43,7 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `Ql2` / `Ql3` | the «Слабкий сигнал» (Weak signal) setting: do not lower / lower the rate for a weak receiver (stored, as from the screen; since 2.83) |
 | `Ql0` / `Ql1` | forbid / allow the lower rate step temporarily — for measurements at a fixed rate (not stored) |
 | `Qc0` / `Qc1` | forbid / allow the new far-mode codec — to compare by ear with the former compression (not stored; since 2.79) |
+| `Qr0` / `Qr1` / `Qr2` | the channel difference of «найвища» in stereo: 4-bit as before 2.86 (to compare by ear) / uncompressed when every receiver on the list has 2.87+ (the default) / always (an experiment). Not stored; `?` tells which one is on air |
 | `p<2–20>` | power, dBm |
 | `q<0–3>` | quality: 0 «найвища» (highest), 1 «стандартна» (standard), 2 «мова» (speech), 3 «дальня» (far) |
 | `g<0–6>` | source: 0 input, 1 tone, 2 voice, 3 voice and music, 4 music, 5 music with an announcement, 6 left/right channel check |
@@ -65,7 +66,7 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `Q` | the radio "black box"; `Q0…Q3` — up to which step to revive (an experiment only: the limit expires by itself after 60 s, or after 5 s without air); `Q7 Q8 Q9 Q6` — perform a step on a healthy radio; `Q10` — an imitated stalled driver; `Qn` — what the radio hears (noise level); `Qp<bits>` — radio protocol experiment (1 b, 2 g, 4 n, 8 LR; `Qp15` — as usual). `Q` also prints measurements: gaps between sends, the path of a lone packet, frame processing time by stages |
 | `Y1`/`Y0`, `Y3`/`Y4`, `Y5…Y8` | experiments with display frame output |
 | `M8` | full-screen warning “cable update — the screen goes dark for a minute” (25 s or until the board is reset) |
-| `Qp<setting>=<value>` | (the display module, since 2.83) a choice “as from the screen” without a touch — a check of the handling; the numbers are `enum Param` in `txui.h` (2 — rate, 9 — quality, 20 — «Слабкий сигнал») |
+| `Qp<setting>=<value>` | (the display module, since 2.83) a choice “as from the screen” without a touch — a check of the handling; the numbers are `enum Param` in `txui.h` (2 — rate, 9 — quality, 20 — «Слабкий сигнал»). Since 2.86 only with the “=” sign: before that this parser also took `Qp<bits>`, and on the display module the radio protocol experiment did nothing |
 | `e6=<0…3>`, `e8=<0…4>`, `e7=1` / `e7=0` | input noise reduction (since 2.71–2.72): strength / sensitivity / noise sample — remember now / auto in pauses |
 | `Qd0` / `Qd1` / `Qd2` / `Qd3` | two frames per packet on «найвища»: never / automatically, when all receivers in touch can take it (the default) / always (an experiment); since 2.77 the double packet repeats the previous packet uncompressed, `Qd3` — the former compressed copies. Lasts until a restart. `?` says «ДВА кадри в пакеті» (two frames) or «один кадр у пакеті» (one frame) |
 | `Y9`, `Y10`/`Y11` | knock the display driver out of its buffer order on purpose; put frame portions where the driver says (as before 2.49) / the firmware's own way |

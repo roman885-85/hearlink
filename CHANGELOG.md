@@ -1,5 +1,91 @@
 # Changelog / Історія версій
 
+## 2.88 — 2026-10-14 (includes 2.86–2.87, which were not released / містить 2.86–2.87, які не випускались)
+- EN: **light clicks “like a scratched CD” — the channel is now chosen by the receivers' packet losses too.** After the
+  exact copies (2.87) only two losses in a row and gaps could still be heard. Measured: on channel 1 the near receiver
+  (−47 dBm) lost 1–6 % of packets with two losses in a row every 3–50 s, on a trial channel 5 — not a single packet in a
+  minute; the transmitter hears none of this interference (it is at the receiver's place), and its channel scan rated
+  channel 1 the best. The soft channel move («Канал при заторі: сам») now also starts a trial when a receiver with a good
+  signal (−62 dBm or stronger) loses 1.5 % of packets a minute or more, tries the best of the other channels and stays if
+  the losses dropped by at least a third; the screen says “a receiver lost N % of packets (interference)”. On the devices
+  it moved 1 → 2 → 5 by itself and stayed: over the next 5 minutes the near receiver lost 0.0 % of packets, the far one
+  1.6–2.4 % (all single losses, restored exactly), lost sound and buffer underruns 0 ms for both.
+- UK: **легкі клацання «як у подряпаного CD» — канал тепер обирається й за втратами пакетів у приймачів.** Після точних
+  копій (2.87) чутно лишалися тільки дві втрати поспіль і провали. Вимір: на каналі 1 ближній приймач (−47 дБм) губив
+  1–6 % пакетів, дві втрати поспіль — раз на 3–50 с, на пробному каналі 5 — жодного пакета за хвилину; передавач цих
+  завад не чує (вони біля приймача), а за своїм заміром вважав канал 1 найкращим. М'який перехід («Канал при заторі:
+  сам») тепер починає пробу й тоді, коли приймач із добрим сигналом (−62 дБм і сильніше) губить за хвилину 1,5 % пакетів
+  і більше, пробує найкращий за заміром з інших каналів і лишається, якщо втрат стало хоча б на третину менше; на екрані —
+  «приймач губив N % пакетів (завади)». На приладах сам перейшов 1 → 2 → 5 і лишився: наступні 5 хвилин ближній приймач
+  губив 0,0 % пакетів, дальній 1,6–2,4 % (усі одиночні, відновлені точно), пропалого звуку й провалів запасу — 0 мс в обох.
+
+- EN: **no more “graininess” in the sound.** The owner heard an unpleasant graininess with an ideal signal, on both
+  DACs, on the test sound and on a good recording, with all noise suppression off. The receiver chain was reproduced on
+  a computer (`tools/host/rxchain.cpp`) and the error of every stage measured per frequency band; four causes found:
+  1. **the stereo channel difference went as 4-bit ADPCM.** Its noise is flat in frequency while the top of music is
+     quiet: in the 2–16 kHz bands it was only 27…2 dB below the music, at 15–16 kHz louder than it, and the owner's
+     equalisers (+6…+12 dB on the top) raised it further. Now «найвища» in stereo carries the difference uncompressed,
+     like the mid: the receiver gets the very L and R that left the transmitter. In 2.86 the spare copies of the
+     difference were still 4-bit — and on the now clean sound every lost packet came out as a short rustle (owner:
+     “the sound became perfectly clean, but periodic rustles are heard, as with packet loss”; the near receiver lost
+     ~6 packets a second on channel 1). Since 2.87 the copies of the previous packet carry the difference uncompressed
+     too: a single lost packet is restored bit for bit in stereo. The two oldest copies (needed only when two packets
+     in a row are lost) carry no difference — those 4 ms play in mono, the difference fading out and back in within
+     1 ms (no step, no click). The double packet grows from 750 to 1116 bytes (47 % of the air at 5.5 Mbit/s instead of
+     34 %). Used when every receiver on the list has 2.87+; `Qr0` brings back the 4-bit difference for comparison.
+     Measured on the devices, 30 s windows on channel 1 (losses there vary a lot from window to window): near receiver
+     ~10 frames a second from copies, 97 % of them exact; two losses in a row about once every 3–4 s; lost sound 0 ms;
+  2. **the receiver output was 16 bits with truncation after the digital volume** — at volume 2 of 20 (−36 dB) only
+     5–10 bits of the sound were left, and the distortion followed the sound. External DACs (PCM5102, CS4344) now get
+     24 bits in a 32-bit word (PCM5102: 64 bit clocks per frame); the one-bit output keeps 16 bits, rounded;
+  3. **the limiter** with a large boost and no compression (+24 dB at full volume) could not keep up with its 0.3 ms
+     attack: 1426 samples in 87 s went over full scale and were clipped hard. The window is now 3 ms and the gain goes
+     down as the average over the window — provably never over full scale; intermodulation −48 → −59 dB, fast gain
+     wobble (0.3–1 kHz) −27 → −40 dB. +1.5 ms of delay;
+  4. **the 24-tap pace conversion** let image frequencies through at 14–16 kHz (−26 dB at 14 kHz, −11 dB at 15 kHz).
+     Now 48 taps with the cutoff at 15 kHz: no worse than −77 dB up to 15 kHz; the top above 14 kHz rolls off
+     (−5.6 dB at 15 kHz).
+  The receiver's `?` shows the output chain; the line of `P`/stat says “різниця без стиснення”.
+- EN: `Qp<bits>` (radio protocol experiment) works again on the display module — the `Qp<setting>=<value>` parser no
+  longer swallows it. Debug-over-radio buffers shrank from 1000 to 283 bytes and the receiver-only limiter buffers moved
+  to the heap: despite the larger packet the transmitter has 0.9 KB more free internal memory than with 2.85 (static
+  data 148 451 bytes instead of 149 403).
+- EN: known issues: with a large boost and compression off the limiter still holds 20–25 dB most of the time — that
+  is the cost of loudness (switch on compression 1–3); a receiver turned off from the transmitter can stay off if the
+  transmitter loses power within 3–11 s after it was turned on again (the change is saved in a pause of the sound).
+- UK: **більше немає «зернистості» звуку.** Власник почув неприємну зернистість на ідеальному сигналі, на обох ЦАП,
+  на перевірочному звуці й на гарному записі, з вимкненим шумозаглушенням. Тракт приймача повторено на комп'ютері
+  (`tools/host/rxchain.cpp`) і поміряно похибку кожного ступеня за смугами частот; чотири причини:
+  1. **різниця каналів у стерео йшла 4-бітним ADPCM.** Її шум рівний по частоті, а верх у музики тихий: у смугах
+     2–16 кГц він був лише на 27…2 дБ тихіший за музику, на 15–16 кГц — гучніший, а еквалайзери власника (+6…+12 дБ на
+     верх) піднімали його ще. Тепер «найвища» в стерео несе різницю без стиснення, як середину: приймач отримує ті самі
+     Л і П, що пішли з передавача. У 2.86 запасні копії різниці лишалися 4-бітними — і на вже чистому звуці кожен
+     загублений пакет звучав коротким шелестом (власник: «звук став гранично чистий, але прослуховуються періодичні
+     шелести, як при втраті пакетів»; ближній приймач на каналі 1 губив ~6 пакетів за секунду). З 2.87 копії минулого
+     пакета теж несуть різницю без стиснення: одиночна втрата відновлюється біт у біт і в стерео. Дві найдавніші копії
+     (потрібні лише при двох втратах поспіль) різниці не несуть — ці 4 мс звучать у моно, різниця за 1 мс плавно йде до
+     нуля й повертається (без сходинки й клацання). Подвійний пакет — 1116 байтів замість 750 (47 % ефіру на 5,5 Мбіт/с
+     замість 34 %). Іде, коли всі приймачі списку мають 2.87+; `Qr0` повертає 4-бітну різницю для порівняння. На
+     приладах, вікна по 30 с, канал 1 (втрати там дуже гуляють від вікна до вікна): ближній приймач — ~10 кадрів за
+     секунду з копій, 97 % із них точні; дві втрати поспіль — приблизно раз на 3–4 с; пропало звуку 0 мс;
+  2. **вихід приймача був 16-бітним із відкиданням дробу після цифрової гучності** — на гучності 2 з 20 (−36 дБ) від
+     звуку лишалося 5–10 розрядів, спотворення йшли за звуком. Зовнішні ЦАП (PCM5102, CS4344) тепер отримують 24 біти в
+     32-бітному слові (PCM5102: 64 такти на кадр); однобітний вихід — 16 біт з округленням;
+  3. **обмежувач** при великому підсиленні без стискання (+24 дБ на повній гучності) не встигав атакою за 0,3 мс: 1426
+     відліків за 87 с виходили за шкалу й зрізалися жорстко. Тепер вікно 3 мс, і підсилення опускається середнім за
+     вікно — доведено, що за шкалу не виходить; інтермодуляція −48 → −59 дБ, швидке «гуляння» підсилення (0,3–1 кГц)
+     −27 → −40 дБ. +1,5 мс затримки;
+  4. **підгонка темпу на 24 відліки** пропускала дзеркальні частоти на 14–16 кГц (−26 дБ на 14 кГц, −11 дБ на 15 кГц).
+     Тепер 48 відліків і зріз на 15 кГц: не гірше −77 дБ до 15 кГц; верх вище 14 кГц спадає (−5,6 дБ на 15 кГц).
+  `?` приймача показує тракт виходу; рядок стану — «різниця без стиснення».
+- UK: `Qp<біти>` (дослід із режимами радіо) знову працює на модулі з екраном — розбір `Qp<налаштування>=<значення>` його
+  більше не забирає. Буфери налагодження по радіо — 283 байти замість 1000, буфери обмежувача приймача — у купі:
+  попри більший пакет у передавача на 0,9 КБ більше вільної внутрішньої пам'яті, ніж у 2.85 (постійні дані 148 451
+  байт замість 149 403).
+- UK: відоме: при великому підсиленні без стискання обмежувач і далі тримає 20–25 дБ більшу частину часу — це ціна
+  гучності (увімкніть стискання 1–3); приймач, вимкнений із передавача, може лишитися вимкненим, якщо передавач втратить
+  живлення за 3–11 с після того, як його ввімкнули знову (зміна записується в паузі звуку).
+
 ## 2.85 — 2026-10-14 (includes 2.64–2.84, which were not released / містить 2.64–2.84, які не випускались)
 - EN: **receivers no longer drop out of the list with a weak signal (2.64).** A receiver reports about itself to the
   transmitter’s address with acknowledgement and retries (it used to send “to everybody”, without delivery checks), and

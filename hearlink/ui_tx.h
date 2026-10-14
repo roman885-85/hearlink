@@ -362,6 +362,7 @@ static void task(void *) {
     v.hopStall = hopStall;
     v.hopSoft = hopSoft;
     v.hopBack = hopBackWhy;
+    v.hopLossPm = hopLossPm;
     v.hopAgoS = hopAtMs ? (now - hopAtMs) / 1000 : 0;
     ui::stereoNow = txStNow;
     {   // названия мелодий для списка — один раз, когда раздел со звуками прочитан

@@ -360,12 +360,13 @@ static void radioOnRecv2(const esp_now_recv_info_t *info, const uint8_t *data, i
   }
   if (aq >= Q_COUNT || h->magic != MAGIC || h->ver != PROTO_VER || (h->q & ~(Q_MASK | Q_STEREO | Q_LANG_EN | Q_DOUBLE | Q_SUB)) || (ast && !qStereoOk(aq)) ||
       (asub ? (aq != Q_STD || ast || adbl || len != qPktLenSub())
-            : adbl ? (aq != Q_HI || (len != qPktLen2(aq, ast) && len != qPktLen3(aq, ast))) : (len != qPktLen(aq, ast) && !(aq == Q_HI && ast && len == qPktLen(aq, ast) + SC_LEN)))) {
+            : adbl ? (aq != Q_HI || (len != qPktLen2(aq, ast) && len != qPktLen3(aq, ast) && !(ast && len == qPktLen4(aq)))) : (len != qPktLen(aq, ast) && !(aq == Q_HI && ast && len == qPktLen(aq, ast) + SC_LEN)))) {
     rForeign = rForeign + 1;
     return;
   }
   rPktSc = !adbl && len != qPktLen(aq, ast);   // «найвища» стерео с копией разности каналов (с 2.43)
-  rPktDup = adbl && len == qPktLen3(aq, ast);   // двойной пакет с точными копиями прошлого пакета (с 2.77)
+  rPktPcmS = adbl && ast && len == qPktLen4(aq);   // стерео с разностью без сжатия (с 2.86) — тоже с точными копиями
+  rPktDup = adbl && (len == qPktLen3(aq, ast) || rPktPcmS);   // двойной пакет с точными копиями прошлого пакета (с 2.77)
   rPktSub = asub;
   if (!rOnAudio) return;   // передатчику чужой звук не нужен
   rLastAnyMs = millis();

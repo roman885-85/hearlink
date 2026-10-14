@@ -6,6 +6,8 @@
 #   otascan — раздача обновления: следующий нужный блок находится из любого места (до 2.67 — не из любого);
 #   nsfx   — обработка «для слуха» (hearlink/nsfx.h): шумозаглушение на речи и музыке, сжатие вместо «усиление +
 #            ограничитель», шум в паузах; записи для прослушивания — в build/host/ns;
+#   rxchain — «зернистость» (14.10): ступени выходного тракта приёмника по отдельности (интермодуляция ограничителя,
+#            подгонка темпа на синусах, перевод в целое); с записью музыки — ещё и по полосам частот, до и после 2.86;
 #   subc   — подполосный кодек дальнего режима (hearlink/subc.h): набор фильтров восстанавливает звук, быстрый счёт
 #            совпадает с прежним «в лоб» (tools/host/subc_ref.h) до бита, сигнал/шум на записях против прежних сжатий,
 #            пакет «кадр + три копии» при потерях; записи для прослушивания — в build/host/subc-wav;
@@ -26,6 +28,8 @@ python3 tools/host/sec_kat.py
 ./build/host/codec
 ./build/host/stereo
 ./build/host/dbl
+c++ -std=c++17 -O2 -DFW_VERSION=\"0.0\" -Ibuild/host -Ihearlink tools/host/rxchain.cpp -o build/host/rxchain
+./build/host/rxchain
 mkdir -p build/host/ns
 c++ -std=c++17 -O2 -Wall -Wno-unused-function -Ihearlink tools/host/nsfx.cpp -o build/host/nsfx
 ./build/host/nsfx assets build/host/ns

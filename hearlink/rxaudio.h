@@ -198,6 +198,7 @@ static volatile uint32_t rxScCount, rxMonoRec;   // кадров из копий
 static volatile uint32_t rxRecAll, rxExactRec;   // всего кадров из копий и из них без сжатия (пакет «с точными копиями», с 2.77) — для n8=8
 static SubcDec rxSubDec;                         // сборка звука подполосного кодека (с 2.79); работает в задаче Wi-Fi
 static volatile bool rxSubNow;                   // идёт пакетами подполосного кодека — для запаса (см. задачу звука) и отчёта
+static volatile uint32_t rxPcmSFrames;           // кадров, пришедших с разностью каналов без сжатия (с 2.86) — для отчёта
 static volatile uint32_t rxSubUsSum, rxSubUsMax, rxSubCalls;   // сколько времени задача Wi-Fi тратит на разбор пакета нового кодека — для n8=8
 // Вызывается из задачи Wi-Fi на каждый свой пакет.
 static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
@@ -307,12 +308,16 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
   bool fadeIn = false;
   int copies = dbl ? DBL_COPIES : qCopies(q, st);
   rxCopyMs = copies * rxSeqMs;
-  int fl = qMainLen(q) + (st ? qBlock(q) : 0);        // один кадр в пакете: середина и, в стерео, разность
+  // стерео с разностью без сжатия (proto.h — qPktLen4): разность в кадре — 128 байт, как середина; с 2.87 копии
+  // разности кадров N−1 и N−2 — тоже без сжатия, у N−3 и N−4 копии разности нет (такой кадр выходит в моно)
+  bool pcmS = dbl && st && rPktPcmS;
+  int fl = qMainLen(q) + (st ? (pcmS ? d.n * 2 : qBlock(q)) : 0);   // один кадр в пакете: середина и, в стерео, разность
   const uint8_t *cp = payload + (dbl ? 2 : 1) * fl;   // запасные копии: от ближнего кадра к дальнему
   // «двойной с точными копиями» (с 2.77, proto.h): первые DUP_PCM копий — кадры без сжатия, за ними сжатые
   int dupN = dbl && rPktDup ? DUP_PCM : 0;
   const uint8_t *cpA = cp + dupN * qMainLen(q);       // сжатые копии: кадры дальше dupN
   const uint8_t *scp = cpA + (copies - dupN) * qBlock(q);   // копии разности (двойной пакет — всех тех же кадров; одиночный — одного)
+  if (pcmS) rxPcmSFrames = rxPcmSFrames + 2;
   if (gap >= 2) {
     rxGapMs = millis() ? millis() : 1;   // для запаса: пока пакеты теряются, он держится глубже (см. задачу звука)
     // пропали кадры: последние есть в запасных копиях, остальные заменить тишиной
@@ -346,10 +351,29 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
         memcpy(tmp, cp + (k - 1) * qMainLen(q), d.n * 2);
         rxExactRec = rxExactRec + 1;
       } else adpcmDecodeBlock(cpA + (k - 1 - dupN) * qBlock(q), d.n, tmp);
-      bool sc = st && q == Q_HI && (dbl || (rPktSc && k == 1));   // у кадра есть и копия разности — он выйдет в стерео
+      // у кадра есть и копия разности — он выйдет в стерео (в пакете с разностью без сжатия — только у N−1 и N−2)
+      bool sc = st && q == Q_HI && (dbl || (rPktSc && k == 1)) && !(pcmS && k > dupN);
       if (sc) {
-        scDecode(scp + (dbl ? (k - 1) * SC_LEN : 0), tmpS);
+        if (pcmS) memcpy(tmpS, scp + (k - 1) * d.n * 2, d.n * 2);   // разность N−1, N−2 — без сжатия (с 2.87)
+        else scDecode(scp + (dbl ? (k - 1) * SC_LEN : 0), tmpS);
         rxScCount = rxScCount + 1;
+      } else if (pcmS) {
+        // N−3 и N−4 (две потери подряд): копии разности нет — эти 4 мс звучат в моно. Резкий переход в моно — ступенька
+        // на стыке, щелчок; поэтому разность за 1 мс плавно уходит к нулю от последнего сыгранного отсчёта и за 1 мс перед
+        // кадром N−2 (у него разность точная, k = dupN) так же плавно приходит к его первому отсчёту. Счёт на компьютере
+        // (tools/host/dbl.cpp, 5 % потерь): так сигнал/шум 32,1 / 30,0 дБ, «по прямой» от отсчёта к отсчёту — 29,8 / 27,8.
+        int16_t to;
+        memcpy(&to, scp + (dupN - 1) * d.n * 2, 2);
+        static int16_t from;
+        if (k == rec) from = rxRingS[(rxHead - 1) & (RING - 1)];   // перед первым из таких кадров
+        const int F = 32, total = (rec - dupN) * d.n, at = (rec - k) * d.n;
+        for (int i = 0; i < d.n; i++) {
+          int p = at + i;
+          float a = p < F ? 1.0f - (p + 1) / (float)(F + 1) : 0, b = total - p <= F ? 1.0f - (total - p) / (float)(F + 1) : 0;
+          tmpS[i] = (int16_t)(from * a + to * b);
+        }
+        sc = true;
+        rxMonoRec = rxMonoRec + 1;
       } else if (st) rxMonoRec = rxMonoRec + 1;
       rxEmit(tmp, sc ? tmpS : NULL, d, fadeIn);
       fadeIn = false;
@@ -361,7 +385,10 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
     const uint8_t *fp = payload + f * fl;
     if (d.pcm) memcpy(tmp, fp, d.n * 2);
     else adpcmDecodeBlock(fp, d.n, tmp);
-    if (st) adpcmDecodeBlock(fp + qMainLen(q), d.n, tmpS);
+    if (st) {
+      if (pcmS) memcpy(tmpS, fp + qMainLen(q), d.n * 2);   // разность без сжатия (с 2.86)
+      else adpcmDecodeBlock(fp + qMainLen(q), d.n, tmpS);
+    }
     rxEmit(tmp, st ? tmpS : NULL, d, fadeIn);
     fadeIn = false;
   }
@@ -450,7 +477,8 @@ static bool rxOutBegin() {
     // Внешний ЦАП CS4344 (Cirrus Logic; модули вроде Digilent Pmod I2S и его копий). По описанию DS613F2:
     //  — главный такт обязателен и должен быть целым кратным частоты каналов; 256 × 31 250 Гц = 8 МГц = 160 МГц / 20;
     //  — такт бит подаём свой (режим «External SCLK»: ЦАП переходит в него, увидев 16 перепадов за полупериод LRCK):
-    //    64 такта на кадр, слово канала — 32 такта (ЦАП берёт до 24 бит, наши 16 — старшие, дальше нули);
+    //    64 такта на кадр, слово канала — 32 такта (ЦАП берёт 24 старших бита; с 2.86 их и шлём — до этого шло 16 бит
+    //    и нули, см. «24 бита на ЦАП» в задаче звука);
     //  — LRCK обязан быть «ровным», 45–55 %: длина сигнала каналов — те же 32 такта, а не 16 (ошибка 2.38 с PCM5102);
     //  — входы: «единица» — от 60 % напряжения питания ЦАП; при питании 3,3 В это 2 В, выводы ESP32-S3 подходят с запасом.
     rxOutRate = 31250;
@@ -472,7 +500,7 @@ static bool rxOutBegin() {
     sc.clk_cfg.sample_rate_hz = rxOutRate;
     sc.clk_cfg.clk_src = I2S_CLK_SRC_PLL_160M;
     sc.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
-    sc.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+    sc.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
     sc.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
     sc.slot_cfg.ws_width = 32;
     sc.gpio_cfg.mclk = rxMclkGrounded ? I2S_GPIO_UNUSED : (gpio_num_t)PIN_I2S_MCLK;
@@ -487,7 +515,15 @@ static bool rxOutBegin() {
     sc.clk_cfg.sample_rate_hz = SRATE;
     sc.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
     sc.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
-    sc.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+    // С 2.86 — 32-битные слова (24 бита звука; ЦАП их принимает): BCK = 64 × 32 кГц = 2,048 МГц, сигнал каналов —
+    // тоже 32 такта (ws_width; в 2.38 он остался 16, и играл один канал). По описанию PCM510x такт из BCK его PLL
+    // берёт и при 32, и при 64 тактах на кадр; 64 такта с этим же модулем проверены в 2.85 (выход «CS4344» на 884A94).
+    // Зачем: громкость приёмника — в цифре, и 16 бит после неё — это 16 бит минус громкость. На 2 из 20 (−36 дБ, так
+    // стоял 4C3B10 14.10) от звука оставалось 10 бит, а на тихих местах и хвостах нот — 5–9: отсюда «зерно» (до 2.86 дробь
+    // ещё и отбрасывалась). 24 бита дают запас на всю шкалу громкости.
+    sc.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
+    sc.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+    sc.slot_cfg.ws_width = 32;
     // SCK микросхемы — как в проекте радио владельца, где этот же модуль «работает напрямую с наушниками на полную и
     // все идеально»: на «земле». Тогда ЦАП сам восстанавливает главный такт из BCK и сам его «чистит». В 2.35–2.37 на
     // вывод 10 шёл главный такт с процессора (8,192 МГц с дробного делителя — его периоды неровные); это было главное
@@ -498,8 +534,8 @@ static bool rxOutBegin() {
     pinMode(PIN_I2S_MCLK, OUTPUT);
     digitalWrite(PIN_I2S_MCLK, LOW);
     gpio_input_enable((gpio_num_t)PIN_I2S_MCLK);
-    // Слово канала — 16 тактов (BCK = 32 × 32 кГц = 1,024 МГц), как в радио. В 2.38 я поставил 32 такта на слово, не
-    // поправив длину сигнала каналов (ws_width осталась 16) — у владельца «работает только один канал». Возвращено.
+    // До 2.86 слово канала было 16 тактов (BCK = 32 × 32 кГц = 1,024 МГц), как в радио. В 2.38 я поставил 32 такта на
+    // слово, не поправив длину сигнала каналов (ws_width осталась 16) — у владельца «работал только один канал».
     sc.gpio_cfg.bclk = (gpio_num_t)PIN_I2S_BCK;
     sc.gpio_cfg.ws = (gpio_num_t)PIN_I2S_WS;
     sc.gpio_cfg.dout = (gpio_num_t)PIN_I2S_DOUT;
@@ -694,8 +730,14 @@ static bool rxEqSet(uint8_t band, uint8_t val) {
 // Прежняя (кубическая, по 4 отсчётам) ошибалась на верхах: в полосе 4–8 кГц −30 дБ к звуку, 8–14 кГц −14 дБ. С ЦАП
 // темп держится +1560 ppm, и эта ошибка «дрожала» 50 раз в секунду — владелец 08.10: «цифровая грязь в виде фонового
 // жужжания в некоторых гармониках». Новая: −92 дБ до 8 кГц, −41 дБ в 8–14 кГц (счёт на проверочной мелодии).
-enum { RXRS_TAPS = 24, RXRS_PH = 128 };
-static float *rxRsTab;   // [RXRS_PH + 1][RXRS_TAPS], во внутренней памяти (12 КБ) — только у приёмника
+// С 2.86 — 48 отсчётов и срез на 0,94 половины частоты (15 кГц): 24 отсчётов не хватало на самый верх — синус 14 кГц
+// выходил с искажениями −26 дБ, 15 кГц — −11 дБ, 15,5 кГц — −6 дБ (крутизны среза не хватало, и зеркальная частота
+// 32 кГц − f проходила почти без ослабления; tools/host/rxchain.cpp, часть 2). Теперь до 15 кГц не хуже −77 дБ, а
+// 15,5 кГц ослаблен на 13 дБ и чист на −33 дБ. Это верх, который поднимают «чёткость» и эквалайзер владельца (+6…+12
+// дБ на 6 кГц и выше). Памяти — 24 КБ вместо 12; не нашлось — берётся прежняя таблица 24 × 128, затем кубическая.
+enum { RXRS_MAX = 48, RXRS_PH = 128 };
+static int rxRsTaps = RXRS_MAX;   // сколько отсчётов в таблице, которую удалось разместить
+static float *rxRsTab;   // [RXRS_PH + 1][rxRsTaps], во внутренней памяти (24 КБ) — только у приёмника
 static float rsI0(float x) {
   float s = 1, t = 1;
   for (int k = 1; k < 30; k++) {
@@ -705,25 +747,32 @@ static float rsI0(float x) {
   return s;
 }
 static bool rsBegin() {
-  rxRsTab = (float *)heap_caps_malloc((RXRS_PH + 1) * RXRS_TAPS * sizeof(float), MALLOC_CAP_INTERNAL);
+  rxRsTaps = RXRS_MAX;
+  rxRsTab = (float *)heap_caps_malloc((RXRS_PH + 1) * RXRS_MAX * sizeof(float), MALLOC_CAP_INTERNAL);
+  if (!rxRsTab) {   // памяти мало — прежняя таблица (до 2.86)
+    rxRsTaps = 24;
+    rxRsTab = (float *)heap_caps_malloc((RXRS_PH + 1) * 24 * sizeof(float), MALLOC_CAP_INTERNAL);
+  }
   if (!rxRsTab) return false;
-  const float beta = 8.5f, i0b = rsI0(beta);
-  const int h = RXRS_TAPS / 2;
+  const int TAPS = rxRsTaps;
+  const float beta = TAPS == RXRS_MAX ? 8.6f : 8.5f, cut = TAPS == RXRS_MAX ? 0.94f : 1.0f, i0b = rsI0(beta);
+  const int h = TAPS / 2;
   for (int p = 0; p <= RXRS_PH; p++) {
-    float sum = 0, *c = rxRsTab + p * RXRS_TAPS;
-    for (int j = 0; j < RXRS_TAPS; j++) {
+    float sum = 0, *c = rxRsTab + p * TAPS;
+    for (int j = 0; j < TAPS; j++) {
       float d = (j - (h - 1)) - p / (float)RXRS_PH, u = d / h, w = fabsf(u) < 1 ? rsI0(beta * sqrtf(1 - u * u)) / i0b : 0;
-      float x = PI * d;
+      float x = PI * d * cut;
       c[j] = (fabsf(x) < 1e-6f ? 1.0f : sinf(x) / x) * w;
       sum += c[j];
     }
-    for (int j = 0; j < RXRS_TAPS; j++) c[j] /= sum;
+    for (int j = 0; j < TAPS; j++) c[j] /= sum;
   }
   return true;
 }
 
 static void rxTask(void *) {
-  static int16_t out[OUT_BLOCK * 2];
+  static int16_t out[OUT_BLOCK * 2];     // 16 бит: однобитному выходу — сам звук, внешнему ЦАП — для сторожа выхода
+  const bool wide = cfg.output != OUT_PDM;   // выход выбирается при запуске (смена — с перезапуском)
   static Eq6 eq;
   uint32_t eqGen = 0;
   // Усиление сверх «звука как есть» — настоящее, как «trim» на пульте (с 2.62): сколько выставлено, на столько звук и
@@ -790,7 +839,7 @@ static void rxTask(void *) {
   // заваливается по низам как от перегрузки», «рыпение начинается уже на 50 процентах… в радио такой модуль работает
   // напрямую с наушниками на полную и все идеально, так что это проблема в твоем коде». Особенно при «чёткости»: она
   // поднимает верх до ограничителя на 4–12 дБ.
-  // Теперь звук идёт через задержку LIM_LA отсчётов (1,5 мс), а усиление считается по самому большому отсчёту в этом
+  // Теперь звук идёт через задержку LIM_LA отсчётов (1,5 мс; с 2.86 — 3 мс), а усиление считается по самому большому отсчёту в этом
   // окне: оно плавно опускается ДО прихода пика и медленно (четверть секунды) возвращается. Замер на проверочной
   // мелодии, громкость 75 % с «чёткостью»: скачок усиления за отсчёт был до 4,4 дБ — стал до 0,45; «гуляние» за
   // 20 мс было 1,7 дБ — стало 0,17. Когда ограничивать нечего, звук проходит без изменений.
@@ -798,15 +847,40 @@ static void rxTask(void *) {
   // «чёткости», которая поднимает верх на 4–12 дБ, и для проверочного тона). Однобитному выходу полная шкала не
   // нужна — он, как и раньше, получает не больше 30 000 (множитель PDM_K на самом выходе).
   const float limit = 32767.0f, PDM_K = 30000.0f / 32767.0f;
-  enum { LIM_LA = 48 };
-  static float limL[LIM_LA], limR[LIM_LA], limNeed[LIM_LA];
-  for (int i = 0; i < LIM_LA; i++) limNeed[i] = 1;
-  int limPos = 0, limMinAge = 0;
-  float limMin = 1, limG = 1;
+  // С 2.86 окно — 3 мс (96 отсчётов), и усиление опускается не одним звеном (за 0,3 мс, как до 2.86), а средним за всё
+  // окно: к приходу пика оно ровно там, где нужно, и начало спуска растянуто на 3 мс. Прежняя атака на большом
+  // усилении без сжатия (884A94 14.10: громкость 100 %, +24 дБ, сжатие выключено — ограничитель убавлял 20–25 дБ почти
+  // всё время) давала быстрые рывки усиления и не успевала: на проверочной мелодии 1426 отсчётов за 87 с выходили за
+  // шкалу и срезались жёстко (треск), «гуляние» усиления в полосе 0,3–1 кГц было −27 дБ, интермодуляция −48 дБ. Теперь
+  // 3 отсчёта за шкалу (доли единицы — округление), −40 дБ и −59 дБ (tools/host/rxchain.cpp, часть 5). Доказательство,
+  // что за шкалу не выйдет: каждое из LIM_LA прошлых значений «отпускания» не больше нужного выходящему отсчёту (все их
+  // окна его видели), значит, и их среднее не больше. Наименьшее по окну — очередью (dq…): значения в ней растут от
+  // головы к хвосту, на отсчёт уходит постоянное время (до 2.86 при каждом уходе наименьшего окно пересматривалось целиком).
+  enum { LIM_LA = 96, LIM_DQ = 128 };
+  // Буферы ограничителя и 24-битного выхода (2.86) — из кучи, а не постоянные: прошивка общая, и постоянные массивы
+  // задачи приёмника занимали бы внутреннюю память и у передатчика (у него её мало: правило «меньше 40 КБ свободной —
+  // не выпускать», журнал 2.14).
+  struct OutBufs {
+    float limL[LIM_LA], limR[LIM_LA], boxBuf[LIM_LA], dqV[LIM_DQ];
+    uint32_t dqT[LIM_DQ];
+    int32_t out32[OUT_BLOCK * 2];   // внешнему ЦАП (PCM5102, CS4344) — 24 бита в 32-битном слове (с 2.86)
+  };
+  OutBufs *ob = (OutBufs *)heap_caps_calloc(1, sizeof(OutBufs), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!ob) {
+    Serial.println("вихід звуку: немає пам'яті під обмежувач");
+    vTaskDelete(NULL);
+  }
+  float *const limL = ob->limL, *const limR = ob->limR, *const boxBuf = ob->boxBuf, *const dqV = ob->dqV;
+  uint32_t *const dqT = ob->dqT;
+  int32_t *const out32 = ob->out32;
+  for (int i = 0; i < LIM_LA; i++) boxBuf[i] = 1;
+  int limPos = 0, boxPos = 0, boxN = 0;
+  uint32_t limT = 0, dqH = 0, dqE = 0;   // время в отсчётах; голова и хвост очереди
+  float limG = 1, limR1 = 1, boxSum = LIM_LA;
   // Со сжатием (с 2.68) ограничителю достаются только выбросы первых полутора миллисекунд, и возвращать усиление
   // четверть секунды незачем: после каждого такого выброса звук «проседал» бы на те же четверть секунды. Со
   // сжатием отпускание — 40 мс; без него (сжатие выключено) — как было.
-  const float LIM_ATT = 1 - expf(-1.0f / 10.0f), LIM_REL = 1 - expf(-1.0f / (SRATE * 0.25f)), LIM_REL_FAST = 1 - expf(-1.0f / (SRATE * 0.04f));
+  const float LIM_REL = 1 - expf(-1.0f / (SRATE * 0.25f)), LIM_REL_FAST = 1 - expf(-1.0f / (SRATE * 0.04f));
   // «Авто»: запас держится таким, какой был нужен за последнюю минуту, плюс 4 мс. Раз в пять секунд смотрим, как
   // глубоко запас проседал (пакеты приходят неровно: эфир занят — они ждут и приходят пачкой), и помним двенадцать
   // таких замеров. Провал звука — запас сразу вырастает на длину провала.
@@ -1041,7 +1115,7 @@ static void rxTask(void *) {
     for (int i = 0; i < OUT_BLOCK; i++) {
       float y, ys = 0;   // середина и разность каналов
       uint32_t tail = rxTail;
-      if (priming || (int32_t)(rxHead - tail) < (rsOk ? RXRS_TAPS / 2 + 2 : 4)) {
+      if (priming || (int32_t)(rxHead - tail) < (rsOk ? rxRsTaps / 2 + 2 : 4)) {
         last *= 0.9f;    // запас пуст — плавно к тишине
         y = last;
         if (!priming) under++;
@@ -1052,9 +1126,10 @@ static void rxTask(void *) {
         static_assert(RXRS_PH == 128, "номер строки — старшие 7 бит");
         uint32_t pi = frac >> 25;
         float a = (float)(frac & 0x1FFFFFFu) * (1.0f / 33554432.0f), accM = 0, accS = 0;
-        const float *c0 = rxRsTab + pi * RXRS_TAPS, *c1 = c0 + RXRS_TAPS;
-        uint32_t base = tail - (RXRS_TAPS / 2 - 1);
-        for (int j = 0; j < RXRS_TAPS; j++) {
+        const int TAPS = rxRsTaps;
+        const float *c0 = rxRsTab + pi * TAPS, *c1 = c0 + TAPS;
+        uint32_t base = tail - (TAPS / 2 - 1);
+        for (int j = 0; j < TAPS; j++) {
           float c = c0[j] + (c1[j] - c0[j]) * a;
           accM += c * rxRing[(base + j) & (RING - 1)];
           if (stOut) accS += c * rxRingS[(base + j) & (RING - 1)];
@@ -1191,23 +1266,25 @@ static void rxTask(void *) {
         float dl = limL[limPos], dr = limR[limPos];    // отсчёт, пришедший LIM_LA назад, — он сейчас пойдёт на выход
         limL[limPos] = vl;
         limR[limPos] = vr;
-        limNeed[limPos] = need;
         limPos = limPos + 1 == LIM_LA ? 0 : limPos + 1;
-        if (need <= limMin) {                          // наименьшее «надо убавить» по окну
-          limMin = need;
-          limMinAge = 0;
-        } else if (++limMinAge >= LIM_LA) {            // прежний наименьший вышел из окна — найти новый
-          limMin = 2;
-          for (int k = 0; k < LIM_LA; k++) {           // от свежего к давнему: из равных остаётся самый свежий
-            int idx = limPos - 1 - k;
-            if (idx < 0) idx += LIM_LA;
-            if (limNeed[idx] < limMin) {
-              limMin = limNeed[idx];
-              limMinAge = k;
-            }
-          }
+        limT++;
+        while (dqE != dqH && dqV[(dqE - 1) & (LIM_DQ - 1)] >= need) dqE--;   // наименьшее «надо убавить» по окну
+        dqV[dqE & (LIM_DQ - 1)] = need;
+        dqT[dqE & (LIM_DQ - 1)] = limT;
+        dqE++;
+        while (limT - dqT[dqH & (LIM_DQ - 1)] >= LIM_LA) dqH++;              // вышедшие из окна — из головы
+        float limMin = dqV[dqH & (LIM_DQ - 1)];
+        if (limMin < limR1) limR1 = limMin;            // «отпускание»: вниз — сразу, вверх — звеном
+        else limR1 += (limMin - limR1) * limRel;
+        limG = boxSum * (1.0f / (float)LIM_LA);               // среднее по прошлым LIM_LA значениям — до добавления нового
+        boxSum += limR1 - boxBuf[boxPos];
+        boxBuf[boxPos] = limR1;
+        boxPos = boxPos + 1 == LIM_LA ? 0 : boxPos + 1;
+        if (++boxN >= 4096) {                          // накопленную ошибку суммы — пересчётом
+          boxN = 0;
+          boxSum = 0;
+          for (int k = 0; k < LIM_LA; k++) boxSum += boxBuf[k];
         }
-        limG += (limMin - limG) * (limMin < limG ? LIM_ATT : limRel);
         vl = dl * limG * dynG;
         vr = dr * limG * dynG;
         if (limG < 0.999f) limBusy++;
@@ -1249,11 +1326,19 @@ static void rxTask(void *) {
         ol = ol < -32768 ? -32768 : ol;
         orr = orr < -32768 ? -32768 : orr;
       }
-      out[2 * i] = (int16_t)(ol > 32767 ? 32767 : ol < -32768 ? -32768 : ol);
-      out[2 * i + 1] = (int16_t)(orr > 32767 ? 32767 : orr < -32768 ? -32768 : orr);
+      // 24 бита на ЦАП (с 2.86): внешнему ЦАП — 32-битное слово, однобитному выходу — 16 бит С ОКРУГЛЕНИЕМ. До 2.86
+      // везде шло 16 бит, и дробь отбрасывалась: на тихом месте это не шум, а искажения, идущие за звуком (синус на
+      // −60 дБ получал гармоники −41 дБ к себе; с округлением −45, в 24 битах их нет вовсе — rxchain.cpp, часть 3).
+      float cl = ol > 32767.0f ? 32767.0f : ol < -32768.0f ? -32768.0f : ol, cr = orr > 32767.0f ? 32767.0f : orr < -32768.0f ? -32768.0f : orr;
+      out[2 * i] = (int16_t)(cl >= 0 ? cl + 0.5f : cl - 0.5f);
+      out[2 * i + 1] = (int16_t)(cr >= 0 ? cr + 0.5f : cr - 0.5f);
+      out32[2 * i] = (int32_t)(cl * 65536.0f);
+      out32[2 * i + 1] = (int32_t)(cr * 65536.0f);
       if (rxPattern) {   // известные числа — чтобы на выводах было видно, какой бит где стоит
         out[2 * i] = (int16_t)0x5A01;
         out[2 * i + 1] = (int16_t)0xA5F3;
+        out32[2 * i] = (int32_t)0x5A010000u;
+        out32[2 * i + 1] = (int32_t)0xA5F30000u;
       }
     }
     {   // сторож выхода и сброс обработки (см. «ЗВУК ПРОПАЛ ДО ПЕРЕЗАГРУЗКИ» в начале файла)
@@ -1266,7 +1351,10 @@ static void rxTask(void *) {
         shM.z1 = NAN;
       }
       if (rxFakeNan == 13)            // проверка: выход держится на одном числе (как при «не числе» до 2.84)
-        for (int i = 0; i < OUT_BLOCK * 2; i++) out[i] = -1;
+        for (int i = 0; i < OUT_BLOCK * 2; i++) {
+          out[i] = -1;
+          out32[i] = -65536;
+        }
       bool same = true;
       for (int i = 1; i < OUT_BLOCK && same; i++) same = out[2 * i] == out[0] && out[2 * i + 1] == out[1];
       // «должно звучать»: в эфире громко (−24 дБ и выше), громкость не убрана, звук уже вошёл, проверок нет
@@ -1293,11 +1381,13 @@ static void rxTask(void *) {
         // память всего, что помнит прошлое: фильтры, сжатие, ограничитель, плавные множители, шумозаглушение
         memset(eq.z, 0, sizeof(eq.z));
         shM.z1 = shM.z2 = shS.z1 = shS.z2 = 0;
-        memset(limL, 0, sizeof(limL));
-        memset(limR, 0, sizeof(limR));
-        for (int i = 0; i < LIM_LA; i++) limNeed[i] = 1;
-        limPos = limMinAge = 0;
-        limMin = limG = 1;
+        memset(limL, 0, sizeof(ob->limL));
+        memset(limR, 0, sizeof(ob->limR));
+        for (int i = 0; i < LIM_LA; i++) boxBuf[i] = 1;
+        limPos = boxPos = boxN = 0;
+        dqH = dqE = 0;
+        limG = limR1 = 1;
+        boxSum = LIM_LA;
         dyn.env = dyn.envIn = 0;
         dyn.gRed = dyn.gGate = dyn.tRed = dyn.tGate = 1;
         dyn.floorDb = -50;
@@ -1316,7 +1406,10 @@ static void rxTask(void *) {
           step = (uint64_t)(rxRateBase * 4294967296.0);
         }
         if (ns) ns->reset();
-        for (int i = 0; i < OUT_BLOCK * 2; i++) out[i] = 0;   // этот блок — тишина
+        for (int i = 0; i < OUT_BLOCK * 2; i++) {   // этот блок — тишина
+          out[i] = 0;
+          out32[i] = 0;
+        }
       }
     }
     rxPeak = pk > 32767 ? 32767 : pk;
@@ -1362,7 +1455,8 @@ static void rxTask(void *) {
     static uint16_t probeN;
     if ((++probeN & 255) == 0) rxOutProbe();   // четыре раза в секунду
     size_t w;
-    i2s_channel_write(rxI2s, out, sizeof(out), &w, portMAX_DELAY);
+    if (wide) i2s_channel_write(rxI2s, out32, sizeof(ob->out32), &w, portMAX_DELAY);
+    else i2s_channel_write(rxI2s, out, sizeof(out), &w, portMAX_DELAY);
     rxOutSamples = rxOutSamples + OUT_BLOCK;
   }
 }

@@ -88,8 +88,19 @@ static volatile uint8_t airSlowSecs;         // секунд с ожидание
 static volatile uint8_t airSecs;             // сколько секунд в счёте (до 60)
 static volatile uint16_t airSlowMs;          // среднее из наибольших ожиданий в таких секундах, мс
 static volatile uint32_t airLostMin;         // сколько миллисекунд звука пропало у играющих приёмников за те же секунды
+// Потери пакетов у приёмников с хорошим сигналом (с 2.88). Владелец 14.10 (2.87): «остались некоторые лёгкие щелчки,
+// как у поцарапанного CD». Замер: у 884A94 (−45…−52 дБм) на канале 1 терялось 1–6 % пакетов, двойные потери — раз в
+// 3–50 с (их 4 мс уже не восстанавливаются точно), а на пробном канале 5 за минуту — ни одного пакета. Передатчик этих
+// помех не слышит (они у места приёмника), и с 2.77 одиночные потери звук не рвут — «мягкий» уход их не видел вовсе.
+// Теперь каждую секунду берётся наибольшая из последних долей потерь (lossPm из сообщений о себе) у играющих приёмников
+// со сглаженным сигналом не слабее SOFT_LOSS_RSSI: у таких потери — это помехи, их лечит другой канал (у слабых — это
+// расстояние, им помогает нижняя ступень скорости). airLossPm — среднее за минуту, ‰.
+#define SOFT_LOSS_RSSI -62
+#define SOFT_LOSS_PM 15                      // 1,5 % пакетов за минуту — повод для пробы другого канала
+static volatile uint16_t airLossPm;
 static void airStatTick(uint32_t airMaxUs, bool valid) {
   static uint16_t ring[60], lost[60];
+  static uint8_t loss[60];
   static uint8_t pos, n, ch, skip;
   static uint32_t lostSeen;
   uint32_t lostNow = txLostMsAll, d = lostNow - lostSeen;
@@ -104,12 +115,19 @@ static void airStatTick(uint32_t airMaxUs, bool valid) {
     uint32_t ms = airMaxUs / 1000;
     ring[pos] = (uint16_t)(ms > 60000 ? 60000 : ms);
     lost[pos] = (uint16_t)(d > 60000 ? 60000 : d);
+    uint8_t worst = 0;
+    portENTER_CRITICAL(&peerMux);
+    for (auto &p : peers)
+      if (p.used && peerOnline(p) && (p.flags & ST_PLAYING) && !(p.flags & ST_OFF) && p.rssiSm >= SOFT_LOSS_RSSI && p.lossPm > worst) worst = p.lossPm;
+    portEXIT_CRITICAL(&peerMux);
+    loss[pos] = worst;
     pos = (pos + 1) % 60;
     if (n < 60) n++;
   }
-  uint32_t cnt = 0, sum = 0, ls = 0;
+  uint32_t cnt = 0, sum = 0, ls = 0, lp = 0;
   for (int i = 0; i < n; i++) {
     ls += lost[i];
+    lp += loss[i];
     if (ring[i] >= 15) {
       cnt++;
       sum += ring[i];
@@ -119,6 +137,7 @@ static void airStatTick(uint32_t airMaxUs, bool valid) {
   airSlowSecs = (uint8_t)cnt;
   airSlowMs = (uint16_t)(cnt ? sum / cnt : 0);
   airLostMin = ls;
+  airLossPm = (uint16_t)(n ? lp / n : 0);
 }
 
 // Наблюдение за эфиром во время работы — чтобы понять, отчего пакеты ждут: передатчик, не прерывая передачи, слышит
@@ -196,12 +215,16 @@ static void scanStart();
 // Цена ухода: приёмник на самом краю слышимости может не услышать объявление о переходе и найти канал обходом —
 // это 3–5 с без звука у него одного.
 static volatile bool hopSoft;                // последний уход — «мягкий» (или возврат после его пробы)
-static volatile uint8_t hopBackWhy;          // он — возврат: 1 — на новом канале ожиданий не меньше, 2 — у приёмников звук пропадал чаще
+static volatile uint8_t hopBackWhy;          // он — возврат: 1 — на новом канале ожиданий не меньше, 2 — у приёмников звук пропадал чаще,
+                                             // 3 — приёмники с хорошим сигналом теряли пакеты не реже (с 2.88)
+static volatile uint8_t hopLossPm;           // уход — из-за потерь пакетов у приёмника с хорошим сигналом: сколько их было, ‰ (0 — не из-за них)
 static uint8_t chExp[13];                    // опыт работы на канале: секунд с ожиданием на минуту (действителен, пока chExpMs свежий)
 static uint32_t chExpMs[13];                 // когда этот опыт получен (0 — не работали)
 static uint8_t softFrom, softTo;             // идёт проба: с какого канала ушли (0 — пробы нет) и на какой
 static uint8_t softSlow;                     //   сколько там было секунд с ожиданием на минуту
 static uint32_t softLost;                    //   и сколько звука пропадало у приёмников за минуту, мс
+static uint16_t softLossPm;                  //   и сколько пакетов теряли приёмники с хорошим сигналом, ‰ (с 2.88)
+static bool softByLoss;                      //   проба — из-за этих потерь, а не из-за ожиданий эфира
 static uint8_t softFails;                    // сколько проб подряд кончилось возвратом
 static uint32_t softQuietUntil;              // до этого времени «мягких» уходов не делать
 static volatile bool hopSoftForce;           // с порта (h4): начать пробу сейчас, не глядя на счёт ожиданий и на замер; через минуту — возврат
@@ -256,6 +279,7 @@ static void hopSoftGo(uint32_t now, int to, uint8_t backWhy) {
   hopStall = false;
   hopSoft = true;
   hopBackWhy = backWhy;
+  hopLossPm = !backWhy && softByLoss ? (uint8_t)(airLossPm > 255 ? 255 : airLossPm) : 0;
   hopQuietUntil = now + 20000;
   txHopCh = (uint8_t)to;
 }
@@ -268,35 +292,44 @@ static void hopSoftTick(uint32_t now) {
     if (airSecs < 60) return;
     int slow = airSlowSecs, from = softFrom;
     uint32_t lost = airLostMin;
+    unsigned lossNew = airLossPm;
     softFrom = 0;
     chExp[ch - 1] = (uint8_t)slow;
     chExpMs[ch - 1] = now | 1;
-    // «не лучше»: ожиданий не стало меньше хотя бы на 30 % (у пробы с порта softSlow = 0: она всегда кончается возвратом)
-    bool worse = lost > softLost * 2 + 60, noGain = slow * 10 > softSlow * 7 || !softSlow;
-    if (!worse && !noGain) {
+    // «лучше»: ожиданий меньше хотя бы на 30 % — или (с 2.88) приёмники с хорошим сигналом теряют пакетов меньше хотя бы
+    // на 30 %. «Хуже»: звук у приёмников пропадает вдвое чаще (и ещё на 60 мс в минуту) — или пакетов теряется больше на
+    // 1 %. У пробы с порта softSlow = softLossPm = 0: она всегда кончается возвратом.
+    bool worseLost = lost > softLost * 2 + 60, worse = worseLost || lossNew > softLossPm + 10;
+    bool gainWait = softSlow && slow * 10 <= softSlow * 7, gainLoss = softLossPm >= SOFT_LOSS_PM && lossNew * 10 <= softLossPm * 7u;
+    if (!worse && (gainWait || gainLoss)) {
       softFails = 0;
       softQuietUntil = now + 120000;
-      Serial.printf("м'який перехід: канал %u кращий — секунд з очікуванням на хвилину %d (було %u), у приймачів пропало звуку %u мс (було %u) — лишаюсь\n", ch, slow, softSlow, (unsigned)lost, (unsigned)softLost);
+      Serial.printf("м'який перехід: канал %u кращий — секунд з очікуванням на хвилину %d (було %u), у приймачів пропало звуку %u мс (було %u), пакетів губили %u ‰ (було %u) — лишаюсь\n",
+                    ch, slow, softSlow, (unsigned)lost, (unsigned)softLost, lossNew, (unsigned)softLossPm);
       return;
     }
     if (softFails < 250) softFails++;
     softQuietUntil = now + (softFails >= 2 ? 3600000 : 600000);
     chBadUntil[ch - 1] = (now + 1800000) ? now + 1800000 : 1;   // сюда полчаса не ходить
     chBadUntil[from - 1] = 0;                                    // а туда, откуда пришли, вернуться можно
-    Serial.printf("м'який перехід: канал %u не кращий — секунд з очікуванням на хвилину %d (було %u), у приймачів пропало звуку %u мс (було %u) — повертаюсь на канал %d\n", ch, slow, softSlow, (unsigned)lost, (unsigned)softLost, from);
-    hopSoftGo(now, from, worse ? 2 : 1);
+    Serial.printf("м'який перехід: канал %u не кращий — секунд з очікуванням на хвилину %d (було %u), у приймачів пропало звуку %u мс (було %u), пакетів губили %u ‰ (було %u) — повертаюсь на канал %d\n",
+                  ch, slow, softSlow, (unsigned)lost, (unsigned)softLost, lossNew, (unsigned)softLossPm, from);
+    hopSoftGo(now, from, worseLost ? 2 : softByLoss ? 3 : 1);
     return;
   }
   softFrom = 0;
+  bool byLoss = airSlowSecs < 15 && airLossPm >= SOFT_LOSS_PM;   // повод — не ожидания эфира, а потери у приёмника с хорошим сигналом
   if (!force) {
-    if (!cfg.autoHop || now < 90000 || airSecs < 60 || airSlowSecs < 15) return;
+    if (!cfg.autoHop || now < 90000 || airSecs < 60 || (airSlowSecs < 15 && !byLoss)) return;
     if ((int32_t)(now - softQuietUntil) < 0 || (int32_t)(now - hopQuietUntil) < 0) return;
     if (!peersPlayingNow()) return;
   }
   if (!scanDone) return;
   chExp[ch - 1] = airSlowSecs;
   chExpMs[ch - 1] = now | 1;
-  int pick = hopPickSoft(now, airSlowSecs, force);
+  // Помехи у места приёмника замер каналов передатчиком не показывает (канал 1 у него «лучший», а 884A94 там терял до
+  // 6 % пакетов): для такой пробы — лучший по замеру из остальных, без требования «заметно свободнее».
+  int pick = hopPickSoft(now, airSlowSecs, force || byLoss);
   if (!pick) {   // заметно свободнее по замеру нигде нет — остаёмся; спросим снова через десять минут
     softQuietUntil = now + 600000;
     Serial.printf("м'який перехід: на каналі %u пакети чекали ефіру 15 мс і довше у %u секундах із 60, але помітно вільнішого каналу за виміром немає — лишаюсь\n", ch, (unsigned)airSlowSecs);
@@ -306,13 +339,17 @@ static void hopSoftTick(uint32_t now) {
   softTo = (uint8_t)pick;
   softSlow = force ? 0 : airSlowSecs;   // проба с порта всегда кончается возвратом (см. «не лучше»): прибор остаётся на своём канале
   softLost = airLostMin;
+  softLossPm = force ? 0 : airLossPm;
+  softByLoss = !force && byLoss;
   chBadUntil[ch - 1] = (now + 600000) ? now + 600000 : 1;   // как при заторе: десять минут сюда не возвращаться (возврат после пробы это снимает)
-  Serial.printf("м'який перехід: на каналі %u пакети чекали ефіру 15 мс і довше у %u секундах із 60 (до %u мс) — пробую канал %d без паузи\n", ch, (unsigned)airSlowSecs, (unsigned)airSlowMs, pick);
+  if (softByLoss) Serial.printf("м'який перехід: на каналі %u приймач із добрим сигналом губив %u ‰ пакетів за хвилину (завади біля нього) — пробую канал %d без паузи\n", ch, (unsigned)airLossPm, pick);
+  else Serial.printf("м'який перехід: на каналі %u пакети чекали ефіру 15 мс і довше у %u секундах із 60 (до %u мс) — пробую канал %d без паузи\n", ch, (unsigned)airSlowSecs, (unsigned)airSlowMs, pick);
   hopSoftGo(now, pick, 0);
 }
 static void hopSoftPrint() {
   uint32_t now = millis();
-  Serial.printf("м'який перехід: %s; секунд з очікуванням 15 мс і довше — %u із %u, у приймачів пропало звуку %u мс; ", softFrom && softFrom != cfg.channel ? "ІДЕ ПРОБА нового каналу" : "проби немає", (unsigned)airSlowSecs, (unsigned)airSecs, (unsigned)airLostMin);
+  Serial.printf("м'який перехід: %s; секунд з очікуванням 15 мс і довше — %u із %u, у приймачів пропало звуку %u мс, пакетів губили (з добрим сигналом) %u ‰ (поріг %u); ",
+                softFrom && softFrom != cfg.channel ? "ІДЕ ПРОБА нового каналу" : "проби немає", (unsigned)airSlowSecs, (unsigned)airSecs, (unsigned)airLostMin, (unsigned)airLossPm, (unsigned)SOFT_LOSS_PM);
   if (softFrom && softFrom != cfg.channel) Serial.printf("прийшли з каналу %u (там %u с, %u мс); ", softFrom, softSlow, (unsigned)softLost);
   Serial.printf("спокій ще %d с; проб із поверненням підряд %u; досвід каналів 1…13 (секунд на хвилину, – немає):", (int32_t)(softQuietUntil - now) > 0 ? (int)((softQuietUntil - now) / 1000) : 0, softFails);
   for (int c = 1; c <= 13; c++) Serial.printf(chExpFresh(c, now) ? " %u" : " –", chExp[c - 1]);

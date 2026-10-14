@@ -555,6 +555,12 @@ static inline int txQPick(int want, int rateIdx, bool st, bool *sub) {
   }
 }
 static volatile bool txDupNow;               // сейчас в эфир идут такие пакеты
+// Стерео «найвищої» с разностью каналов без сжатия (с 2.86, proto.h — qPktLen4; с 2.87 — и в копиях прошлого пакета):
+// когда все приёмники из списка сообщали 2.87 или новее (txPcmSOk, считает otaAutoTick). Порт: Qr0 — разность
+// по-прежнему 4-битная (сравнение на слух), Qr1 — как положено, Qr2 — всегда (проверка). Не запоминается.
+static volatile uint8_t txSideMode = 1;
+static volatile bool txPcmSOk;
+static volatile bool txPcmSNow;              // сейчас в эфир идёт разность без сжатия
 static volatile uint8_t txDoubleWhy;         // почему двойные пакеты нельзя: 0 — можно, 1 — в списке есть приёмник без
 static uint8_t txDoubleWho[3];               // подтверждённой версии 2.60+ (его номер — здесь), 2 — открыто окно добавления
 static volatile bool txDblNow;               // сейчас в эфир идут двойные пакеты
@@ -576,6 +582,9 @@ static void txTask(void *) {
   static uint8_t pkt[PKT_MAX];
   static uint8_t hist[1 + DBL_COPIES][3 + Q_MAX_N / 2];   // сжатые прошлые кадры: [0] — N−1, [1] — N−2 … (двойному пакету нужны [1…DBL_COPIES])
   static uint8_t pairMain[Q_MAX_N * 2], pairSide[3 + Q_MAX_N / 2];   // первый кадр пары ждёт второго
+  static int16_t pairSideP[FRAME];           // и его разность без сжатия (с 2.86)
+  static uint8_t pcmHistS[1 + DUP_PCM][FRAME * 2];   // разность прошлых кадров «найвищої» без сжатия — копии N−1 и N−2 (с 2.87)
+  static bool pcmS;                          // пара идёт с разностью без сжатия (proto.h, qPktLen4)
   static uint8_t pcmHist[1 + DUP_PCM][FRAME * 2];   // прошлые кадры «найвищої» без сжатия: [0] — N−1, [1] — N−2 … (как hist)
   static SubcEnc subEnc;                     // подполосный кодек: разбор кадра (с 2.79)
   static uint8_t subF0[2][SUB_F0], subF2[3][SUB_F2], subF3[4][SUB_F3];   // кадр в трёх видах: [0] — новый, [1] — N−1, [2] — N−2, [3] — N−3
@@ -814,15 +823,18 @@ static void txTask(void *) {
       idxCarryS = 0;
       memset(hist, 0, sizeof(hist));
       memset(pcmHist, 0, sizeof(pcmHist));
+      memset(pcmHistS, 0, sizeof(pcmHistS));
       pairHave = false;
     }
     const QDef &d = QDEF[q];
     if (!pairHave) {   // упаковка меняется только между парами
       dbl = q == Q_HI && (txDoubleMode >= 2 || (txDoubleMode == 1 && txDoubleOk));
       dup = dbl && (txDoubleMode == 2 || (txDoubleMode == 1 && txDupOk));
+      pcmS = dup && st && (txSideMode == 2 || (txSideMode == 1 && txPcmSOk));
     }
     txDblNow = dbl;
     txDupNow = dup;
+    txPcmSNow = pcmS;
     if (st) {   // при заторе стерео плавно сводится в моно: кадры из копий несут только середину, и разность «через раз» дребезжала бы
       static float sg = 1;
       // (с 2.43 на «найвищій» копии несут и разность — сводить незачем; осталось для прочих качеств и старых приёмников)
@@ -904,7 +916,10 @@ static void txTask(void *) {
       pairSeq = mySeq;
       pairFl = accFlags;
       memcpy(pairMain, src, d.n * 2);
-      if (st) memcpy(pairSide, blkS, bl);
+      if (st) {
+        memcpy(pairSide, blkS, bl);
+        memcpy(pairSideP, srcS, d.n * 2);
+      }
       pairHave = true;
     }
     h->magic = MAGIC;
@@ -919,7 +934,10 @@ static void txTask(void *) {
     if (dbl && !stash) {   // первый кадр пары — из запомненного
       memcpy(w, pairMain, d.n * 2);
       w += d.n * 2;
-      if (st) {
+      if (st && pcmS) {
+        memcpy(w, pairSideP, d.n * 2);
+        w += d.n * 2;
+      } else if (st) {
         memcpy(w, pairSide, bl);
         w += bl;
       }
@@ -941,7 +959,10 @@ static void txTask(void *) {
       memcpy(w, blk, bl);
       w += bl;
     }
-    if (st) {   // разность каналов — сразу за серединой
+    if (st && pcmS) {   // разность каналов — сразу за серединой; без сжатия (с 2.86)
+      memcpy(w, srcS, d.n * 2);
+      w += d.n * 2;
+    } else if (st) {
       memcpy(w, blkS, bl);
       w += bl;
     }
@@ -953,8 +974,10 @@ static void txTask(void *) {
       if (dup)   // прошлый пакет — ещё раз без сжатия: его пропажа восстановится бит в бит (см. qPktLen3 в proto.h)
         for (; k <= DUP_PCM; k++, w += d.n * 2) memcpy(w, pcmHist[k], d.n * 2);
       for (; k <= DBL_COPIES; k++, w += bl) memcpy(w, hist[k], bl);
-      if (st)
-        for (int k = 1; k <= DBL_COPIES; k++, w += SC_LEN) memcpy(w, scHist[k], SC_LEN);
+      if (st && pcmS)   // разность N−1 и N−2 — без сжатия (с 2.87); у N−3 и N−4 копии разности нет (proto.h, qPktLen4)
+        for (int k2 = 1; k2 <= DUP_PCM; k2++, w += d.n * 2) memcpy(w, pcmHistS[k2], d.n * 2);
+      else if (st)
+        for (int k2 = 1; k2 <= DBL_COPIES; k2++, w += SC_LEN) memcpy(w, scHist[k2], SC_LEN);
     } else {
       for (int k = 0; k < qCopies(q, st); k++, w += bl) memcpy(w, hist[k], bl);
       if (st && q == Q_HI && txSideCopyOn && (seq & 63)) {   // копия разности прошлого кадра; каждый 64-й пакет — прежней длины
@@ -1070,6 +1093,10 @@ static void txTask(void *) {
     if (d.pcm) {   // и несжатые кадры — тем же порядком (нужны только «найвищій»: у остальных копия и есть сам кадр)
       for (int k = DUP_PCM; k >= 1; k--) memcpy(pcmHist[k], pcmHist[k - 1], FRAME * 2);
       memcpy(pcmHist[0], src, d.n * 2);
+      if (st) {   // и разность без сжатия — для её копий (с 2.87)
+        for (int k = DUP_PCM; k >= 1; k--) memcpy(pcmHistS[k], pcmHistS[k - 1], FRAME * 2);
+        memcpy(pcmHistS[0], srcS, d.n * 2);
+      }
     }
     txFrames = txFrames + 1;
   }

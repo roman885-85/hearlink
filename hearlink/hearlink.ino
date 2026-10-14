@@ -335,8 +335,9 @@ static void help() {
     {
       bool db = txDblNow && q == Q_HI;   // два кадра в пакете (proto.h, Q_DOUBLE)
       bool dp = db && txDupNow;          // двойной пакет с точными копиями прошлого (с 2.77)
+      bool ps = dp && st && txPcmSNow;   // и стерео с разностью без сжатия (с 2.86)
       bool sb = txSubNow && q == Q_STD;   // «стандартна» подполосным кодеком (с 2.79)
-      int pl = sb ? qPktLenSub() : dp ? qPktLen3(q, st) : db ? qPktLen2(q, st) : qPktLen(q, st);
+      int pl = sb ? qPktLenSub() : ps ? qPktLen4(q) : dp ? qPktLen3(q, st) : db ? qPktLen2(q, st) : qPktLen(q, st);
       uint32_t per = qFrameUs(q) * (db ? 2 : 1);
       if (q == Q_HI && !db && txDoubleMode == 1 && txDoubleWhy == 1) Serial.printf("два кадри в пакеті поки не можна: приймач %02X%02X%02X зі списку не повідомляв версію 2.60 або новішу (оновиться сам, щойно вийде на зв'язок; якщо його вже немає — видаліть зі списку)\n", txDoubleWho[0], txDoubleWho[1], txDoubleWho[2]);
       else if (q == Q_HI && !db && txDoubleMode == 1 && txDoubleWhy == 2) Serial.println("два кадри в пакеті поки не можна: відкрите вікно додавання приймачів");
@@ -344,13 +345,19 @@ static void help() {
                     q != cfg.quality ? " (знижено: обрана не вміщається в цю швидкість)" : "", QDEF[q].sr, (unsigned)(qFrameUs(q) / 1000),
                     sb ? "новий кодек (вісім смуг), у пакеті кадр і три запасні копії" : dp ? "ДВА кадри в пакеті, минулий пакет повторено без стиснення" : db ? "ДВА кадри в пакеті (копії стиснені)" : "один кадр у пакеті", pl, (unsigned)airUs(pl, cfg.rateIdx), (unsigned)per, (unsigned)(airUs(pl, cfg.rateIdx) * 100 / per));
     }
-    Serial.printf("стерео в ефір: %s; зараз в ефірі %s%s\n", cfg.stereo ? "увімкнено" : "вимкнено", st ? "СТЕРЕО" : "моно",
-                  cfg.stereo && !st ? " (джерело моно або якість «дальня»)" : "");
+    Serial.printf("стерео в ефір: %s; зараз в ефірі %s%s%s\n", cfg.stereo ? "увімкнено" : "вимкнено", st ? "СТЕРЕО" : "моно",
+                  cfg.stereo && !st ? " (джерело моно або якість «дальня»)" : "",
+                  st && txPcmSNow ? ", різниця каналів БЕЗ стиснення (16 біт, як середина; Qr0 — 4-бітна, як до 2.86)" :
+                  st && q == Q_HI ? (txSideMode == 0 ? ", різниця каналів 4-бітна (задано Qr0; Qr1 — без стиснення)" : !txPcmSOk ? ", різниця каналів 4-бітна: не всі приймачі зі списку мають 2.87+" : ", різниця каналів 4-бітна") : "");
     txNsPrint();
   }
   else Serial.printf("ім'я: «%s»%s; вихід: %s, %s, запас %s, гучність %u з 20\n", rxName(), cfg.off ? " (ВИМКНЕНИЙ з передавача)" : "", cfg.output == OUT_CS4344 ? "CS4344 (I2S, 31 250 Гц, головний такт 8 МГц на виводі 10)" : cfg.output == OUT_I2S ? "PCM5102 (I2S)" : "PDM",
                      cfg.rxStereo ? "ДВА КАНАЛИ (навушники напряму або стерео)" : cfg.output != OUT_PDM ? "моно" : "ПРОТИФАЗА (підсилювач з різницевим входом)",
                      cfg.depthMs ? (String(cfg.depthMs) + " мс").c_str() : "підбирається сам", cfg.volume);
+  if (!cfg.isTx)   // выходной тракт (с 2.86): разрядность, таблица подгонки темпа, ограничитель
+    Serial.printf("тракт виходу: %s; підгонка темпу — %s; обмежувач — вікно 3 мс, атака середнім за вікно\n",
+                  cfg.output == OUT_PDM ? "16 біт з округленням (однобітний вихід)" : "24 біти у 32-бітному слові",
+                  !rxRsTab ? "кубічна (на таблицю не знайшлося пам'яті)" : rxRsTaps == RXRS_MAX ? "таблиця 48 × 128, зріз 15 кГц" : "таблиця 24 × 128 (на більшу не знайшлося пам'яті)");
   if (!cfg.isTx) {   // здоровье радио приёмника (с 2.59): свои отправки и слышит ли его передатчик
     uint32_t now = millis();
     Serial.printf("радіо приймача: надіслано пакетів %u, відповідей драйвера %u, відмов %u, «не пішло» %u, найдовше чекання %u мс; перезавантажень радіо %u (не відповідало) + %u (передавач не чув); перезапусків плати через це %u\n", (unsigned)rxTxPutCount, (unsigned)rxTxDoneCount, (unsigned)rxTxErr, (unsigned)rxTxFail, (unsigned)rxTxWaitMaxMs, (unsigned)rxHealStuck, (unsigned)rxHealUnseen, (unsigned)rxHealBootCount);
@@ -1422,13 +1429,21 @@ rxFxPrint();
           Serial.printf("новий кодек для «стандартна»: %s; приймачі: %s; зараз в ефірі %s\n", txSubOff ? "ВИМКНЕНО (перевірка; Qc1 — повернути)" : "дозволено", txSubOk ? "усі зі списку вміють (2.79+)" : "не всі вміють", txSubNow ? "він" : "не він");
           return;
         }
-        if (arg.length() >= 4 && arg[0] == 'p' && cfg.board == BOARD_4848) {   // Qp<настройка>=<значение> — выбор «как с экрана» (проверка обработки без касаний; номера — enum Param в txui.h)
+        // Qp<настройка>=<значение> — выбор «как с экрана» (проверка обработки без касаний; номера — enum Param в txui.h).
+        // Только со знаком «=»: до 2.86 этот разбор забирал себе и Qp<число> (опыт с режимами радио, ниже), и на 4848
+        // тот молча не делал ничего.
+        if (arg.length() >= 4 && arg[0] == 'p' && cfg.board == BOARD_4848 && arg.indexOf('=') > 1) {
           int eq = arg.indexOf('=');
-          if (eq > 1) {
-            ui::out.setValue = arg.substring(eq + 1).toInt();
-            ui::out.setParam = arg.substring(1, eq).toInt();
-            Serial.printf("вибір як з екрана: налаштування %d = %d\n", (int)ui::out.setParam, (int)ui::out.setValue);
-          }
+          ui::out.setValue = arg.substring(eq + 1).toInt();
+          ui::out.setParam = arg.substring(1, eq).toInt();
+          Serial.printf("вибір як з екрана: налаштування %d = %d\n", (int)ui::out.setParam, (int)ui::out.setValue);
+          return;
+        }
+        if (arg.length() >= 2 && arg[0] == 'r') {   // Qr0 / Qr1 / Qr2 — разность каналов «найвищої» стерео: 4-битная, как до 2.86 / без сжатия, когда все приёмники умеют / всегда (проверка); не запоминается
+          txSideMode = arg[1] == '2' ? 2 : arg[1] == '1' ? 1 : 0;
+          Serial.printf("різниця каналів у «найвищій» стерео: %s; приймачі: %s; зараз в ефірі %s\n",
+                        txSideMode == 2 ? "завжди без стиснення (перевірка)" : txSideMode ? "без стиснення, коли всі приймачі зі списку вміють" : "4-бітна, як до 2.86 (порівняння на слух; Qr1 — повернути)",
+                        txPcmSOk ? "усі зі списку вміють (2.87+)" : "не всі вміють", txPcmSNow ? "без стиснення" : "4-бітна або не стерео");
           return;
         }
         if (arg.length() >= 2 && arg[0] == 'l') {   // Ql0 / Ql1 — нижнюю ступень скорости запретить / разрешить (для замеров на заданной скорости; не запоминается)
@@ -1680,7 +1695,10 @@ static void reportRx() {
     Serial.printf("тон %.1f Гц %.1f дБ, розривів %u\n", tz * (float)SRATE / tc, 10 * log10f(ts / tc / (32768.0f * 32768.0f) * 2), (unsigned)tb);
   else Serial.printf("рівень %.1f дБ%s", pk > 0 ? 20 * log10f(pk / 32768.0f) : -99.0f, rxFlags & FLAG_CLIP ? ", вхід передавача перевантажено" : "");
   if (!((rxFlags & FLAG_TONE) && tc > SRATE / 2)) {
-    Serial.printf(" | ефір %s, вихід %s", rxAirStereo ? "СТЕРЕО" : "моно", cfg.rxStereo ? "СТЕРЕО" : "моно");
+    static uint32_t psSeen;   // кадров с разностью без сжатия (с 2.86) — с прошлой строки
+    uint32_t ps = rxPcmSFrames - psSeen;
+    psSeen = rxPcmSFrames;
+    Serial.printf(" | ефір %s%s, вихід %s", rxAirStereo ? "СТЕРЕО" : "моно", rxAirStereo && ps ? " (різниця без стиснення)" : "", cfg.rxStereo ? "СТЕРЕО" : "моно");
     if (cfg.rxStereo) Serial.printf(": лівий %.1f дБ, правий %.1f дБ", pkL > 0 ? 20 * log10f(pkL / 32768.0f) : -99.0f, pkR > 0 ? 20 * log10f(pkR / 32768.0f) : -99.0f);
     Serial.println();
   }
