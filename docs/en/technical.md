@@ -198,7 +198,7 @@ cured it). Before 2.63 the receiver did not watch its own transmissions at all. 
 |---|---|---|---|
 | `rx` | 1 | 20 | audio output, in blocks of 1 ms |
 | Wi-Fi | 0 | 23 | receiving packets |
-| `ui` | 1 | 2 | screen at 60 frames/s, knob, menu |
+| `ui` | 0 (before 2.96 — 1) | 2 (21 while a frame is being sent) | screen at 60 frames/s, knob, menu |
 | `led` | 0 | 3 | LED 200 times/s (smooth "breathing" by dithering between adjacent levels) |
 | main loop | 1 | 1 | port, reports, states, sleep, information to the transmitter, update |
 
@@ -208,6 +208,14 @@ is compared with the previous one, and for each of the eight pages of the displa
 changed columns. This gives 60 frames/s (the library gave 33). "Halftones" on the one-bit display — with a 4×4
 raster; transitions between screens — by blending with the previous frame (dissolve, slide, circular reveal,
 curtain).
+
+The I2C bus takes 32 bytes at a time: the ESP-IDF 5.5 driver (`i2c_master_transmit`, synchronous) puts the next portion
+from the task that called it, when the interrupt says "the previous one is gone". So the output speed depends on how
+fast the display task gets the core. Before 2.96 it shared core 1 with the sound task (priority 20), and with noise
+suppression in stereo a frame took ~20 ms and the screen showed 17–23 frames/s. Since 2.93 the display task is raised to
+priority 21 while a frame is being sent, since 2.96 it runs on core 0 (40–45 % free there; the radio at priority 23
+still goes first). Measurements — in `G1`: «екран: N кадрів за секунду, малювання …, передача кадру …» (display: frames
+per second, drawing, frame transfer); the sound chain stages — `Y15`.
 
 ## Radio
 - **ESP-NOW**, broadcast address, channels 1–13 of the 2.4 GHz band, 20 MHz bandwidth.
@@ -385,7 +393,7 @@ the name is the type: 0 — uncompressed sound 32 kHz mono, 1 — MP3.
 | `lang.h`, `lang_en.h` | translation of on-screen texts |
 | `dbgair.h`, `dbgtee.h` | debugging over the radio |
 
-## What changed in 2.64–2.85 (technical)
+## What changed in 2.64–3.02 (technical)
 
 - **Receiver status messages (2.64)** — to the transmitter’s address with acknowledgement and retries, not
   “to everybody”; with a weak signal the receiver raises its power to 20 dBm by itself (since 2.77 — below −76 dBm,
@@ -437,6 +445,33 @@ the name is the type: 0 — uncompressed sound 32 kHz mono, 1 — MP3.
   difference (2.87: in the copies too; a 1116-byte packet), 24 bits to the DAC, a limiter with a 3 ms window average (over full scale — a few
   samples, intermodulation −48 → −59 dB), a 48-tap table. Packet check — `tools/host/dbl.cpp`: the difference arrives
   bit for bit.
+- **Noise suppression in stereo and radio updates (2.89–2.92)** — the owner: “clicks appear when the noise suppressor is
+  on”, “one channel disappears”. (1) The channel difference had no spectrum of its own — it was only delayed and
+  attenuated by one overall number, so when the mid was attenuated per band, L and R stopped being “left and right”:
+  quiet music panned to L leaked into R at −16…−20 dB (`tools/host/nsstereo.cpp`). Since 2.89 the difference goes
+  through the same window and transform with the same band gains as the mid: leakage −27…−31 dB (that is only the
+  noise of R suppressed a little differently), noise in R with loud music in L −56…−60 dB instead of −52. (2) The DAC
+  output ran dry once in 30–60 s — the output queue was 2 ms, and the heaviest block with noise suppression took up to
+  0.65–0.9 ms plus rare delays from the shared instruction cache and the radio; since 2.92 the queue is 4 ms: not a
+  single dropout in 3 minutes. (3) A radio update with noise suppression on ran 6–12 times slower (both receiving and
+  writing) — the whole sound chain was processing silence; since 2.90 plain silence goes to the output during an update:
+  two receivers update in 45 s instead of 2–10 minutes. (4) The transmitter waited for the write at most 2 minutes and
+  counted the rest as “vanished”; since 2.91 — while the receivers write and answer, up to 10 minutes.
+- **Receiver menu and analyzer with noise suppression (2.93–3.02)** — the owner: “with the noise suppressor on the menu
+  and the analyzer on the main page are very sluggish”. Measured (`Y15`, `Y14` in a build with `HL_TASK_LOAD`): since
+  2.86 the sound chain took 710 µs of every millisecond, with noise suppression in stereo 830–910 (pace conversion
+  270–290, processing and output 270–300, noise suppression 140, block preparation 130–150); the `rx` task — 83–93 % of
+  core 1, the display got 14 %: 17–30 frames/s. Done: (1) a frame goes to the display at a priority above the sound
+  (2.93); (2) the display task on core 0 (2.96); (3) the pace-conversion convolution as a separate function compiled with
+  O2 (`hearlink/rsdot.h`): inside `rxTask` (9 KB of code, `-Os`) the sum lived on the stack, ~45 cycles per tap; now two
+  partial sums per convolution, a coefficient is corrected once and used in both — 648 cycles per sample instead of
+  ~2000, the difference from the former computation is float rounding (`tools/host/rsdot.cpp`); (4) in the compressor
+  `log10f`/`powf` (up to four times per 8 samples) replaced with exact approximations `nsxLog2a`/`nsxExp2a` (error under
+  a millionth of a dB; the `tools/host/nsfx.cpp` check prints the same figures); (5) the volume `powf` — only when the
+  volume changes (two calls per block cost ~70 µs); (6) the noise-suppression step compiled with O2. Result on the
+  devices 15.10: the chain of 4C3B10 (noise suppression 2, compression 3) — 630 µs per millisecond, 884A94 — 485; the
+  display 62–63 frames/s on the main screen and in the menu; output ran dry 0 times in 3 minutes on both. Nothing was
+  moved to fast memory (IRAM): the transmitter has 42 KB of internal memory free with the rule “not less than 40”.
 
 ## Quirks and pitfalls
 

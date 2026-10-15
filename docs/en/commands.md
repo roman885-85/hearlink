@@ -121,6 +121,11 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `n7=1` / `n7=2` / `n7=3` | open the menu / the «Зв'язок» (Link) screen / the main screen |
 | `n11=1` / `n11=2` / `n11=0` | compatibility check without an old firmware at hand: do not understand double packets / also call itself version 2.56 (the transmitter goes back to single packets) / as is. Until a restart |
 | `n12=1…4` / `n12=0` | check of the receiver radio self-repair without a real fault: 1 — the driver “took the packet and stays silent”; 2 — packets “go nowhere” (until the radio is reloaded); 3 — the same until the board restarts; 4 — and after the restart too; 0 — off |
+| `Y2` | (since 2.93) free time of both cores over a second, arbitrary units: more means freer. The receiver's second core runs the sound and the display |
+| `Y12` / `Y13` | (since 2.93) a frame goes to the display at the display's priority, as before 2.93 (to compare) / above the sound (the default). Until a restart; the frame rate is in the report with `G1` — «екран: N кадрів за секунду, малювання …, передача кадру …» (display: N frames a second, drawing, frame transfer) |
+| `Y15` | (since 2.94) stages of the sound chain, µs per 1 ms block since the previous such call: before the pace conversion (buffer, pace, settings, volume), pace conversion, noise suppression, processing and output, the rest; the longest block. Above ~900 µs on average the sound core is short of time |
+| `Y16` | (since 2.98) the pace-conversion convolution alone: cycles per call (3.02 — 648) |
+| `Y14` | core time per task over 2 s — only in a build with `#define HL_TASK_LOAD` (the FreeRTOS functions take 600 bytes of fast memory, which the transmitter cannot spare) |
 
 The receiver's `?` report (since 2.63) has two lines about its radio: how many packets were sent and how many the
 driver answered, the longest wait for an answer, how many times the radio was reloaded (did not answer + the

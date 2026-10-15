@@ -25,6 +25,8 @@ static U8G2_SH1106_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 static volatile bool uiHaveOled;
 static volatile bool oledFast;         // экран работает на 800 кГц
 static volatile uint32_t oledFrames, oledFrameUsMax, oledFrameUsSum;   // для отчёта: кадров и время кадра
+static volatile uint32_t oledDrawUsSum, oledDrawUsMax;                 // и рисования кадра (с 2.94; с разбором спектра)
+static volatile bool oledFlushHigh = true;   // кадр уходит на экран с приоритетом выше звука (с 2.93; Y12 — как до 2.93, Y13 — снова так)
 static volatile int32_t encCount;      // четверть-шаги ручки
 static volatile uint8_t encState;
 static volatile uint32_t uiKeys;       // состояние кнопок сейчас: бит 0 — ручка, 1 — CON, 2 — BAK (для проверки сборки)
@@ -310,6 +312,7 @@ static void drawCentered(int y, const char *s) {
 }
 
 static void uiTask(void *) {
+  const UBaseType_t uiPrio = uxTaskPriorityGet(NULL);   // свой приоритет (2): к нему возвращаемся после передачи кадра
   rxKeyPinsClean();   // до pinMode: иначе он включит на кнопке «унаследованное» прерывание (см. rxlink.h)
   pinMode(PIN_ENC_A, INPUT_PULLUP);
   pinMode(PIN_ENC_B, INPUT_PULLUP);
@@ -575,6 +578,7 @@ static void uiTask(void *) {
 
     // --- рисование
     if (uiHaveOled && show) {
+      uint32_t d0 = micros();
       u8g2_t *g = oled.getU8g2();
       oled.clearBuffer();
       float dtMs = (float)(now - frameAt > 100 ? 100 : now - frameAt);
@@ -838,8 +842,19 @@ static void uiTask(void *) {
         else rxs::blend(g, trFrom, k, trKind);
       }
       uint32_t f0 = micros();
+      oledDrawUsSum = oledDrawUsSum + (f0 - d0);
+      if (f0 - d0 > oledDrawUsMax) oledDrawUsMax = f0 - d0;
       Wire.setClock(oledFast ? 800000 : 400000);
+      // Шина I2C берёт за раз 32 байта, и каждую следующую порцию кладёт эта задача: драйвер будит её, когда ушла
+      // предыдущая. До 2.96 задача экрана была на одном ядре с задачей звука (приоритет 20), и пока та считала блок,
+      // порция ждала: с шумозаглушением в стерео (2.89) передача кадра выросла с 4–6 до ~20 мс, экран — ~20 кадров в
+      // секунду вместо 60 (владелец 14.10: «при включенном шумодаве очень тормозит меню и анализатор на главной
+      // странице»). С 2.93 на время передачи задача экрана выше звука (21): почти всё это время она ждёт шину, а на
+      // порцию забирает микросекунды. С 2.96 экран на первом ядре; там выше него только служебные задачи и радио (23 —
+      // его порция по-прежнему ждёт), а подъём опережает светодиод и прочие ниже 21.
+      if (oledFlushHigh) vTaskPrioritySet(NULL, 21);
       oledFlush();
+      if (oledFlushHigh) vTaskPrioritySet(NULL, uiPrio);
       uint32_t fu = micros() - f0;
       oledFrames = oledFrames + 1;
       oledFrameUsSum = oledFrameUsSum + fu;

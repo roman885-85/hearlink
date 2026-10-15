@@ -90,6 +90,49 @@ static inline float nsxLog2(float x) {
   return (float)((int)(v.u >> 23) - 127) + (float)(v.u & 0x7FFFFF) * (1.0f / 8388608.0f);
 }
 
+// Точные и быстрые двоичный логарифм и степень двойки — для сжатия (NsDyn, с 3.00). Библиотечные log10f и powf
+// звались там до четырёх раз на каждые 8 отсчётов, и «чёткость и сжатие» у приёмника брали 100–125 мкс из каждой
+// миллисекунды (замер Y15 15.10). Логарифм — показатель числа плюс логарифм мантиссы рядом atanh (ошибка ~1e-7, то
+// есть меньше миллионной доли децибела), степень — целая часть в показатель, дробная — многочленом (ошибка ~3e-6).
+static inline float nsxLog2a(float x) {   // x > 0
+  union {
+    float f;
+    uint32_t u;
+  } v = { x };
+  int e = (int)(v.u >> 23) - 127;
+  v.u = (v.u & 0x7FFFFF) | 0x3F800000;   // мантисса 1…2
+  float m = v.f;
+  if (m > 1.41421356f) {
+    m *= 0.5f;
+    e++;
+  }
+  float t = (m - 1) / (m + 1), t2 = t * t;
+  return (float)e + 2.88539008f * t * (1 + t2 * (0.333333333f + t2 * (0.2f + t2 * 0.142857143f)));   // 2/ln2 · atanh(t)
+}
+static inline float nsxExp2a(float y) {   // 2^y
+  if (y < -125) return 0;
+  if (y > 125) y = 125;
+  int i = (int)(y + 0.5f);
+  if ((float)i > y + 0.5f) i--;          // округление вниз и для отрицательных
+  float f = (y - (float)i) * 0.693147181f;   // −0,35…0,35
+  float p = 1 + f * (1 + f * (0.5f + f * (0.166666667f + f * (0.0416666667f + f * (0.00833333333f + f * 0.00138888889f)))));
+  union {
+    float f;
+    uint32_t u;
+  } v = { p };
+  v.u += (uint32_t)i << 23;
+  return v.f;
+}
+
+// Шаг шумозаглушения на плате собирается с O2 (с 3.01; вся прошивка — -Os). Как у свёртки подгонки темпа (rsdot.h):
+// в -Os суммы и временные чаще живут в стеке, а не в регистрах. В быструю память (IRAM) не переносится: у передатчика
+// её нет (внутренней свободно 41 КБ при правиле «не меньше 40»).
+#ifdef ARDUINO
+#define NSX_HOT __attribute__((optimize("O2")))
+#else
+#define NSX_HOT
+#endif
+
 struct NsSpec {
   // --- настройки (менять можно на ходу)
   uint8_t level = 0;
@@ -99,13 +142,13 @@ struct NsSpec {
   // --- состояние
   float inM[NSX_N];                // последние 256 отсчётов середины
   float olM[NSX_H], outM[NSX_H];   // хвост прошлого окна (сложится с началом следующего) и готовые отсчёты
-  float sd[NSX_N];                 // разность каналов: ждёт столько же, сколько середина идёт через обработку
+  float inS[NSX_N];                // разность каналов (с 2.89 — своим спектром, с теми же усилениями полос, что у середины)
+  float olS[NSX_H], outS[NSX_H];
   float Nz[NSX_K], Gp[NSX_K], gp[NSX_K], G[NSX_K], acc[NSX_K], pw[NSX_K], Xr[NSX_K], Xi[NSX_K];
   float tmpM[NSX_H], tmpS[NSX_H];
   float totS, fCur, fWin[NSX_MW];   // общая мощность (сглаженная) и её наименьшее: в текущем отрезке и в прошлых
   float tCur, tWin[NSX_MW];         // и наибольшее — там же: пауза должна быть намного тише самого громкого (с 2.76)
-  float gS, gSt;                    // усиление разности каналов: сейчас и к чему идёт
-  int fill, outLeft, learnLeft, learnN, fCount, fPos, pauseRun, sdPos;
+  int fill, outLeft, learnLeft, learnN, fCount, fPos, pauseRun;
   int dirty;                       // сколько шагов ещё не верить уровню: только что была цифровая тишина (разрыв звука)
   bool primed, haveNoise;           // haveNoise — спектр шума уже известен
   uint32_t hops, pauseHops;         // pauseHops — для отчёта: сколько шагов сочтено паузой (по ним учится шум)
@@ -116,7 +159,9 @@ struct NsSpec {
     memset(inM, 0, sizeof(inM));
     memset(olM, 0, sizeof(olM));
     memset(outM, 0, sizeof(outM));
-    memset(sd, 0, sizeof(sd));
+    memset(inS, 0, sizeof(inS));
+    memset(olS, 0, sizeof(olS));
+    memset(outS, 0, sizeof(outS));
     for (int k = 0; k < NSX_K; k++) {
       Nz[k] = 0;
       Gp[k] = 1;
@@ -131,8 +176,7 @@ struct NsSpec {
     totS = 0;
     fCur = 1e30f;
     tCur = 0;
-    gS = gSt = 1;
-    fill = outLeft = learnLeft = learnN = fCount = fPos = pauseRun = sdPos = 0;
+    fill = outLeft = learnLeft = learnN = fCount = fPos = pauseRun = 0;
     dirty = NSX_DIRTY;
     primed = haveNoise = false;
     hops = pauseHops = 0;
@@ -153,7 +197,49 @@ struct NsSpec {
   }
 
   // один шаг: в inM лежат 256 отсчётов, на выходе — 128 готовых в outM. z — память под 256 чисел (выровненная).
-  void hop(float *z) {
+  // спектр окна in (256 отсчётов) → Xr, Xi (129 полос)
+  NSX_HOT void analyse(const float *in, float *z) {
+    for (int n = 0; n < NSX_M; n++) {
+      z[2 * n] = in[2 * n] * nsxWin[2 * n];
+      z[2 * n + 1] = in[2 * n + 1] * nsxWin[2 * n + 1];
+    }
+    nsxFft(z, NSX_M);
+    for (int k = 0; k <= NSX_M; k++) {
+      int a = k & (NSX_M - 1), b = (NSX_M - k) & (NSX_M - 1);
+      float ar = z[2 * a], ai = z[2 * a + 1], br = z[2 * b], bi = -z[2 * b + 1];
+      float er = 0.5f * (ar + br), ei = 0.5f * (ai + bi), orr = 0.5f * (ai - bi), oi = -0.5f * (ar - br);
+      Xr[k] = er + nsxCos[k] * orr + nsxSin[k] * oi;
+      Xi[k] = ei + nsxCos[k] * oi - nsxSin[k] * orr;
+    }
+  }
+  // обратно: спектр Xr, Xi с усилениями G → комплексное преобразование на 128 (обратное — прямым, через сопряжение) →
+  // окно → 128 готовых отсчётов в out (вместе с хвостом прошлого окна ol), новый хвост — в ol
+  NSX_HOT void synth(float *z, float *out, float *ol) {
+    for (int k = 0; k < NSX_M; k++) {
+      int m = NSX_M - k;
+      float ar = Xr[k] * G[k], ai = Xi[k] * G[k], br = Xr[m] * G[m], bi = -Xi[m] * G[m];
+      float er = 0.5f * (ar + br), ei = 0.5f * (ai + bi), dr = 0.5f * (ar - br), di = 0.5f * (ai - bi);
+      float orr = dr * nsxCos[k] - di * nsxSin[k], oi = dr * nsxSin[k] + di * nsxCos[k];
+      z[2 * k] = er - oi;            // Z = E + jO, сразу сопряжённое
+      z[2 * k + 1] = -(ei + orr);
+    }
+    nsxFft(z, NSX_M);
+    const float sc = 1.0f / NSX_M;
+    for (int n = 0; n < NSX_M; n++) {   // после сопряжения: чётные отсчёты — вещественная часть, нечётные — мнимая со знаком
+      float e = z[2 * n] * sc, o = -z[2 * n + 1] * sc;
+      int i0 = 2 * n, i1 = 2 * n + 1;
+      float y0 = e * nsxWin[i0], y1 = o * nsxWin[i1];
+      if (i0 < NSX_H) {
+        out[i0] = ol[i0] + y0;
+        out[i1] = ol[i1] + y1;
+      } else {
+        ol[i0 - NSX_H] = y0;
+        ol[i1 - NSX_H] = y1;
+      }
+    }
+  }
+
+  NSX_HOT void hop(float *z, bool stereo) {
     static const float FLOOR[4] = { 1.0f, 0.398f, 0.200f, 0.100f }, OVER[5] = { 1.0f, 1.4f, 1.9f, 2.6f, 3.4f };
     float gFloor = FLOOR[level > 3 ? 0 : level], over = OVER[sens > 4 ? 2 : sens];
     // спектр окна: чётные отсчёты — в вещественную часть, нечётные — в мнимую; преобразование на 128; разбор на 129 полос
@@ -283,58 +369,43 @@ struct NsSpec {
       tot += pw[k];
     }
     float ratio = tot > 1 ? (red + 1e-3f) / tot : 1;
-    redDb = 10 * log10f(ratio);
-    gSt = sqrtf(ratio > 1 ? 1 : ratio);   // разности каналов — то же ослабление, что вышло у середины в целом
-    // обратно: спектр с усилениями → комплексное преобразование на 128 (обратное — прямым, через сопряжение) → окно
-    for (int k = 0; k < NSX_M; k++) {
-      int m = NSX_M - k;
-      float ar = Xr[k] * G[k], ai = Xi[k] * G[k], br = Xr[m] * G[m], bi = -Xi[m] * G[m];
-      float er = 0.5f * (ar + br), ei = 0.5f * (ai + bi), dr = 0.5f * (ar - br), di = 0.5f * (ai - bi);
-      float orr = dr * nsxCos[k] - di * nsxSin[k], oi = dr * nsxSin[k] + di * nsxCos[k];
-      z[2 * k] = er - oi;            // Z = E + jO, сразу сопряжённое
-      z[2 * k + 1] = -(ei + orr);
-    }
-    nsxFft(z, NSX_M);
-    const float sc = 1.0f / NSX_M;
-    for (int n = 0; n < NSX_M; n++) {   // после сопряжения: чётные отсчёты — вещественная часть, нечётные — мнимая со знаком
-      float e = z[2 * n] * sc, o = -z[2 * n + 1] * sc;
-      int i0 = 2 * n, i1 = 2 * n + 1;
-      float y0 = e * nsxWin[i0], y1 = o * nsxWin[i1];
-      if (i0 < NSX_H) {
-        outM[i0] = olM[i0] + y0;
-        outM[i1] = olM[i1] + y1;
-      } else {
-        olM[i0 - NSX_H] = y0;
-        olM[i1 - NSX_H] = y1;
-      }
+    redDb = 3.01029996f * nsxLog2a(ratio);   // 10·lg (с 3.01 — без библиотечного log10f)
+    synth(z, outM, olM);
+    // Разность каналов — со своим спектром и с ТЕМИ ЖЕ усилениями полос (с 2.89). До 2.89 она лишь ждала столько же и
+    // ослаблялась одним общим числом — тем, что вышло у середины в целом. Когда середина в одних полосах ослаблена, а
+    // разность нет, Л = С + Р и П = С − Р перестают быть «левым и правым»: звук, сведённый в один канал, протекал во
+    // второй (−16…−20 дБ к себе — тихая музыка только в Л на уровне шума, tools/host/nsstereo.cpp) и слабел в своём.
+    // Владелец 14.10 (2.88): «при включении шумодава появляются щелчки» и «пропадает один канал при шумодаве».
+    // Теперь Л и П получают одинаковую обработку. Цена — ещё два преобразования на шаг (только в стерео).
+    if (stereo) {
+      analyse(inS, z);
+      synth(z, outS, olS);
     }
   }
 
   // Кадр на месте: n отсчётов (128 должно делиться на n: 32, 64, 128), m — середина, s — разность каналов.
   // work — память под 256 чисел, выровненная на 16 байт. Выход отстаёт от входа на 256 − n отсчётов:
-  // при n = 64 (передатчик) — на 6 мс, при n = 32 (приёмник) — на 7 мс. Разность каналов своего спектра не
-  // получает (это вдвое дешевле): она ждёт столько же и ослабляется так же, как середина в целом, — в паузах её шум
-  // уходит вместе с шумом середины, а во время звука она мала рядом с ним.
-  void runF(float *m, float *s, int n, bool stereo, float *work) {
-    for (int i = 0; i < n; i++) inM[NSX_H + fill + i] = m[i];
+  // при n = 64 (передатчик) — на 6 мс, при n = 32 (приёмник) — на 7 мс. В стерео разность идёт тем же путём, что
+  // середина, с теми же усилениями полос (см. конец hop).
+  NSX_HOT void runF(float *m, float *s, int n, bool stereo, float *work) {
+    for (int i = 0; i < n; i++) {
+      inM[NSX_H + fill + i] = m[i];
+      inS[NSX_H + fill + i] = stereo ? s[i] : 0;
+    }
     fill += n;
     if (fill >= NSX_H) {
-      hop(work);
+      hop(work, stereo);
       memmove(inM, inM + NSX_H, NSX_H * sizeof(float));
+      memmove(inS, inS + NSX_H, NSX_H * sizeof(float));
       fill = 0;
       outLeft = NSX_H;
       primed = true;
     }
-    int from = NSX_H - outLeft, lag = NSX_N - n;
+    int from = NSX_H - outLeft;
     bool have = primed && outLeft > 0;
     for (int i = 0; i < n; i++) {
       m[i] = have ? outM[from + i] : 0;
-      if (stereo) {
-        sd[sdPos] = s[i];
-        gS += (gSt - gS) * 0.01f;
-        s[i] = have ? sd[(sdPos - lag) & (NSX_N - 1)] * gS : 0;
-        sdPos = (sdPos + 1) & (NSX_N - 1);
-      }
+      if (stereo) s[i] = have ? outS[from + i] : 0;
     }
     if (outLeft > 0) outLeft -= n;
   }
@@ -394,21 +465,21 @@ struct NsDyn {
     } else if (envHold) envHold--;
     else env *= 0.998266f;
     envIn += (aIn - envIn) * (aIn > envIn ? 0.0031f : 0.000625f);   // средняя величина: вверх за 10 мс, вниз за 50 мс
-    if (++tick >= 8) {   // пересчёт цели раз в четверть миллисекунды: логарифмы дороги
+    if (++tick >= 8) {   // пересчёт цели раз в четверть миллисекунды (логарифмы — nsxLog2a/nsxExp2a, с 3.00)
       tick = 0;
       if (comp && boostDb > 0.5f) {
         static const float KNEE[4] = { 0, -3, -8, -14 }, SLOPE[4] = { 0, 0.75f, 0.6667f, 0.6f };   // SLOPE = 1 − 1/R
         uint8_t c = comp > 3 ? 3 : comp;
-        float d = 20 * log10f(env * boostLin * (1.0f / 32768) + 1e-9f), over = d - KNEE[c], red;
+        float d = 6.02059991f * nsxLog2a(env * boostLin * (1.0f / 32768) + 1e-9f), over = d - KNEE[c], red;   // 20·lg
         if (over <= -3) red = 0;
         else if (over < 3) red = (over + 3) * (over + 3) * (1.0f / 12) * SLOPE[c];   // мягкое колено ±3 дБ
         else red = over * SLOPE[c];
         if (d - red > -1.5f) red = d + 1.5f;   // потолок — на полтора децибела ниже края шкалы: ограничителю почти нечего делать
-        tRed = powf(10.0f, -red * 0.05f);
+        tRed = nsxExp2a(-red * 0.166096405f);   // 10^(−red/20)
         if (red > redLowDb) redLowDb = red;
       } else tRed = 1;
       if (gate) {
-        float lin = 20 * log10f(envIn * (1.0f / 32768) + 1e-9f);
+        float lin = 6.02059991f * nsxLog2a(envIn * (1.0f / 32768) + 1e-9f);
         if (lin < floorDb) floorDb += (lin - floorDb) * 0.02f;   // дно шума: вниз быстро,
         else floorDb += 0.0000625f;                               // вверх — на четверть децибела в секунду,
         if (floorDb > -38) floorDb = -38;                         // и не выше −38 дБ: громче — уже не шум, а звук
@@ -421,7 +492,7 @@ struct NsDyn {
           x = 1;
         }
         float depth = (boostDb + (gate == 2 ? 6 : gate == 3 ? 12 : 0)) * (1 - x);
-        tGate = powf(10.0f, -depth * 0.05f);
+        tGate = nsxExp2a(-depth * 0.166096405f);
         if (depth > gateLowDb) gateLowDb = depth;
       } else tGate = 1;
     }

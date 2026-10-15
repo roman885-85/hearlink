@@ -868,9 +868,12 @@ static void peersPrint() {
     const Peer &p = peers[i];
     if (!p.used) continue;
     n++;
+    char fwv[8];   // «3.01», а не «3.1»: младшая часть — двумя цифрами (с 3.01)
+    if (p.fwMaj) snprintf(fwv, sizeof(fwv), "%u.%02u", p.fwMaj, p.fwMin);
+    else snprintf(fwv, sizeof(fwv), "%.1f", p.fw / 10.0f);
     Serial.printf("  приймач %02X%02X%02X «%s»: %s%s%s, гучність %u, сигнал %d дБм (тут %d), запас %u мс, втрати %.1f %%, пропусків %u, провалів %u мс, версія %s, вихід %s%s%s\n",
                   p.id[0], p.id[1], p.id[2], p.name, peerOnline(p) ? "на зв'язку" : "не на зв'язку", p.flags & ST_OFF ? ", ВИМКНЕНИЙ" : "",
-                  p.flags & ST_SLEEP ? ", СПИТЬ" : "", p.volume, p.rssi, p.rssiHere, p.depthMs, p.lossPm / 10.0f, p.lostFrames, p.underMs, (p.fwMaj ? String(p.fwMaj) + "." + String(p.fwMin) : String(p.fw / 10.0f, 1)).c_str(),
+                  p.flags & ST_SLEEP ? ", СПИТЬ" : "", p.volume, p.rssi, p.rssiHere, p.depthMs, p.lossPm / 10.0f, p.lostFrames, p.underMs, fwv,
                   p.flags & ST_STEREO ? "два канали" : "протифаза", p.fw < 16 ? "" : p.flags & ST_OUTLIVE ? " (живий)" : " (СТОЇТЬ)",
                   p.flags & ST_MUTE ? ", тиша" : "");
     if (p.hasInfo)

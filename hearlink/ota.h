@@ -804,9 +804,13 @@ static void otaTxTask(void *) {
   txPause = false;
   txPauseLight = false;
   if (result == OT_DONE) {
+    // Ждём, пока приёмники допишут прошивку. До 2.91 — не дольше двух минут, и кто не успел, попадал в «зникло», хотя
+    // был на связи и сообщал ход записи (14.10: 884A94 писал больше четырёх минут, передатчик через две сказал
+    // «зникло 2», а приёмники потом сами дописали и перезапустились). Теперь ждём, пока кто-то пишет и сообщает о
+    // себе (не слышно 12 с — «зник»), но не дольше десяти минут.
     o.stage = OT_WRITE;
     uint32_t t1 = millis();
-    while (millis() - t1 < 120000) {
+    while (millis() - t1 < 600000) {
       c = otaTxCount(12000);
       if (c.done + c.lost >= c.want) break;
       vTaskDelay(pdMS_TO_TICKS(100));
@@ -821,8 +825,8 @@ static void otaTxTask(void *) {
   if (!o.fromCard) otaImgClose(o.im);
   o.endMs = millis();
   c = otaTxCount(12000);
-  Serial.printf("оновлення: %s — оновлено %d, не вдалося %d, зникло %d, уже мали цю прошивку %d; усього %u с\n",
-                result == OT_DONE ? "ГОТОВО" : result == OT_NOBODY ? "оновлювати нікого" : "СКАСОВАНО", c.done, c.fail, c.lost + c.recv + c.ready, c.same,
+  Serial.printf("оновлення: %s — оновлено %d, не вдалося %d, зникло %d, не дописали за 10 хв %d, уже мали цю прошивку %d; усього %u с\n",
+                result == OT_DONE ? "ГОТОВО" : result == OT_NOBODY ? "оновлювати нікого" : "СКАСОВАНО", c.done, c.fail, c.lost, c.recv + c.ready, c.same,
                 (unsigned)((o.endMs - o.startMs) / 1000));
   o.stage = result;
   vTaskDelete(NULL);

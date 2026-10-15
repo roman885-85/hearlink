@@ -1468,7 +1468,7 @@ static void drawRxLines() {
   line(tr("Запас (затримка)"), t);
   line(tr("Вихід звуку"), r.fw < 11 ? tr("протифаза (стара версія)") : r.stereo ? tr("два канали (навушники)") : tr("протифаза (підсилювач)"));
   // версия — точная (до 2.59 здесь стояло округление до десятых из старого поля: приёмник 2.58 показывался как «2.6»)
-  if (r.fwMaj) snprintf(t, sizeof(t), tr("%u год %02u хв, версія %u.%u"), r.uptimeMin / 60, r.uptimeMin % 60, r.fwMaj, r.fwMin);
+  if (r.fwMaj) snprintf(t, sizeof(t), tr("%u год %02u хв, версія %u.%02u"), r.uptimeMin / 60, r.uptimeMin % 60, r.fwMaj, r.fwMin);
   else snprintf(t, sizeof(t), tr("%u год %02u хв, версія %.1f"), r.uptimeMin / 60, r.uptimeMin % 60, r.fw / 10.0f);
   line(tr("Працює"), t);
 }

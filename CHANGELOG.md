@@ -1,5 +1,51 @@
 # Changelog / Історія версій
 
+## 3.02 — 2026-10-15 (includes 2.89–3.01, which were not released / містить 2.89–3.01, які не випускались)
+- EN: **the receiver's menu and spectrum analyzer are smooth again, also with noise suppression on.** The owner: “with
+  the noise suppressor on the menu and the analyzer on the main page are very sluggish”. Measured: the receiver's sound
+  chain had grown heavier since 2.86 and with noise suppression in stereo took 830–910 µs of every millisecond — 83–93 %
+  of the core it shared with the display, which got 17–30 frames/s instead of 60. Now the display runs on the other
+  core (radio core, 40–45 % free) and sends a frame above the sound's priority; the chain itself is faster without
+  changing the sound (host checks `tools/host/rsdot.cpp`, `tools/host/nsfx.cpp` give the same figures): the
+  pace-conversion convolution 270–290 → 125 µs per millisecond, block preparation 130–150 → 80 (the volume power no
+  longer computed twice per block), compression 100–125 → 75–85 (own exact logarithm and power instead of the library
+  ones). On the
+  devices: chain 630 µs per millisecond with noise suppression 2 and compression 3 (was 830–910), 485 without noise
+  suppression (was 710–755); the display 62–63 frames/s on the main screen and in the menu; the output ran dry 0 times in
+  3 minutes on both receivers. The version is 3.02: version numbers are compared as “major.minor” numbers, so 3.02 is
+  newer than 2.99 for radio updates and update files on the card.
+- UK: **меню й аналізатор спектра приймача знову плавні, і з шумозаглушенням.** Власник: «при включенном шумодаве
+  очень тормозит меню и анализатор на главной странице». Замір: тракт звуку приймача з 2.86 потяжчав і з
+  шумозаглушенням у стерео брав 830–910 мкс із кожної мілісекунди — 83–93 % ядра, яке він ділив з екраном, а екран
+  отримував 17–30 кадрів/с замість 60. Тепер екран працює на іншому ядрі (ядрі радіо, там вільно 40–45 %) і віддає кадр
+  із пріоритетом вище звуку; сам тракт швидший без зміни звуку (перевірки на комп'ютері `tools/host/rsdot.cpp`,
+  `tools/host/nsfx.cpp` дають ті самі цифри): згортка підгонки темпу 270–290 → 125 мкс на мілісекунду, підготовка
+  блока 130–150 → 80 (степінь для гучності більше не рахується двічі на блок), стискання 100–125 → 75–85 (власні точні
+  логарифм і степінь замість бібліотечних). На приладах: тракт 630 мкс на мілісекунду з шумозаглушенням 2 і
+  стисканням 3 (було 830–910), 485 без шумозаглушення (було 710–755); екран 62–63 кадри/с на головній і в меню; вихід
+  без даних — 0 разів за 3 хвилини на обох приймачах. Номер — 3.02: версії порівнюються як числа «старша.молодша», тож
+  для оновлення по радіо й файлів на картці 3.02 новіша за 2.99.
+- EN: **noise suppression in stereo: no clicks, no lost channel.** The channel difference used to be only delayed and
+  attenuated by one overall number while the mid was attenuated per band — L and R stopped being left and right (quiet
+  music panned to L leaked into R at −16…−20 dB). Since 2.89 the difference goes through the same window and transform
+  with the same band gains: leakage −27…−31 dB, noise in R next to loud music in L −56…−60 dB instead of −52 (host test
+  `tools/host/nsstereo.cpp`). The DAC output queue is 4 ms instead of 2 (2.92): with suppression on the output ran dry
+  once in 30–60 s (a 1 ms click), now not once in 3 minutes on either receiver.
+- EN: **radio updates in under a minute, also with noise suppression on.** During an update the sound chain kept
+  processing silence and slowed both receiving and writing 6–12 times (2.88 → 2.89 took over 10 minutes); since 2.90
+  plain silence goes to the output during an update — two receivers update in 45 s. The transmitter waits while
+  receivers write (up to 10 minutes) instead of calling them “vanished” after 2 (2.91).
+- UK: **шумозаглушення в стерео: без клацань і без «зниклого» каналу.** Різниця каналів лише чекала й ослаблялася
+  одним загальним числом, а середина — по смугах: Л і П переставали бути лівим і правим (тиха музика, зведена в Л,
+  протікала в П на −16…−20 дБ). З 2.89 різниця йде тим самим вікном і перетворенням із тими самими посиленнями смуг:
+  протікання −27…−31 дБ, шум у П поруч із гучною музикою в Л — −56…−60 дБ замість −52 (перевірка на комп'ютері —
+  `tools/host/nsstereo.cpp`). Черга виходу на ЦАП — 4 мс замість 2 (2.92): з шумозаглушенням вихід лишався без даних
+  раз на 30–60 с (клацання 1 мс), тепер — жодного разу за 3 хвилини на обох приймачах.
+- UK: **оновлення по радіо — менше хвилини, і з шумозаглушенням.** Під час оновлення звуковий тракт рахував тишу й
+  уповільнював і прийом, і запис у 6–12 разів (2.88 → 2.89 — понад 10 хвилин); з 2.90 на час оновлення на вихід іде
+  готова тиша — два приймачі оновлюються за 45 с. Передавач чекає, поки приймачі пишуть (до 10 хвилин), а не називає
+  їх «зниклими» через 2 (2.91).
+
 ## 2.88 — 2026-10-14 (includes 2.86–2.87, which were not released / містить 2.86–2.87, які не випускались)
 - EN: **light clicks “like a scratched CD” — the channel is now chosen by the receivers' packet losses too.** After the
   exact copies (2.87) only two losses in a row and gaps could still be heard. Measured: on channel 1 the near receiver

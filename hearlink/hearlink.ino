@@ -398,6 +398,54 @@ static void cpuProbe() {
                 (unsigned)(spinCount[1] / 1000));
 }
 
+// Время ядер по задачам (с 2.94): счётчики времени FreeRTOS (в ядре Arduino они включены) — сколько каждая задача
+// работала за две секунды, в процентах ядра; IDLE — свободное время. Прерывания засчитываются той задаче, которую
+// прервали. Задачи без привязки к ядру — отдельной строкой.
+// В обычную сборку не входит (с 3.01): uxTaskGetSystemState и её помощники лежат в быстрой памяти (FreeRTOS собран в
+// IRAM) — 600 байт, а у передатчика каждый байт быстрой памяти уходит из внутренней кучи. Включается строкой
+// #define HL_TASK_LOAD перед этим местом; команда — Y14.
+#ifdef HL_TASK_LOAD
+static void taskLoad() {
+  const int MAXT = 40;
+  TaskStatus_t *a = (TaskStatus_t *)malloc(sizeof(TaskStatus_t) * MAXT * 2);
+  if (!a) return;
+  TaskStatus_t *b = a + MAXT;
+  configRUN_TIME_COUNTER_TYPE ta = 0, tb = 0;
+  UBaseType_t na = uxTaskGetSystemState(a, MAXT, &ta);
+  delay(2000);
+  UBaseType_t nb = uxTaskGetSystemState(b, MAXT, &tb);
+  uint32_t span = (uint32_t)(tb - ta);
+  if (!span) span = 1;
+  uint32_t d[MAXT];
+  for (UBaseType_t i = 0; i < nb; i++) {
+    uint32_t prev = 0;
+    for (UBaseType_t j = 0; j < na; j++)
+      if (a[j].xHandle == b[i].xHandle) {
+        prev = a[j].ulRunTimeCounter;
+        break;
+      }
+    d[i] = b[i].ulRunTimeCounter - prev;
+  }
+  const BaseType_t CORES[3] = { 0, 1, tskNO_AFFINITY };
+  for (int c = 0; c < 3; c++) {
+    char line[320];
+    int len = snprintf(line, sizeof(line), c < 2 ? "ядро %d за %.1f с, %% часу:" : "без прив'язки до ядра%.0d за %.1f с:", c < 2 ? c : 0, span / 1e6f);
+    bool used[MAXT] = {};
+    for (;;) {   // по убыванию времени
+      int best = -1;
+      for (UBaseType_t i = 0; i < nb; i++)
+        if (!used[i] && b[i].xCoreID == CORES[c] && (best < 0 || d[i] > d[best])) best = i;
+      if (best < 0 || d[best] * 1000ull / span < 3) break;   // меньше 0,3 % — не печатать
+      used[best] = true;
+      len += snprintf(line + len, sizeof(line) - len, " %s %.1f", b[best].pcTaskName, d[best] * 100.0f / span);
+      if (len >= (int)sizeof(line) - 32) break;
+    }
+    Serial.println(line);
+  }
+  free(a);
+}
+#endif
+
 // Сверка записи проверочного узора (Z2): в файле должен идти счётчик без единого разрыва. Разрыв — потерянные,
 // повторённые или не туда записанные секторы; печатается, где он и на сколько отсчётов.
 static void recVerify(const char *path) {
@@ -946,8 +994,56 @@ static void command(String s) {
         Serial.printf("вивід кадру в русі: спосіб %u\n", lcdSlideMode);
         return;
       }
-      if (cfg.isTx && v == 2) {   // Y2 — сколько свободного времени на каждом ядре: секунду крутим пустой счётчик на обоих
+      if (v == 2) {   // Y2 — сколько свободного времени на каждом ядре: секунду крутим пустой счётчик на обоих (приёмник — с 2.93)
         cpuProbe();
+        return;
+      }
+      if (v == 14) {   // Y14 — время ядер по задачам за 2 с (с 2.94; только в сборке с HL_TASK_LOAD)
+#ifdef HL_TASK_LOAD
+        taskLoad();
+#else
+        Serial.println("Y14 — лише у збірці з HL_TASK_LOAD (див. taskLoad у hearlink.ino)");
+#endif
+        return;
+      }
+      if (!cfg.isTx && v == 16 && rxRsTab && rxRing && rxRingS) {   // Y16 — приёмник: свёртка подгонки темпа отдельно, 32 вызова подряд (кэш «тёплый»), лучшее из 50
+        uint32_t best = UINT32_MAX, first = 0;
+        float ym = 0, ysum = 0;
+        for (int r = 0; r < 50; r++) {
+          uint32_t t0 = esp_cpu_get_cycle_count();
+          for (int k = 0; k < 32; k++) {
+            float a = 0, b = 0;
+            rsDot(rxRsTab + (k & 63) * rxRsTaps, 0.37f, rxRsTaps, rxRing + 64 * k, rxRingS + 64 * k, &a, &b);
+            ym += a;
+            ysum += b;
+          }
+          uint32_t dt = esp_cpu_get_cycle_count() - t0;
+          if (!r) first = dt;
+          if (dt < best) best = dt;
+        }
+        Serial.printf("згортка підгонки темпу (%d відводів, два канали): найкраще %u тактів на виклик, перший прохід %u (%s)\n", rxRsTaps, (unsigned)(best / 32), (unsigned)(first / 32),
+                      ym + ysum == 12345.0f ? "!" : "ok");
+        return;
+      }
+      if (!cfg.isTx && v == 15) {   // Y15 — приёмник: ступени тракта, мкс на блок 1 мс с прошлого такого вызова (с 2.94)
+        rxStReady = false;
+        rxStAsk = true;
+        for (int t = 0; t < 50 && !rxStReady; t++) delay(1);
+        if (!rxStReady) {
+          rxStAsk = false;
+          Serial.println("тракт приймача зараз не рахує (звук вимкнено)");
+          return;
+        }
+        uint32_t n = rxStResN, *c = rxStRes;
+        float k = n ? 1.0f / n : 0;
+        Serial.printf("тракт приймача, мкс на блок 1 мс (блоків %u): до підгонки темпу %.0f, підгонка темпу %.0f, шумозаглушення %.0f, обробка й вихід %.0f, решта %.0f; усього %.0f, найдовший блок %u\n",
+                      (unsigned)n, c[0] * k, c[1] * k, c[2] * k, c[3] * k, c[4] * k, ((float)c[0] + c[1] + c[2] + c[3] + c[4]) * k, (unsigned)rxStResMax);
+        Serial.printf("  до підгонки темпу: запас %.0f, темп %.0f, налаштування %.0f, гучність %.0f\n", c[5] * k, c[6] * k, c[7] * k, c[8] * k);
+        return;
+      }
+      if (!cfg.isTx && (v == 12 || v == 13)) {   // приёмник: Y12 — кадр экрана уходит с приоритетом экрана (как до 2.93), Y13 — выше звука
+        oledFlushHigh = v == 13;
+        Serial.printf("передача кадру на екран: %s\n", oledFlushHigh ? "вище за звук (як з 2.93)" : "з пріоритетом екрана (як до 2.93)");
         return;
       }
       if (cfg.isTx && (v == 3 || v == 4)) {   // Y3 — выключить подгрузку порций кадра в кэш (для сравнения), Y4 — включить; затем замер ядер
@@ -1648,12 +1744,14 @@ static void reportRx() {
     return;
   }
   if (uiHaveOled) {   // экран приёмника: сколько кадров в секунду и сколько идёт один кадр (плавность спектра)
-    uint32_t n = oledFrames, sum = oledFrameUsSum, mx = oledFrameUsMax;
+    uint32_t n = oledFrames, sum = oledFrameUsSum, mx = oledFrameUsMax, ds = oledDrawUsSum, dm = oledDrawUsMax;
     oledFrames = 0;
     oledFrameUsSum = 0;
     oledFrameUsMax = 0;
-    Serial.printf("екран: %u кадрів за секунду, передача кадру сер. %.1f мс, найдовша %.1f мс, обмін %s кГц\n", (unsigned)n, n ? sum / 1000.0f / n : 0.0f, mx / 1000.0f,
-                  oledFast ? "800" : "400");
+    oledDrawUsSum = 0;
+    oledDrawUsMax = 0;
+    Serial.printf("екран: %u кадрів за секунду, малювання сер. %.1f мс, найдовше %.1f мс; передача кадру сер. %.1f мс, найдовша %.1f мс, обмін %s кГц\n", (unsigned)n,
+                  n ? ds / 1000.0f / n : 0.0f, dm / 1000.0f, n ? sum / 1000.0f / n : 0.0f, mx / 1000.0f, oledFast ? "800" : "400");
   }
   {
     static uint8_t ledShown = 255;
@@ -1827,7 +1925,12 @@ void setup() {
     rxSelfRestart = rxHealRestart;
     rxLinkBegin();
     xTaskCreatePinnedToCore(rxTask, "rx", 6144, NULL, 20, NULL, 1);
-    if (cfg.board == BOARD_DEVKIT) xTaskCreatePinnedToCore(uiTask, "ui", 8192, NULL, 2, NULL, 1);
+    // Экран — на первом ядре (с 2.96; до того — на втором, вместе со звуком). Замер 15.10 (Y14, Y15): тракт звука с
+    // 2.86 берёт 710 мкс из каждой миллисекунды, а с шумозаглушением в стерео — 830–850 (подгонка темпа 270, обработка
+    // и выход 270, шумозаглушение 140, подготовка 130): «rx» — 83 % второго ядра, экрану оставалось 14 % — 22–30 кадров
+    // в секунду вместо 60 (владелец 14.10: «при включенном шумодаве очень тормозит меню и анализатор на главной
+    // странице»). Первое ядро свободно на 66–70 % (радио — 29 %), а задача радио (приоритет 23) экран и так опережает.
+    if (cfg.board == BOARD_DEVKIT) xTaskCreatePinnedToCore(uiTask, "ui", 8192, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(ledTask, "led", 3072, NULL, 3, NULL, 0);   // светодиод — отдельно от экрана (см. rxled.h)
   }
   if (cfg.isTx) rOnOta = otaTxOnPacket;
