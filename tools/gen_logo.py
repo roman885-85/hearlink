@@ -184,8 +184,14 @@ def sized(layer_im, w, h):
     return rgb, al, small
 
 
+# --rx: эмблема для цветного экрана приёмника (320×170, с 3.03) — hearlink/logo_rx.h: целая эмблема и те же три слоя,
+# высотой RX_H. logo.h передатчика при этом не трогается.
+RX = '--rx' in sys.argv
+if RX:
+    SRC = next((a for a in sys.argv[1:] if not a.startswith('--')), os.path.expanduser('~/Documents/cloude_work/public/images/logo-emblem.png'))
+RX_H = 110
 im = Image.open(SRC).convert('RGBA')
-o = ['// Создаёт tools/gen_logo.py — вручную не править.', '#pragma once', '#include <Arduino.h>', '']
+o = ['// Создаёт tools/gen_logo.py — вручную не править.', '#pragma once', '#include <stdint.h>' if RX else '#include <Arduino.h>', '']
 
 
 def emit16(name, data):
@@ -202,6 +208,22 @@ def emit8(name, data):
     o.append('};')
 
 
+if RX:   # приёмник: целая эмблема и слои высотой RX_H, в свой файл
+    w, h, data = flat(im, RX_H)
+    o.append('#define RX_LOGO_W %d' % w)
+    o.append('#define RX_LOGO_H %d' % h)
+    emit16('RX_LOGO', data)
+    o.append('')
+    for name, lay in zip(('GLOBE', 'BOOK', 'CROSS'), layers(im)):
+        rgb, al, small = sized(lay, w, RX_H)
+        o.append('// слой заставки приёмника: цвет и прозрачность, размер как у RX_LOGO')
+        emit16('RX_%s' % name, rgb)
+        emit8('RX_%s_A' % name, al)
+        o.append('')
+    out = os.path.join(os.path.dirname(OUT), 'logo_rx.h')
+    open(out, 'w', encoding='utf-8').write('\n'.join(o))
+    print('ok', os.path.normpath(out), w, 'x', RX_H)
+    sys.exit(0)
 for name, h in (('LOGO_BIG', BIG_H), ('LOGO_SM', SM_H)):
     w, h, data = flat(im, h)
     o.append('#define %s_W %d' % (name, w))

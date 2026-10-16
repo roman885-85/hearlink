@@ -1,5 +1,90 @@
 # Changelog / Історія версій
 
+## 3.16 — 2026-10-16 (includes 3.03–3.15, which were not released / містить 3.03–3.15, які не випускались)
+- EN: **optional colour display for the receiver — IPS 1.9″ 170×320 (ST7789, MSP1901 module), landscape 320×170.**
+  Every screen, menu, icon, the splash, the effects and the transitions are redrawn for it, in colour; control is the
+  same knob. Wiring: SCL 42, SDA 41, DC 40, CS 39, RES 2, BLK 1, power 3V3 (diagram `docs/skhema-priemnik-s3-ips.png`).
+  **The display is selected by a jumper: pin 21 to GND — colour, pin open — OLED (the default)** (since 3.13; the
+  owner: “switch the displays with a separate free pin to ground… if it is not connected to ground, then OLED”, “there
+  is no point switching through the menu if only the colour display is used without an OLED”). Menu “Brightness”
+  (1…5: backlight or OLED contrast). Serial: `n14` (which display), `n15` (brightness), `n27` (module options).
+- UK: **кольоровий екран для приймача за бажанням — IPS 1,9″ 170×320 (ST7789, модуль MSP1901), горизонтально
+  320×170.** Усі екрани, меню, значки, заставка, ефекти й переходи намальовані для нього наново, у кольорі; керування —
+  та сама ручка. Під'єднання: SCL 42, SDA 41, DC 40, CS 39, RES 2, BLK 1, живлення 3V3 (схема
+  `docs/skhema-priemnik-s3-ips.png`). **Екран вибирає перемичка: вивід 21 на GND — кольоровий, вивід вільний — OLED (за
+  замовчуванням)** (з 3.13; власник: «дисплеи переключать отдельным свободным пином на землю… если не подключен к
+  земле, то oled», «через меню нет смысла переключать, если изначально использовать только цветной дисплей без
+  подключенного олед»). Меню «Яскравість» (1…5: підсвітка або контраст OLED). Порт: `n14`, `n15`, `n27`.
+- EN: **main screen by the owner's layout:** volume top left in large digits that “flip” to the new value while the
+  knob turns; the spectrum analyser bottom left — 10 bars, each with a peak mark that holds and falls (“like in the
+  radio”); on the right — link quality (bars and a word), STEREO/MONO and NOISE RED. tags and the receiver name.
+- UK: **головний екран за розкладкою власника:** ліворуч угорі гучність великими цифрами, що «перегортаються», поки
+  крутять ручку; ліворуч унизу аналізатор — 10 стовпчиків із позначками піків («як у радіо»); праворуч — зв'язок
+  (стовпчики й слово), плашки «СТЕРЕО»/«МОНО» і «ШУМОДАВ», ім'я приймача.
+- EN: **only what changes is drawn.** The frame lives in external memory, the screen gets only changed tiles, the
+  analyser redraws only the bars that moved: main screen 62–63 frames/s at 3.6–4.9 ms per frame (the first version
+  managed 6–35 frames/s). Checked in a desktop simulator (`tools/simrxc`) that the incrementally drawn screen matches a
+  full redraw pixel for pixel (1233 frames) and transitions match the reference (118 frames).
+- UK: **малюється лише те, що змінилось.** Кадр — у зовнішній пам'яті, на екран — лише змінені плитки, аналізатор
+  дорисовує лише риски, що зрушили: головний екран 62–63 кадри/с, кадр 3,6–4,9 мс (перша версія давала 6–35 кадрів/с).
+  У симуляторі (`tools/simrxc`) перевірено, що дорисований екран точка в точку збігається з намальованим цілком (1233
+  кадри), а переходи — з еталоном (118 кадрів).
+- EN: **fixed: the colour receiver restarted during a radio update** (the task watchdog: the display did not yield core
+  0 next to the flash writes). Six updates in a row in colour mode — no failures.
+- UK: **виправлено: приймач із кольоровим екраном перезапускався під час оновлення по радіо** (сторож задач: екран не
+  віддавав ядро 0 поряд із записом у флеш). Шість оновлень поспіль у кольоровому режимі — без збоїв.
+- EN: **fixed: “cannot leave mute on the first press”.** The knob button is sampled every 5 ms by a timer instead of
+  once per frame; the mute screen and the transitions are much lighter (the mute screen sent ~21,000 pixels per frame,
+  now ~5,000 and almost nothing after its intro).
+- UK: **виправлено: «вийти з режиму тиші не виходить з першого разу».** Кнопку ручки опитує таймер раз на 5 мс, а не
+  раз на кадр; екран «тиша» і переходи значно легші (тиша слала ~21 000 точок на кадр, тепер ~5 000, після вступу —
+  майже нічого).
+- EN: **clicks in the headphones when the colour picture changed.** Measured: neither the radio nor the digital audio
+  path is affected — it is pick-up from the display bus after the DAC. The bus now runs at 20 MHz with the weakest
+  outputs (was 40 MHz, normal drive): the owner — “practically gone, barely noticeable”. Wiring tips in the docs.
+- UK: **клацання в навушниках, коли змінювалась кольорова картинка.** Заміри: ні радіо, ні цифровий тракт звуку не
+  страждають — це наведення від шини екрана вже після ЦАП. Шина тепер 20 МГц з найслабшими виходами (було 40 МГц і
+  звичайні): власник — «практически пропали, почти не различимы». Поради щодо проводки — в описі.
+- EN: **lighter display work on both displays:** spectrum analysis with the esp-dsp library (320 µs instead of 1721 per
+  frame); on the OLED the status line is redrawn only when it changes (drawing 1.9–3.5 ms per frame instead of 4.4).
+- UK: **менше роботи екрана на обох екранах:** розбір спектра — бібліотекою esp-dsp (320 мкс замість 1721 на кадр); на
+  OLED рядок стану малюється, лише коли змінився (малювання 1,9–3,5 мс на кадр замість 4,4).
+- EN: **the knob does nothing without a signal or when the receiver is turned off from the transmitter** — no volume,
+  no mute, no menu (the owner: “receivers without a signal or turned off from the transmitter must not react to the
+  encoder at all, let alone switch on mute when pressed”). Before, a press on the “NO SIGNAL” screen switched mute on and
+  it stayed after the signal returned; a press while asleep woke the receiver. Without a signal the screen now shows
+  “NO SIGNAL” even when muted; an open menu closes.
+- UK: **без сигналу й коли приймач вимкнено з передавача, ручка не робить нічого** — ні гучності, ні «тиші», ні меню
+  (власник: «приемники при отсутствии сигнала или выключенные с передатчика не должны реагировать на енкодер никак, а тем
+  более при нажатии включать режим тишины»). Раніше натискання на екрані «НЕМАЄ СИГНАЛУ» вмикало тишу, і вона лишалася
+  після повернення сигналу; натискання уві сні будило приймач. Без сигналу екран тепер показує «НЕМАЄ СИГНАЛУ» й при
+  «тиші»; відкрите меню закривається.
+- EN: **animated menu icons** (the owner: “add animated icons to the menu, maximum multimedia beauty, but not at the
+  cost of performance”). Colour display: icons on coloured tiles (link — teal, display — blue, output/ears — lilac,
+  forget — red, restart — orange, sound — gold); the icon of the selected item moves (each in its own way; only its
+  tile is redrawn), the selection bar has a sheen and a soft shadow, pop-up messages a shadow; while editing, the value
+  rolls vertically (a larger value comes from below). OLED: the icon of the selected item moves too, and the value
+  rolls the same way.
+- UK: **анімовані значки меню** (власник: «добавь в меню анимированные значки, максимум красоты мультимедиа, но не в ущерб
+  производительности»). Кольоровий екран: значки на кольорових плитках (зв'язок — бірюзовий, екран — синій, вихід/вуха —
+  бузковий, «забути» — червоний, перезапуск — помаранчевий, звук — золотий); значок вибраного пункту рухається (кожен
+  по-своєму; перемальовується лише його плитка), плашка вибору — з відблиском і м'якою тінню, спливні повідомлення — з
+  тінню; під час зміни значення «перекочується» по вертикалі (більше — нове знизу). OLED: значок вибраного пункту теж
+  рухається, і значення так само перекочується.
+- EN: **the tiles of the colour screens are pure black** (the owner: “in the colour screen of the receiver the tile
+  background is fully black for better image contrast”): the panels of the main screen, the “arrows” view, “mute”,
+  “it's me”, the pairing code and pop-up messages; the menu selection bar keeps its colour (a black one would not
+  stand out on the dark background). The menu background is pure black too (the owner: “the menu background also fully
+  black”).
+- UK: **плитки кольорових екранів — суцільно чорні** (власник: «в цветном экране приемника фон плиток полностью черный
+  для улучшения контрастности изображения»): панелі головного екрана, вигляд «стрілки», «тиша», «це я», код
+  під'єднання, спливні повідомлення; плашка вибору в меню — свого кольору (чорна на темному тлі не виділялася б). Тло меню — теж суцільно чорне (власник:
+  «фон меню также полностью черный»).
+- EN: diagnostics `Y17`–`Y23` (see `docs/en/commands.md`); 17 receiver labels that had no English translation are
+  translated; the dictionary check now covers the colour screens.
+- UK: діагностика `Y17`–`Y23` (див. `docs/uk/commands.md`); 17 написів приймача, що не мали англійського перекладу,
+  перекладено; перевірка словника тепер охоплює й кольорові екрани.
+
 ## 3.02 — 2026-10-15 (includes 2.89–3.01, which were not released / містить 2.89–3.01, які не випускались)
 - EN: **the receiver's menu and spectrum analyzer are smooth again, also with noise suppression on.** The owner: “with
   the noise suppressor on the menu and the analyzer on the main page are very sluggish”. Measured: the receiver's sound

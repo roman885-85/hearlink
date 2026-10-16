@@ -110,8 +110,9 @@ static volatile uint8_t rxUiAsk;           // проверка с порта (n7
 static volatile uint32_t tZero, tBreaks;
 static volatile float tSumSq;
 static volatile uint32_t tCount;
-// окно для спектра
-static int16_t specBuf[SPEC_N];
+// окно для спектра. С 3.03 — из кучи, только у приёмника (rxTask): постоянный массив занимал бы внутреннюю память и у
+// передатчика, а у него она на пределе (правило «не меньше 40 КБ свободной»).
+static int16_t *specBuf;
 static volatile uint32_t specPos;
 static volatile bool rxSpecOn;                // спектр сейчас на экране приёмника — иначе звук для него не копим
 
@@ -804,12 +805,13 @@ static void rxTask(void *) {
   // его впервые включат)
   static NsDyn dyn;
   static NsSpec *ns;
-  static float nsWork[2 * NSX_N] __attribute__((aligned(16)));
+  static float *nsWork;   // с 3.03 — из кучи, вместе с NsSpec (см. specBuf)
   static float nsM[OUT_BLOCK], nsS[OUT_BLOCK];
   bool nsWas = false;
   float dynG = 1;
   uint8_t boostStep = 255;
   bool rsOk = rsBegin();   // памяти не нашлось — останется прежняя, кубическая
+  specBuf = (int16_t *)heap_caps_calloc(SPEC_N, sizeof(int16_t), MALLOC_CAP_INTERNAL);   // нет памяти — спектра не будет, звук будет
   if (!rxOutBegin()) {
     Serial.println("вихід звуку не запустився");
     vTaskDelete(NULL);
@@ -1098,7 +1100,8 @@ static void rxTask(void *) {
     float limRel = dyn.comp && boostStep ? LIM_REL_FAST : LIM_REL;   // без усиления всё как до 2.68
     bool nsOn = cfg.rxNs >= 1 && cfg.rxNs <= 3;
     if (nsOn && !ns) {
-      ns = (NsSpec *)heap_caps_malloc(sizeof(NsSpec), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      nsWork = (float *)heap_caps_aligned_alloc(16, 2 * NSX_N * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      ns = nsWork ? (NsSpec *)heap_caps_malloc(sizeof(NsSpec), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : nullptr;
       if (ns) ns->reset();
     }
     if (nsOn && ns && !nsWas) ns->reset();   // включили: оценка шума и очередь — с чистого листа
@@ -1260,7 +1263,7 @@ static void rxTask(void *) {
       }
       // для спектра, индикатора и проверки тона — звук до громкости
       int yi = (int)y;
-      if (rxSpecOn) {
+      if (rxSpecOn && specBuf) {
         specBuf[specPos & (SPEC_N - 1)] = yi > 32767 ? 32767 : yi < -32768 ? -32768 : yi;
         specPos = specPos + 1;
       }

@@ -68,6 +68,13 @@ class Gfx {
     void line(float x0, float y0, float x1, float y1, float wd, uint16_t c);
     void arc(float cx, float cy, float r, float wd, uint16_t c, float a0 = 0, float a1 = 360);   /* 0 — вгору, за годинниковою */
     void poly(const float* xy, uint8_t n, uint16_t c);
+    /*  Те саме, що arc() і circle(), але рахуються лише точки біля краю (по рядку — два короткі відрізки), а не весь
+        квадрат навколо: велике кільце (радіус 50–120) у arc() — десятки тисяч коренів на кадр. Для екрана приймача
+        (rxcolor.h, з 3.03); передавач їх не використовує.  */
+    void ringFast(float cx, float cy, float r, float wd, uint16_t c, float a0 = 0, float a1 = 360);
+    void discFast(float cx, float cy, float r, uint16_t c);
+    /*  Довга лінія: по рядку (крута) чи по стовпцю (полога) рахуються лише точки біля неї, а не весь прямокутник.  */
+    void lineFast(float x0, float y0, float x1, float y1, float wd, uint16_t c);
     /*  Хвиля світла: коло (cx,cy,rad) усередині заокругленого прямокутника area, прозорість a.  */
     void lighten(const Rect& area, uint8_t r, float cx, float cy, float rad, uint8_t a, uint16_t c = 0xFFFF);
     /*  картинка RGB565 (звичайний порядок байтів) з заокругленими кутами  */

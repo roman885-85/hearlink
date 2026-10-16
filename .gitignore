@@ -12,3 +12,5 @@ assets/
 # личное: рабочий журнал, копии разметки чужих плат
 ЖУРНАЛ.md
 backup/
+tools/simrxc/out/
+tools/simrxc/build/

@@ -69,6 +69,19 @@
 | «забракло пам'яті» (out of memory) during the update | a board without PSRAM | an N16R8 board is required |
 | a hang and a restart on pressing the knob | versions before 2.33: a button interrupt left over after sleep | update to 2.34 |
 
+### Colour display (since 3.03)
+
+| What you see | Cause | What to do |
+|---|---|---|
+| the colour display is dark, the receiver uses the OLED | since 3.13 a jumper selects the display: pin 21 is not connected to GND | fit the 21–GND jumper and restart the receiver; `n14` tells which display is in use |
+| the OLED shows «Кольоровий екран — OLED: зніміть перемичку 21-GND» (Colour screen — OLED: remove the jumper 21-GND) | the jumper is fitted, the colour display is in use; the OLED only tells how to get it back | nothing: the OLED goes dark in 10 s. To return to the OLED, remove the jumper and restart |
+| the jumper is fitted, but the display is dark | no 3V3 power, BLK or CS not connected | check the wiring against the diagram; `n14` saying "jumper fitted, but the colour display did not start" means not enough memory or the bus did not start |
+| red and blue are swapped | the module uses another colour order | `n27=2` (BGR), restart |
+| the picture is upside down | the module is rotated | `n27=1` (add 1 to the bits already set) |
+| "garbage" or stripes on the display | long wires and weak bus outputs | shorten the wires; try strong outputs `n27=16` |
+| faint clicks in the headphones when the picture changes | pick-up from the display bus (not radio: sound and packets are not affected) | since 3.11 the bus runs at 20 MHz with weak outputs — the clicks are barely audible. Quieter still — 33–68 Ω resistors in SCL and SDA, wires away from the DAC wires, a separate module ground. To listen: `Y23` (8 s non-stop) |
+| a restart in the middle of an over-the-air update (before 3.06) | task watchdog: the display did not yield the core | update to 3.06 or later (once — switching the receiver to the OLED) |
+
 ## How to collect information for the developer
 
 1. `?` to the port of the transmitter and of the receiver — version, settings, start reason.

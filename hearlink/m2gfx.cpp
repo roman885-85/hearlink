@@ -1,5 +1,10 @@
 #include "m2gfx.h"
 #include "m2simd.h"
+/*  Збирається з O2 (з 3.05; уся прошивка — -Os): малювання смугами в приймача (rxstrip.h) викликає ці функції для
+    кожної смуги, і в -Os суми й тимчасові частіше лежать у стеку, ніж у регістрах (див. rsdot.h).  */
+#ifdef ARDUINO
+#pragma GCC optimize("O2")
+#endif
 /*  Узято з «ПОТУЖНОГО РАДІО» (src/m2) без змін, крім цього рядка: тут перекладу написів немає.  */
 namespace m2 { static inline const char* tr(const char* s){ return s; } }
 
@@ -291,6 +296,120 @@ void Gfx::arc(float cx, float cy, float r, float wd, uint16_t c, float a0, float
         cov = hw - (d0 < d1 ? d0 : d1) + 0.5f;
       }
       _cover(px, py, cov, c);
+    }
+  }
+}
+
+/*  Кільце по рядках: у рядку dy кільце займає не більше двох відрізків — між колами радіусів r ± (hw + 1).
+    Кут (для дуги) рахується лише для цих точок.  */
+void Gfx::ringFast(float cx, float cy, float r, float wd, uint16_t c, float a0, float a1){
+  cx += _ox; cy += _oy;
+  if(a1 < a0) a1 += 360;
+  const float hw = wd / 2, span = a1 - a0, d2r = 0.0174533f;
+  const bool full = span >= 359.9f;
+  const float ro = r + hw + 1, ri = r - hw - 1 > 0 ? r - hw - 1 : 0;
+  const float e0x = cx + r * sinf(a0 * d2r), e0y = cy - r * cosf(a0 * d2r);
+  const float e1x = cx + r * sinf(a1 * d2r), e1y = cy - r * cosf(a1 * d2r);
+  int16_t by0 = (int16_t)floorf(cy - ro), by1 = (int16_t)ceilf(cy + ro);
+  if(by0 < _cy0) by0 = _cy0; if(by1 >= _cy1) by1 = _cy1 - 1;
+  for(int16_t py = by0; py <= by1; py++){
+    const float dy = py + 0.5f - cy, dy2 = dy * dy;
+    if(dy2 > ro * ro) continue;
+    const float xo = sqrtf(ro * ro - dy2), xi = dy2 < ri * ri ? sqrtf(ri * ri - dy2) : 0;
+    const int16_t lEnd = (int16_t)ceilf(cx - xi);
+    for(int side = 0; side < 2; side++){
+      int16_t x0, x1;
+      if(side == 0){ x0 = (int16_t)floorf(cx - xo); x1 = lEnd; }
+      else         { x0 = (int16_t)floorf(cx + xi); x1 = (int16_t)ceilf(cx + xo); if(x0 <= lEnd) x0 = lEnd + 1; }   /* відрізки зійшлися — точку не двічі */
+      if(x0 < _cx0) x0 = _cx0; if(x1 >= _cx1) x1 = _cx1 - 1;
+      for(int16_t px = x0; px <= x1; px++){
+        const float dx = px + 0.5f - cx, dist = sqrtf(dx * dx + dy2);
+        if(fabsf(dist - r) > hw + 1) continue;
+        bool in = full;
+        if(!in){
+          float ang = atan2f(dx, -dy) / d2r;
+          in = fmodf(ang - a0 + 720.0f, 360.0f) <= span;
+        }
+        float cov;
+        if(in) cov = hw - fabsf(dist - r) + 0.5f;
+        else{
+          float ax = px + 0.5f - e0x, ay = py + 0.5f - e0y, bx = px + 0.5f - e1x, by = py + 0.5f - e1y;
+          float d0 = sqrtf(ax * ax + ay * ay), d1 = sqrtf(bx * bx + by * by);
+          cov = hw - (d0 < d1 ? d0 : d1) + 0.5f;
+        }
+        _cover(px, py, cov, c);
+      }
+    }
+  }
+}
+
+/*  Довга лінія: та сама відстань до відрізка, що в line(), але лише для точок у смузі навколо нього — по рядках
+    для крутої, по стовпцях для пологої.  */
+void Gfx::lineFast(float x0, float y0, float x1, float y1, float wd, uint16_t c){
+  const float vx = x1 - x0, vy = y1 - y0, l2 = vx * vx + vy * vy;
+  if(l2 < 1 || (fabsf(vx) + wd + 3) * (fabsf(vy) + wd + 3) < 600){ line(x0, y0, x1, y1, wd, c); return; }
+  x0 += _ox; x1 += _ox; y0 += _oy; y1 += _oy;
+  const float hw = wd / 2, L = sqrtf(l2);
+  auto cov = [&](int16_t px, int16_t py){
+    const float qx = px + 0.5f - x0, qy = py + 0.5f - y0;
+    float k = (qx * vx + qy * vy) / l2;
+    if(k < 0) k = 0; else if(k > 1) k = 1;
+    const float dx = qx - k * vx, dy = qy - k * vy, d2 = dx * dx + dy * dy;
+    if(d2 > (hw + 1) * (hw + 1)) return;
+    _cover(px, py, hw - sqrtf(d2) + 0.5f, c);
+  };
+  if(fabsf(vy) >= fabsf(vx)){
+    const float ex = (hw + 1.5f) * L / fabsf(vy);
+    int16_t by0 = (int16_t)floorf((y0 < y1 ? y0 : y1) - hw - 1), by1 = (int16_t)ceilf((y0 > y1 ? y0 : y1) + hw + 1);
+    if(by0 < _cy0) by0 = _cy0; if(by1 >= _cy1) by1 = _cy1 - 1;
+    for(int16_t py = by0; py <= by1; py++){
+      float k = (py + 0.5f - y0) / vy;
+      if(k < 0) k = 0; else if(k > 1) k = 1;
+      const float xc = x0 + vx * k;
+      int16_t xa = (int16_t)floorf(xc - ex - hw), xb = (int16_t)ceilf(xc + ex + hw);
+      if(xa < _cx0) xa = _cx0; if(xb >= _cx1) xb = _cx1 - 1;
+      for(int16_t px = xa; px <= xb; px++) cov(px, py);
+    }
+  } else {
+    const float ey = (hw + 1.5f) * L / fabsf(vx);
+    int16_t bx0 = (int16_t)floorf((x0 < x1 ? x0 : x1) - hw - 1), bx1 = (int16_t)ceilf((x0 > x1 ? x0 : x1) + hw + 1);
+    if(bx0 < _cx0) bx0 = _cx0; if(bx1 >= _cx1) bx1 = _cx1 - 1;
+    for(int16_t px = bx0; px <= bx1; px++){
+      float k = (px + 0.5f - x0) / vx;
+      if(k < 0) k = 0; else if(k > 1) k = 1;
+      const float yc = y0 + vy * k;
+      int16_t ya = (int16_t)floorf(yc - ey - hw), yb = (int16_t)ceilf(yc + ey + hw);
+      if(ya < _cy0) ya = _cy0; if(yb >= _cy1) yb = _cy1 - 1;
+      for(int16_t py = ya; py <= yb; py++) cov(px, py);
+    }
+  }
+}
+
+/*  Круг по рядках: середина рядка — одним заповненням, край — по точках зі згладжуванням.  */
+void Gfx::discFast(float cx, float cy, float r, uint16_t c){
+  if(r <= 0) return;
+  cx += _ox; cy += _oy;
+  const float ro = r + 0.75f, ri = r - 0.75f > 0 ? r - 0.75f : 0;
+  int16_t by0 = (int16_t)floorf(cy - ro), by1 = (int16_t)ceilf(cy + ro);
+  if(by0 < _cy0) by0 = _cy0; if(by1 >= _cy1) by1 = _cy1 - 1;
+  for(int16_t py = by0; py <= by1; py++){
+    const float dy = py + 0.5f - cy, dy2 = dy * dy;
+    if(dy2 >= ro * ro) continue;
+    const float xo = sqrtf(ro * ro - dy2), xi = dy2 < ri * ri ? sqrtf(ri * ri - dy2) : 0;
+    /*  суцільна середина: точки, у яких увесь піксель усередині кола ri  */
+    int16_t s0 = (int16_t)ceilf(cx - xi + 0.5f), s1 = (int16_t)floorf(cx + xi - 0.5f);
+    int16_t a0 = (int16_t)floorf(cx - xo), a1 = (int16_t)ceilf(cx + xo);
+    if(s1 >= s0){
+      int16_t f0 = s0 < _cx0 ? _cx0 : s0, f1 = s1 >= _cx1 ? _cx1 - 1 : s1;
+      if(f1 >= f0) sFill(_px + (int32_t)(py - _ty) * _tw + (f0 - _tx), (uint32_t)(f1 - f0 + 1), c);
+    } else { s0 = (int16_t)(cx + 0.5f); s1 = s0 - 1; }
+    for(int side = 0; side < 2; side++){
+      int16_t x0 = side ? s1 + 1 : a0, x1 = side ? a1 : s0 - 1;
+      if(x0 < _cx0) x0 = _cx0; if(x1 >= _cx1) x1 = _cx1 - 1;
+      for(int16_t px = x0; px <= x1; px++){
+        const float dx = px + 0.5f - cx, d = sqrtf(dx * dx + dy2);
+        _cover(px, py, r - d + 0.5f, c);
+      }
     }
   }
 }

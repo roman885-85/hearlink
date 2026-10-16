@@ -212,8 +212,7 @@ After 10 s without a signal the receivers fall asleep by themselves.
 | press | mute / sound | enter an item / confirm |
 | long press (0.7 s) | menu | back |
 | any movement while the screen is off | turn the screen on | — |
-| press while asleep | wake up and search for the transmitter for 10 s | — |
-| any press when turned off from the transmitter | the note "TURNED OFF by transmitter — on: transmitter only"; the receiver stays off | — |
+| anything without a signal (searching, NO SIGNAL, asleep) or when turned off from the transmitter | nothing: the knob does not act at all — no volume, no mute, no menu (since 3.14; the receiver wakes by itself when it hears the transmitter) | — |
 
 ### What it shows
 
@@ -235,6 +234,27 @@ At the top of the main screen — the signal level (four bars), the name, the vo
 top: «Сигнал відновлено» (Signal is back), «Слабкий сигнал» (Weak signal), «Гучно на вході!» (Input too loud!),
 «Тиша в ефірі» (Silence on air), «Межа гучності» (Volume limit), «Чіткість: середня» (Clarity: medium) (a setting
 was changed from the transmitter) and so on.
+
+### Colour display (since 3.03)
+
+Instead of the OLED a receiver can have a colour IPS 1.9″ display (how to connect and select it — see
+[Hardware](hardware.md#colour-ips-19-display-on-the-receiver-firmware-303-and-later)). The screens are the same as
+on the OLED, only larger and in colour.
+
+![Colour receiver display](../img/rx-color-screens.png)
+
+Main screen ("spectrum" view; layout by the owner since 3.08):
+
+- **top left — the volume** in large digits with twenty steps; while the knob is turned, the number "flips" to the
+  new value and the card frame lights up;
+- **bottom left — the spectrum analyser:** 10 bars with a white peak mark above each, held for 0.45 s and then
+  falling smoothly; when the transmitter mutes the air — «ТИША В ЕФІРІ» (silence on air);
+- **right — «Зв'язок»** (link: bars and a word — none / weak / fair / good / excellent), «СТЕРЕО» (stereo) or «МОНО»
+  (mono) and «ШУМОДАВ» (noise reduction, when it is on) tags, and below the line the receiver name in one or two lines.
+
+The other views ("needles", "volume"), the menu, About, Link, Mute, searching, NO SIGNAL, updating and sleep are the
+same as on the OLED, in colour. Only what changed is sent to the display, so everything moves smoothly (60 frames per
+second).
 
 ### Menu
 | Item | Values |
@@ -261,6 +281,7 @@ was changed from the transmitter) and so on.
 | «Вихід звуку» (Audio output) | PDM / PCM5102 / CS4344 (restart; CS4344 since 2.85) |
 | «Виводи» (Pins) | 2 channels / «протифаза» (antiphase) |
 | «Екран» (Screen) | turn off (any knob movement turns it on) |
+| «Яскравість» (Brightness) | 1…5 — colour display backlight or OLED contrast (since 3.03) |
 | «Забути набір» (Forget kit) | erase the key — the receiver will ask for access again |
 | «Перезапуск» (Restart) | “ТАК” (YES) and a press — restarts the receiver (since 2.84; when the sound is gone and the reset button cannot be reached) |
 | «Про пристрій» (About) | version, channel, kit, number, buffer, signal |

@@ -506,10 +506,9 @@ static bool rxSleepCycle() {
   esp_now_deinit();
   esp_wifi_stop();
   esp_sleep_enable_timer_wakeup(500000);
-  if (cfg.board == BOARD_DEVKIT) {   // ручка и кнопки тоже будят (выводы подтянуты к питанию; нажатие — «земля»)
-    gpio_wakeup_enable((gpio_num_t)PIN_ENC_SW, GPIO_INTR_LOW_LEVEL);   // остальные кнопки модуля не используются (владелец 07.10)
-    esp_sleep_enable_gpio_wakeup();
-  }
+  // С 3.14 ручка во сне не будит (владелец 15.10: без сигнала и выключенный с передатчика приёмник на ручку не
+  // реагирует никак): приёмник и так сам просыпается, когда слышит свой передатчик. До 3.14 нажатие будило процессор
+  // (вывод кнопки — «будильник» GPIO), и приёмник 10 с искал передатчик с экраном.
   esp_light_sleep_start();
   bool byKey = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO;
   if (cfg.board == BOARD_DEVKIT) rxKeyPinsClean();   // «будильник» нужен только во сне (см. rxKeyPinsClean)

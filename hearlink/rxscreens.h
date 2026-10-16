@@ -327,13 +327,14 @@ static void search(u8g2_t *g, uint32_t t, const ScanInfo &s) {
 // Строка, которая не помещается между x0 и x1, плавно ездит туда-обратно (полторы секунды стоит, едет 25 точек в
 // секунду, полторы стоит, едет назад); помещается — стоит на месте с x0. Имя приёмника с версии 2.19 бывает до 32 букв,
 // а на экране их помещается 14–21. clipY0/clipY1 — границы по высоте, за которые рисовать нельзя.
+static int tickerOff(int w, int span, uint32_t t) {   // сдвиг бегущей строки ширины w в окне span
+  if (w <= span) return 0;
+  int over = w - span + 2;
+  uint32_t run = (uint32_t)over * 40, cyc = 3000 + 2 * run, k = t % cyc;
+  return k < 1500 ? 0 : k < 1500 + run ? (int)((k - 1500) / 40) : k < 3000 + run ? over : over - (int)((k - 3000 - run) / 40);
+}
 static void ticker(u8g2_t *g, int x0, int x1, int y, const char *s, uint32_t t, int clipY0 = -1, int clipY1 = -1) {
-  int w = u8g2_GetUTF8Width(g, s), span = x1 - x0, off = 0;
-  if (w > span) {
-    int over = w - span + 2;
-    uint32_t run = (uint32_t)over * 40, cyc = 3000 + 2 * run, k = t % cyc;
-    off = k < 1500 ? 0 : k < 1500 + run ? (int)((k - 1500) / 40) : k < 3000 + run ? over : over - (int)((k - 3000 - run) / 40);
-  }
+  int w = u8g2_GetUTF8Width(g, s), off = tickerOff(w, x1 - x0, t);
   u8g2_SetClipWindow(g, x0, clipY0 < 0 ? y - 12 : clipY0, x1, clipY1 < 0 ? y + 4 : clipY1);
   u8g2_DrawUTF8(g, x0 - off, y, s);
   u8g2_SetMaxClipWindow(g);
@@ -614,12 +615,39 @@ static void identify(u8g2_t *g, uint32_t t, const char *name) {
 // ---- Верхняя строка главного экрана: уровень сигнала (четыре столбика, растут и опадают плавно — bars дробное
 // 0…4), имя приёмника (длинное — бегущей строкой), громкость. Под строкой черта: когда в эфире звук, по ней бежит
 // яркая засечка, в тишине черта пунктирная.
-static void statusBar(u8g2_t *g, uint32_t t, float bars, const char *name, int volPct, bool sound) {
+static int statusBarH(float bars, int i) {   // высота столбика уровня связи i, как он рисуется
+  int hmax = 3 + i * 2;
+  float f = bars - i;
+  f = f < 0 ? 0 : f > 1 ? 1 : f;
+  return (int)lroundf(hmax * f);
+}
+// Черта под строкой: в эфире звук — по ней бежит засечка, тишина — редкие точки.
+static void statusLine(u8g2_t *g, uint32_t t, bool sound) {
+  if (sound) {
+    for (int x = 0; x < 128; x += 2) u8g2_DrawPixel(g, x, 12);
+    int bx = (int)(fract(t / 2200.0f) * 148) - 20;
+    for (int x = bx; x < bx + 18; x++)
+      if (x >= 0 && x < 128) u8g2_DrawPixel(g, x, 12);
+  } else
+    for (int x = 1; x < 128; x += 4) u8g2_DrawPixel(g, x, 12);
+}
+// Ключ строки состояния без черты (с 3.12): всё, от чего зависит её рисунок, — столбики, как они рисуются, громкость, имя
+// и сдвиг бегущей строки. Пока ключ тот же, ui_rx.h берёт строку из запаса и рисует только черту и то, что ниже.
+static uint32_t statusKey(u8g2_t *g, uint32_t t, float bars, const char *name, int volPct) {
+  uint32_t h = 2166136261u;
+  for (int i = 0; i < 4; i++) h = (h ^ (uint32_t)statusBarH(bars, i)) * 16777619u;
+  h = (h ^ (uint32_t)volPct) * 16777619u;
+  for (const char *c = name; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+  u8g2_SetFont(g, u8g2_font_6x13_t_cyrillic);
+  char b[8];
+  snprintf(b, sizeof(b), "%d", volPct);
+  int vw = volPct < 0 ? -4 : u8g2_GetStrWidth(g, b);
+  h = (h ^ (uint32_t)tickerOff(u8g2_GetUTF8Width(g, name), 124 - vw - 20, t)) * 16777619u;
+  return h ? h : 1;
+}
+static void statusBar(u8g2_t *g, uint32_t t, float bars, const char *name, int volPct, bool sound, bool line = true) {
   for (int i = 0; i < 4; i++) {
-    int hmax = 3 + i * 2;
-    float f = bars - i;
-    f = f < 0 ? 0 : f > 1 ? 1 : f;
-    int h = (int)lroundf(hmax * f);
+    int h = statusBarH(bars, i);
     if (h > 0) u8g2_DrawBox(g, i * 4, 10 - h, 3, h);
     else u8g2_DrawHLine(g, i * 4, 9, 3);
   }
@@ -629,13 +657,7 @@ static void statusBar(u8g2_t *g, uint32_t t, float bars, const char *name, int v
   int vw = volPct < 0 ? -4 : u8g2_GetStrWidth(g, b);   // volPct < 0 — громкость на экране и так крупно, в строке её нет
   ticker(g, 20, 124 - vw, 10, name, t, 0, 12);
   if (volPct >= 0) u8g2_DrawStr(g, 128 - vw, 10, b);
-  if (sound) {
-    for (int x = 0; x < 128; x += 2) u8g2_DrawPixel(g, x, 12);
-    int bx = (int)(fract(t / 2200.0f) * 148) - 20;
-    for (int x = bx; x < bx + 18; x++)
-      if (x >= 0 && x < 128) u8g2_DrawPixel(g, x, 12);
-  } else
-    for (int x = 1; x < 128; x += 4) u8g2_DrawPixel(g, x, 12);
+  if (line) statusLine(g, t, sound);
 }
 
 // ---- Спектр на главном экране: 14 рисок по 7 точек и над каждой — отметка пика, которая держится и плавно опускается
@@ -872,144 +894,223 @@ struct MenuRow {
   const char *value;
   uint8_t icon;
 };
-static void menuIcon(u8g2_t *g, int id, int x, int y) {   // значок 9×9, (x, y) — левый верхний угол
+// Значок 9×9, (x, y) — левый верхний угол. С 3.14 у выбранного пункта он движется: ph — фаза 0…1 по кругу (меньше нуля —
+// стоит), по точке — 8 шагов на круг (владелец 15.10: «анимированные значки… то что можно сделать для олед — тоже»).
+static void menuIcon(u8g2_t *g, int id, int x, int y, float ph = -1) {
+  const bool mv = ph >= 0;
+  const int f = mv ? (int)(ph * 8) & 7 : 0;          // шаг 0…7
+  const int b = mv ? (f < 4 ? f : 8 - f) : 0;        // «туда-обратно» 0…4…1
+  const int s1 = mv ? (f < 4 ? 0 : 1) : 0;           // полкруга — 0, полкруга — 1
   switch (id) {
-    case 0:   // набор: два звена
-      u8g2_DrawRFrame(g, x, y + 2, 6, 5, 2);
-      u8g2_DrawRFrame(g, x + 3, y + 2, 6, 5, 2);
+    case 0:   // набор: два звена — расходятся и сходятся
+      u8g2_DrawRFrame(g, x - s1, y + 2, 6, 5, 2);
+      u8g2_DrawRFrame(g, x + 3 + s1, y + 2, 6, 5, 2);
       break;
-    case 1:   // канал: волна
-      for (int i = 0; i < 9; i++) u8g2_DrawPixel(g, x + i, y + 4 + (int)lroundf(3 * sinf(i * 0.8f)));
+    case 1:   // канал: волна — бежит
+      for (int i = 0; i < 9; i++) u8g2_DrawPixel(g, x + i, y + 4 + (int)lroundf(3 * sinf(i * 0.8f - f * 0.785f)));
       break;
-    case 2:   // запас: стакан с уровнем
+    case 2:   // запас: стакан, уровень ходит
       u8g2_DrawFrame(g, x + 1, y, 7, 9);
-      u8g2_DrawBox(g, x + 3, y + 4, 3, 3);
+      u8g2_DrawBox(g, x + 3, y + 7 - (mv ? 1 + b : 3), 3, mv ? 1 + b : 3);
       break;
-    case 3:   // выход звука: наушники
+    case 3:   // выход звука: наушники — чашки покачиваются по очереди
       ringArc(g, x + 4, y + 5, 4, 0, 180, 1, 1);
-      u8g2_DrawBox(g, x, y + 5, 2, 4);
-      u8g2_DrawBox(g, x + 7, y + 5, 2, 4);
+      u8g2_DrawBox(g, x, y + 5 - s1, 2, 4);
+      u8g2_DrawBox(g, x + 7, y + 4 + s1, 2, 4);
       break;
-    case 4:   // выводы: две точки и стрелки
+    case 4:   // выводы: две точки, по черте между ними бежит третья
       u8g2_DrawDisc(g, x + 1, y + 4, 1, U8G2_DRAW_ALL);
       u8g2_DrawDisc(g, x + 7, y + 4, 1, U8G2_DRAW_ALL);
+      if (mv) u8g2_DrawPixel(g, x + 3 + (f % 3), y + 3);
       u8g2_DrawHLine(g, x + 3, y + 4, 3);
       break;
-    case 5:   // экран
+    case 5:   // экран: по стеклу бежит блик
       u8g2_DrawRFrame(g, x, y + 1, 9, 6, 1);
       u8g2_DrawHLine(g, x + 2, y + 8, 5);
+      if (mv && f < 6) u8g2_DrawPixel(g, x + 2 + f, y + 3 + (f & 1));
       break;
-    case 6:   // забыть набор: крест
-      u8g2_DrawLine(g, x + 1, y + 1, x + 7, y + 7);
-      u8g2_DrawLine(g, x + 7, y + 1, x + 1, y + 7);
+    case 6:   // забыть набор: крест — то крест, то «плюс»
+      if (mv && s1) {
+        u8g2_DrawVLine(g, x + 4, y + 1, 7);
+        u8g2_DrawHLine(g, x + 1, y + 4, 7);
+      } else {
+        u8g2_DrawLine(g, x + 1, y + 1, x + 7, y + 7);
+        u8g2_DrawLine(g, x + 7, y + 1, x + 1, y + 7);
+      }
       break;
-    case 7:   // о приборе: «i» в круге
+    case 7:   // о приборе: «i» в круге — точка подпрыгивает
       u8g2_DrawCircle(g, x + 4, y + 4, 4, U8G2_DRAW_ALL);
-      u8g2_DrawPixel(g, x + 4, y + 2);
+      u8g2_DrawPixel(g, x + 4, y + 2 - (b >= 2 ? 1 : 0));
       u8g2_DrawVLine(g, x + 4, y + 4, 3);
       break;
-    case 9:   // вид главного экрана: три столбика
-      u8g2_DrawBox(g, x, y + 5, 2, 4);
-      u8g2_DrawBox(g, x + 3, y + 1, 2, 8);
-      u8g2_DrawBox(g, x + 6, y + 3, 2, 6);
+    case 9: {   // вид главного экрана: три столбика — пляшут
+      static const uint8_t HT[8][3] = { { 4, 8, 6 }, { 6, 7, 4 }, { 8, 5, 3 }, { 7, 3, 5 }, { 5, 4, 8 }, { 3, 6, 7 }, { 4, 8, 5 }, { 5, 7, 6 } };
+      const uint8_t *h = HT[mv ? f : 0];
+      u8g2_DrawBox(g, x, y + 9 - h[0], 2, h[0]);
+      u8g2_DrawBox(g, x + 3, y + 9 - h[1], 2, h[1]);
+      u8g2_DrawBox(g, x + 6, y + 9 - h[2], 2, h[2]);
       break;
-    case 10:  // светодиод: огонёк с лучами
-      u8g2_DrawDisc(g, x + 4, y + 4, 2, U8G2_DRAW_ALL);
-      u8g2_DrawPixel(g, x + 4, y);
-      u8g2_DrawPixel(g, x + 4, y + 8);
-      u8g2_DrawPixel(g, x, y + 4);
-      u8g2_DrawPixel(g, x + 8, y + 4);
-      u8g2_DrawPixel(g, x + 1, y + 1);
-      u8g2_DrawPixel(g, x + 7, y + 1);
-      u8g2_DrawPixel(g, x + 1, y + 7);
-      u8g2_DrawPixel(g, x + 7, y + 7);
+    }
+    case 10:  // светодиод: огонёк с лучами — лучи мигают по очереди
+      u8g2_DrawDisc(g, x + 4, y + 4, mv && b >= 3 ? 1 : 2, U8G2_DRAW_ALL);
+      if (!mv || s1 == 0) {
+        u8g2_DrawPixel(g, x + 4, y);
+        u8g2_DrawPixel(g, x + 4, y + 8);
+        u8g2_DrawPixel(g, x, y + 4);
+        u8g2_DrawPixel(g, x + 8, y + 4);
+      }
+      if (!mv || s1 == 1) {
+        u8g2_DrawPixel(g, x + 1, y + 1);
+        u8g2_DrawPixel(g, x + 7, y + 1);
+        u8g2_DrawPixel(g, x + 1, y + 7);
+        u8g2_DrawPixel(g, x + 7, y + 7);
+      }
       break;
-    case 11:  // язык: глобус
+    case 11: {  // язык: глобус — меридиан едет по кругу
+      static const int8_t MX[8] = { 0, 1, 2, 1, 0, -1, -2, -1 };
       u8g2_DrawCircle(g, x + 4, y + 4, 4, U8G2_DRAW_ALL);
-      u8g2_DrawVLine(g, x + 4, y, 9);
+      u8g2_DrawVLine(g, x + 4 + (mv ? MX[f] : 0), y + 1, 7);
       u8g2_DrawHLine(g, x, y + 4, 9);
       break;
-    case 12:  // чёткость речи: «звёздочка» — ясный звук
-      u8g2_DrawVLine(g, x + 4, y, 9);
-      u8g2_DrawHLine(g, x, y + 4, 9);
+    }
+    case 12:  // чёткость речи: «звёздочка» — вспыхивает
+      u8g2_DrawVLine(g, x + 4, y + (mv && b >= 2 ? 1 : 0), mv && b >= 2 ? 7 : 9);
+      u8g2_DrawHLine(g, x + (mv && b >= 2 ? 1 : 0), y + 4, mv && b >= 2 ? 7 : 9);
       u8g2_DrawBox(g, x + 3, y + 3, 3, 3);
+      if (mv && b >= 3) {
+        u8g2_DrawPixel(g, x + 1, y + 1);
+        u8g2_DrawPixel(g, x + 7, y + 1);
+        u8g2_DrawPixel(g, x + 1, y + 7);
+        u8g2_DrawPixel(g, x + 7, y + 7);
+      }
       break;
-    case 13:  // баланс: коромысло на опоре
-      u8g2_DrawHLine(g, x, y + 3, 9);
+    case 13: {  // баланс: коромысло качается
+      int t1 = mv ? (f < 2 || f > 5 ? 0 : (f < 4 ? 1 : -1)) : 0;
+      u8g2_DrawLine(g, x, y + 3 + t1, x + 8, y + 3 - t1);
       u8g2_DrawTriangle(g, x + 4, y + 4, x + 1, y + 9, x + 8, y + 9);
-      u8g2_DrawBox(g, x, y + 1, 2, 2);
-      u8g2_DrawBox(g, x + 7, y + 1, 2, 2);
+      u8g2_DrawBox(g, x, y + 1 + t1, 2, 2);
+      u8g2_DrawBox(g, x + 7, y + 1 - t1, 2, 2);
       break;
-    case 14:  // предел громкости: столбики под «потолком»
+    }
+    case 14:  // предел громкости: столбики тянутся к «потолку»
       u8g2_DrawHLine(g, x, y + 1, 9);
-      u8g2_DrawBox(g, x, y + 6, 2, 3);
-      u8g2_DrawBox(g, x + 3, y + 4, 2, 5);
-      u8g2_DrawBox(g, x + 6, y + 3, 2, 6);
+      u8g2_DrawBox(g, x, y + 6 - (mv ? b / 2 : 0), 2, 3 + (mv ? b / 2 : 0));
+      u8g2_DrawBox(g, x + 3, y + 4 - (mv ? (b + 1) / 2 : 0), 2, 5 + (mv ? (b + 1) / 2 : 0));
+      u8g2_DrawBox(g, x + 6, y + 3 - (mv ? b / 3 : 0), 2, 6 + (mv ? b / 3 : 0));
       break;
-    case 15:  // проверка наушников: одна чашка звучит, другая нет
+    case 15:  // проверка наушников: звучит то одна чашка, то другая
       ringArc(g, x + 4, y + 5, 4, 0, 180, 1, 1);
-      u8g2_DrawBox(g, x, y + 5, 3, 4);
-      u8g2_DrawFrame(g, x + 6, y + 5, 3, 4);
+      if (!mv || s1 == 0) {
+        u8g2_DrawBox(g, x, y + 5, 3, 4);
+        u8g2_DrawFrame(g, x + 6, y + 5, 3, 4);
+      } else {
+        u8g2_DrawFrame(g, x, y + 5, 3, 4);
+        u8g2_DrawBox(g, x + 6, y + 5, 3, 4);
+      }
       break;
-    case 16:  // связь: ломаная графика
-      u8g2_DrawLine(g, x, y + 7, x + 2, y + 4);
-      u8g2_DrawLine(g, x + 2, y + 4, x + 5, y + 6);
-      u8g2_DrawLine(g, x + 5, y + 6, x + 8, y + 1);
+    case 16: {  // связь: график — бежит
+      static const uint8_t GY[11] = { 7, 4, 6, 1, 5, 3, 7, 2, 6, 4, 7 };
+      int o = mv ? f % 3 : 0;
+      for (int i = 0; i < 3; i++) u8g2_DrawLine(g, x + i * 3 - (i ? 0 : 0), y + GY[i + o], x + (i + 1) * 3 - 1, y + GY[i + o + 1]);
       break;
-    case 17:  // усиление: динамик и «плюс»
+    }
+    case 17:  // усиление: динамик и «плюс» — плюс пульсирует
       u8g2_DrawBox(g, x, y + 3, 2, 3);
       u8g2_DrawLine(g, x + 2, y + 3, x + 4, y + 1);
       u8g2_DrawLine(g, x + 2, y + 5, x + 4, y + 7);
       u8g2_DrawVLine(g, x + 4, y + 1, 7);
-      u8g2_DrawHLine(g, x + 6, y + 4, 3);
-      u8g2_DrawVLine(g, x + 7, y + 3, 3);
+      if (mv && b >= 3) {
+        u8g2_DrawHLine(g, x + 6, y + 4, 3);
+        u8g2_DrawVLine(g, x + 7, y + 3, 3);
+        u8g2_DrawPixel(g, x + 7, y + 2);
+        u8g2_DrawPixel(g, x + 7, y + 6);
+      } else {
+        u8g2_DrawHLine(g, x + 6, y + 4, 3);
+        u8g2_DrawVLine(g, x + 7, y + 3, 3);
+      }
       break;
-    case 18:  // шумозаглушение: «крупа» шума, перечёркнутая наискось
-      u8g2_DrawPixel(g, x + 1, y + 1);
-      u8g2_DrawPixel(g, x + 4, y);
-      u8g2_DrawPixel(g, x + 7, y + 2);
-      u8g2_DrawPixel(g, x, y + 4);
-      u8g2_DrawPixel(g, x + 5, y + 3);
-      u8g2_DrawPixel(g, x + 2, y + 6);
-      u8g2_DrawPixel(g, x + 7, y + 6);
-      u8g2_DrawPixel(g, x + 4, y + 8);
+    case 18: {  // шумозаглушение: «крупа» мерцает, черта наискось
+      static const uint8_t PX[8][2] = { { 1, 1 }, { 4, 0 }, { 7, 2 }, { 0, 4 }, { 5, 3 }, { 2, 6 }, { 7, 6 }, { 4, 8 } };
+      for (int i = 0; i < 8; i++)
+        if (!mv || ((i + f) % 3) != 0) u8g2_DrawPixel(g, x + PX[i][0], y + PX[i][1]);
       u8g2_DrawLine(g, x, y + 8, x + 8, y);
       break;
-    case 19:  // сжатие: две черты и стрелки между ними — навстречу
-      u8g2_DrawHLine(g, x, y, 9);
-      u8g2_DrawHLine(g, x, y + 8, 9);
+    }
+    case 19:  // сжатие: две черты и стрелки — сжимают
+      u8g2_DrawHLine(g, x, y + (mv ? s1 : 0), 9);
+      u8g2_DrawHLine(g, x, y + 8 - (mv ? s1 : 0), 9);
       u8g2_DrawVLine(g, x + 4, y + 2, 2);
       u8g2_DrawHLine(g, x + 3, y + 3, 3);
       u8g2_DrawVLine(g, x + 4, y + 5, 2);
       u8g2_DrawHLine(g, x + 3, y + 5, 3);
       break;
-    case 20:  // в паузах: знак паузы
-      u8g2_DrawBox(g, x + 1, y + 1, 2, 7);
-      u8g2_DrawBox(g, x + 6, y + 1, 2, 7);
+    case 20:  // в паузах: знак паузы — половинки по очереди короче
+      u8g2_DrawBox(g, x + 1, y + 1 + (mv && s1 == 0 ? 1 : 0), 2, mv && s1 == 0 ? 5 : 7);
+      u8g2_DrawBox(g, x + 6, y + 1 + (mv && s1 == 1 ? 1 : 0), 2, mv && s1 == 1 ? 5 : 7);
       break;
-    case 21:  // перезапуск: кольцо с разрывом и стрелкой
-      u8g2_DrawCircle(g, x + 4, y + 5, 3, U8G2_DRAW_LOWER_LEFT | U8G2_DRAW_LOWER_RIGHT | U8G2_DRAW_UPPER_LEFT);
-      u8g2_DrawHLine(g, x + 4, y + 2, 2);
-      u8g2_DrawTriangle(g, x + 5, y, x + 5, y + 5, x + 8, y + 2);
+    case 22:  // вид экрана: экран с точками внутри (с 3.03; с 3.13 в меню нет)
+      u8g2_DrawRFrame(g, x, y + 1, 9, 6, 1);
+      u8g2_DrawPixel(g, x + 2, y + 3);
+      u8g2_DrawPixel(g, x + 4, y + 4);
+      u8g2_DrawPixel(g, x + 6, y + 3);
+      u8g2_DrawHLine(g, x + 2, y + 8, 5);
       break;
-    default:  // назад: стрелка
-      u8g2_DrawHLine(g, x + 1, y + 4, 7);
-      u8g2_DrawLine(g, x + 1, y + 4, x + 4, y + 1);
-      u8g2_DrawLine(g, x + 1, y + 4, x + 4, y + 7);
+    case 23:  // яркость: солнце — лучи поворачиваются
+      u8g2_DrawDisc(g, x + 4, y + 4, 1, U8G2_DRAW_ALL);
+      if (!mv || s1 == 0) {
+        u8g2_DrawPixel(g, x + 4, y + 1);
+        u8g2_DrawPixel(g, x + 4, y + 7);
+        u8g2_DrawPixel(g, x + 1, y + 4);
+        u8g2_DrawPixel(g, x + 7, y + 4);
+      }
+      if (!mv || s1 == 1) {
+        u8g2_DrawPixel(g, x + 2, y + 2);
+        u8g2_DrawPixel(g, x + 6, y + 2);
+        u8g2_DrawPixel(g, x + 2, y + 6);
+        u8g2_DrawPixel(g, x + 6, y + 6);
+      }
+      break;
+    case 21: {  // перезапуск: кольцо с разрывом и стрелкой — разрыв обходит круг
+      static const uint8_t GAP[4] = { U8G2_DRAW_LOWER_LEFT | U8G2_DRAW_LOWER_RIGHT | U8G2_DRAW_UPPER_LEFT,
+                                      U8G2_DRAW_LOWER_RIGHT | U8G2_DRAW_UPPER_LEFT | U8G2_DRAW_UPPER_RIGHT,
+                                      U8G2_DRAW_UPPER_LEFT | U8G2_DRAW_UPPER_RIGHT | U8G2_DRAW_LOWER_LEFT,
+                                      U8G2_DRAW_UPPER_RIGHT | U8G2_DRAW_LOWER_LEFT | U8G2_DRAW_LOWER_RIGHT };
+      int q = mv ? (f / 2) & 3 : 0;
+      u8g2_DrawCircle(g, x + 4, y + 5, 3, GAP[q]);
+      if (!mv || q == 0) {
+        u8g2_DrawHLine(g, x + 4, y + 2, 2);
+        u8g2_DrawTriangle(g, x + 5, y, x + 5, y + 5, x + 8, y + 2);
+      } else u8g2_DrawDisc(g, x + 4, y + 5, 1, U8G2_DRAW_ALL);
+      break;
+    }
+    default:  // назад: стрелка — уходит влево
+      u8g2_DrawHLine(g, x + 1 - (mv ? s1 : 0), y + 4, 7);
+      u8g2_DrawLine(g, x + 1 - (mv ? s1 : 0), y + 4, x + 4 - (mv ? s1 : 0), y + 1);
+      u8g2_DrawLine(g, x + 1 - (mv ? s1 : 0), y + 4, x + 4 - (mv ? s1 : 0), y + 7);
   }
 }
-static void menuList(u8g2_t *g, uint32_t t, const MenuRow *rows, int n, float sel, float scroll, bool edit) {
+// С 3.14: значок выбранного пункта движется; в правке значение «перекатывается», как у счётчика: больше — новое снизу,
+// меньше — сверху (editOld — прежнее, editK 0…1, editDir ±1).
+static void menuList(u8g2_t *g, uint32_t t, const MenuRow *rows, int n, float sel, float scroll, bool edit, const char *editOld = "",
+                     float editK = 1, int editDir = 1) {
   u8g2_SetFont(g, u8g2_font_6x13_t_cyrillic);
   for (int i = 0; i < n; i++) {
     int y = 13 + i * 16 - (int)lroundf(scroll);
     if (y < -4 || y > 78) continue;
-    menuIcon(g, rows[i].icon, 3, y - 10);
+    bool cur = fabsf(sel - i) < 0.5f;
+    menuIcon(g, rows[i].icon, 3, y - 10, cur ? fract(t / 1600.0f) : -1);
     u8g2_DrawUTF8(g, 16, y, rows[i].name);
     int vw = u8g2_GetUTF8Width(g, rows[i].value);
-    bool cur = fabsf(sel - i) < 0.5f;
     if (edit && cur && vw) {   // правка: стрелки по сторонам значения ходят туда-сюда
       int a = (int)lroundf(1.5f * sinf(t / 170.0f));
-      u8g2_DrawUTF8(g, 114 - vw, y, rows[i].value);
+      if (editK < 1 && editOld && editOld[0]) {
+        float e = 1 - (1 - editK) * (1 - editK) * (1 - editK);
+        int sh = (int)lroundf(e * 13) * editDir, ow = u8g2_GetUTF8Width(g, editOld);
+        u8g2_SetClipWindow(g, 60, y - 11 < 0 ? 0 : y - 11, 116, y + 4 > 64 ? 64 : y + 4);
+        u8g2_DrawUTF8(g, 114 - ow, y - sh, editOld);
+        u8g2_DrawUTF8(g, 114 - vw, y + editDir * 13 - sh, rows[i].value);
+        u8g2_SetMaxClipWindow(g);
+      } else u8g2_DrawUTF8(g, 114 - vw, y, rows[i].value);
       u8g2_DrawTriangle(g, 108 - vw - a, y - 4, 111 - vw - a, y - 8, 111 - vw - a, y);
       u8g2_DrawTriangle(g, 120 + a, y - 4, 117 + a, y - 8, 117 + a, y);
     } else u8g2_DrawUTF8(g, 121 - vw, y, rows[i].value);

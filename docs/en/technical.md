@@ -161,10 +161,15 @@ word). Why not 32 kHz — see hardware.md, “External CS4344 DAC”.
 ```
 SEARCH (splash 4 s, waits up to 10 s) ─signal─► STARTUP (4.4 s; sound from 1.5 s) ─► RUNNING
 RUNNING ─10 s without a signal─► LEAVING (6 s of a message) ─► STANDBY (sleep)
-STANDBY ─heard the transmitter / knob pressed─► WAKE-UP (splash) ─► STARTUP
+STANDBY ─heard the transmitter─► WAKE-UP (splash) ─► STARTUP   (before 3.14 a knob press woke it too)
 any ─"turn off" from the transmitter─► LEAVING ─► STANDBY (woken only by "turn on" from the transmitter; before 2.65 also by a double press of the knob)
 ```
-The sleep cycle: radio off, light sleep of the processor for 0.5 s (woken by the timer or the knob button), then
+The knob acts only while running and only while there is a signal (packets not older than 0.5 s; since 3.14): without a
+signal, while searching, asleep or turned off from the transmitter it does nothing, and an open menu closes when the
+signal is lost. The service exit for a turned-off receiver whose transmitter is gone remains: hold the knob for 10 s
+without the transmitter being heard — the kit is forgotten and the receiver asks for access again.
+
+The sleep cycle: radio off, light sleep of the processor for 0.5 s (woken by the timer; before 3.14 also by the knob button), then
 70 ms of listening to its own channel; every fourth cycle — another 12 channels at 25 ms each. If the transmitter is
 heard — once every ~2 s the receiver reports "I am asleep" and waits 80 ms for a command in reply.
 
@@ -200,6 +205,7 @@ cured it). Before 2.63 the receiver did not watch its own transmissions at all. 
 | Wi-Fi | 0 | 23 | receiving packets |
 | `ui` | 0 (before 2.96 — 1) | 2 (21 while a frame is being sent) | screen at 60 frames/s, knob, menu |
 | `led` | 0 | 3 | LED 200 times/s (smooth "breathing" by dithering between adjacent levels) |
+| `knob` timer (esp_timer) | 0 | — | (since 3.09) the knob button every 5 ms: debouncing is 4 equal samples, presses and releases are counted, so they are not lost even between slow frames |
 | main loop | 1 | 1 | port, reports, states, sleep, information to the transmitter, update |
 
 ### Receiver screen
@@ -216,6 +222,47 @@ suppression in stereo a frame took ~20 ms and the screen showed 17–23 frames/s
 priority 21 while a frame is being sent, since 2.96 it runs on core 0 (40–45 % free there; the radio at priority 23
 still goes first). Measurements — in `G1`: «екран: N кадрів за секунду, малювання …, передача кадру …» (display: frames
 per second, drawing, frame transfer); the sound chain stages — `Y15`.
+
+Since 3.12 the OLED main-screen status line (link level, name, volume) is redrawn only when something in it changed:
+the key is the bar heights as drawn, the volume, the name and the ticker offset (`rxs::statusKey`); otherwise it comes
+from a 1 KB cache, and only the line under it and the view below are drawn every frame (`Y17` — as before 3.12). The
+spectrum for both displays is analysed with the esp-dsp library (`dsps_fft2r_fc32`, S3 vector instructions): 320 µs
+instead of 1721 (`Y19`/`Y20`/`Y21`). Its output is in bit-reversed bin order; the bins up to 8 kHz are read through the
+permutation table, the whole array is not reordered. Bands: OLED — 14, colour — 10.
+
+### Colour display (since 3.03)
+IPS 1.9″ 170×320 on an ST7789, landscape 320×170 (`rxlcd.h` — hardware, `rxcolor.h` — all screens, `rxstrip.h` —
+output). The display type is set by a jumper: pin 21 to GND — colour, open — OLED (since 3.13; before that, a setting).
+
+- **The bus.** SPI2 through the GPIO matrix (the IO MUX pins 10–13 are taken by audio), DMA, the `esp_lcd` driver
+  (ST7789: inversion, `swap_xy`, mirror, a 35-row gap). Since 3.11 — 20 MHz and the weakest output drive
+  (`GPIO_DRIVE_CAP_0`): at 40 MHz with normal drive, picture changes caused clicks in the headphones. Measurements (`Y22`):
+  radio noise is the same whether the bus is idle or busy non-stop (−90.5 / −90.0 dBm), no packet losses; the audio
+  output never ran dry (`n8=8`). So it is pick-up after the DAC, and the cure is slower edges. A full frame takes 76 ms
+  at 20 MHz and 55 ms at 40 (22 of them on the bus, the rest is the CPU).
+- **The frame lives in external memory** (PSRAM, 108 KB), a second frame is for transitions. It is drawn in one pass
+  over the scene (`m2::Gfx` with anti-aliasing: 4-bit font text, circles, lines, gradients). Only what changed goes to
+  the display: 32×10 tile hashes; a strip may send several pieces if two or more unchanged tiles separate the changes
+  (since 3.09). A piece is copied to internal memory, its bytes are swapped (the display wants the high byte first) and
+  it goes out by DMA while the next one is prepared.
+- **Scene and key (since 3.07).** `ui_rx.h` fills a `Scene` once per frame (what is on the display); `sceneKey` is a hash
+  of everything the static part of the screen depends on, with the precision it is drawn with (the link level in
+  quarter steps, the mute frame "breathing" in steps). While the key is unchanged, the frame is not redrawn: the analyser
+  redraws only the bars that moved (`analyzerStep`: a piece of the column is cleared and redrawn with clipping — exactly
+  as a full redraw would; neighbouring pieces go out as one if that is cheaper), and the areas that move by themselves
+  (`sceneDyn`: the ticker, the flipping volume, the mute intro, the menu edit arrows) are redrawn with clipping. Key 0
+  means the whole screen moves (searching, "it's me", splash): the full frame every time.
+- **Transitions.** The previous screen is a snapshot of the frame at the start of the transition (since 3.09; before,
+  it was redrawn every frame): slides copy rows of the snapshot, the "iris" draws the new screen only inside the circle's
+  square and computes a square root only for edge pixels, the "wipe" draws the new screen only left of its edge.
+- **Main screen (since 3.08).** Volume top left (154×78), the analyser bottom left (154×80, 10 bars with peak marks),
+  link, stereo/mono, noise reduction and the name on the right (154×162).
+- **Measurements (884A94, 15.10.2026).** Main screen: 62–63 frames/s, 3.6–4.9 ms per frame (spectrum 0.35–0.40, drawing
+  0.4–0.6, sending 1.2–3.2), 750–900 pixels per frame out of 54,400. Before 3.06 the frame was drawn in 17 strips of 10
+  rows — 17 passes over the scene: 6–35 frames/s; 3.06 (frame in PSRAM) — 32–51; 3.07 (key) — 61–63, 5–9 ms per frame.
+- **Simulator** `tools/simrxc/run.sh`: the same code on a Mac — an animation, a sheet of key frames, a check "the
+  incrementally drawn screen = the frame drawn in full" (`-DAN_NO_JITTER` — without the ±1 pixel bar tolerance;
+  `SIM_DIFF=1` — which pixels differ), a check of transitions against a reference, `SIM_EN=1` — English labels.
 
 ## Radio
 - **ESP-NOW**, broadcast address, channels 1–13 of the 2.4 GHz band, 20 MHz bandwidth.
@@ -390,6 +437,8 @@ the name is the type: 0 — uncompressed sound 32 kHz mono, 1 — MP3.
 | `rxaudio.h` | reception, buffer, audio output |
 | `rxlink.h`, `rxled.h` | information to the transmitter, commands, states, sleep, LED |
 | `rxfx.h`, `rxscreens.h`, `ui_rx.h` | receiver screen and menu |
+| `rxcolor.h`, `rxstrip.h`, `rxlcd.h`, fonts `rxTxt*.h`, `rxNum.h`, `logo_rx.h` | receiver colour display (since 3.03): screens, change output, hardware |
+| `rsdot.h`, `nsfx.h` | pace-conversion convolution, noise reduction and compression |
 | `lang.h`, `lang_en.h` | translation of on-screen texts |
 | `dbgair.h`, `dbgtee.h` | debugging over the radio |
 
@@ -473,9 +522,34 @@ the name is the type: 0 — uncompressed sound 32 kHz mono, 1 — MP3.
   display 62–63 frames/s on the main screen and in the menu; output ran dry 0 times in 3 minutes on both. Nothing was
   moved to fast memory (IRAM): the transmitter has 42 KB of internal memory free with the rule “not less than 40”.
 
+## What changed in 3.03–3.13 (technical)
+
+- **Colour display (3.03–3.08)** — see "Colour display" above: strips → frame in PSRAM (3.06) → scene key and incremental
+  drawing (3.07) → main screen by the owner's layout, 10 bars with peaks (3.08). Menu items "Brightness" and (until
+  3.13) "Screen type", icons 22, 23.
+- **Over-the-air update with the colour display (3.06).** The task watchdog restarted the receiver (core 0 without idle
+  time for over 5 s: the display drew without pauses next to the flash writes). Now during an update the display draws
+  10 frames/s and always yields at least 2 ms; six updates in a row checked.
+- **Knob button (3.09)** — by a timer every 5 ms, not once per frame: on the mute screen a frame took 30–40 ms, and a
+  short press was lost ("cannot leave mute on the first press").
+- **20 MHz bus and the weakest outputs (3.11)** — against clicks from picture changes; `n27` (bits 8, 16) — as before.
+- **esp-dsp for the spectrum, OLED status line cache (3.12).**
+- **Display select jumper (3.13)** — pin 21 to GND; the "Screen type" item is removed.
+- **Diagnostics:** `Y22` (display bus interference), `Y23` (listen for pick-up), `Y17`/`Y18`, `Y19`–`Y21`; `Y15` — the most
+  important values first (a long line is cut over the radio).
+
 ## Quirks and pitfalls
 
 Things that have already been stepped on — so as not to step on them again.
+
+- **The scene key must know everything that is drawn, with the same precision.** The link icon was drawn smoothly
+  while the key knew the level in quarters — the incrementally drawn screen drifted from the full redraw (found by the
+  simulator check). Rule: draw with exactly the precision the key knows.
+- **The rounded top of a bar.** When a bar grows, the old rounded top must be erased — the new corners go onto the
+  background, not onto the old colour.
+- **Display bus pick-up in the headphones** is neither radio nor digital: the "radio noise" and "output ran dry"
+  measurements do not see it. The cure is slower edges (output drive, bus clock) and wiring.
+- **"<" and ">" in schematic labels** (`tools/gen_schema.py`) break the SVG — `sips` then silently produces no PNG.
 
 - **A software restart of the ESP32 does not reset the pins.** The Arduino core's `pinMode` takes the pin's
   "previous interrupt type" and enables it by itself. In sleep, the knob button is a wake-up source with a "while

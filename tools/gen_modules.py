@@ -76,6 +76,7 @@ def devkit():
     c.pins(290, 212, 22, step=13, vertical=False)
     c.note(30, 250, ['5, 6, 7 — ручка (A, B, кнопка) / knob;   8, 9 — екран SDA, SCL / display;   17, 18 — вихід звуку «+», «−» / audio out;',
                      '11, 12, 13 — PCM5102 (за бажанням / optional);   15, 16 — кнопки модуля (не використовуються / unused).',
+                     '42, 41, 2, 40, 39, 1 — кольоровий екран SCL, SDA, RES, DC, CS, BLK; 21 на GND — вибрати його (за бажанням) / colour display.',
                      'Розташування виводів на вашій платі звіряйте з написами на ній / check the silkscreen of your board.'])
     c.save('mod-esp32-s3-devkitc.png')
 
@@ -91,6 +92,23 @@ def m75():
                      'Порядок і назви виводів на вашому модулі можуть відрізнятися / pin order and names may differ on your module.'])
     c.save('mod-m75-oled-encoder.png')
 
+def ips():   # с 3.03: цветной экран приёмника; в экране — кадр главного экрана из tools/simrxc (docs/img/rx-color-main.png)
+    c = C(760, 376, 'IPS 1,9″ ST7789 170×320 — кольоровий екран приймача / colour receiver display')
+    c.box(189, 58, 431, 210, BLACK, 8)
+    c.box(268, 70, 336, 186, (12, 14, 18), 4)
+    try:
+        shot = Image.open(os.path.join(OUT, 'rx-color-main.png')).convert('RGB').resize((320 * K, 170 * K), Image.LANCZOS)
+        c.im.paste(shot, (276 * K, 78 * K))
+    except OSError:
+        c.text(436, 163, '320 × 170', F, (200, 200, 200), 'mm')
+    c.pins(197, 80, 8, step=26, vertical=True, labels=['GND', 'VCC → 3V3', 'SCL → 42', 'SDA → 41', 'RES → 2', 'DC → 40', 'CS → 39', 'BLK → 1'], side='l')
+    c.note(30, 284, ['За бажанням, замість OLED (з 3.03). Модуль MSP1901. / Optional, instead of the OLED (since 3.03). Module MSP1901.',
+                     'Вибір — перемичкою: вивід 21 на GND — кольоровий, вільний — OLED (з 3.13). Ручка й кнопки — як і раніше.',
+                     'Selected by a jumper: pin 21 to GND — colour, open — OLED (since 3.13). The knob and buttons stay as before.',
+                     'Дроти до модуля — якомога коротші, подалі від дротів ЦАП / keep the wires short and away from the DAC wires.',
+                     'Порядок виводів на вашому модулі може відрізнятися / pin order may differ on your module.'])
+    c.save('mod-ips-1.9-st7789.png')
+
 def small(name, title, color, chip, left, right, notes, fname):
     c = C(760, 250, title)
     c.box(250, 60, 240, 120, color, 8)
@@ -101,7 +119,7 @@ def small(name, title, color, chip, left, right, notes, fname):
     c.save(fname)
 
 os.makedirs(OUT, exist_ok=True)
-tx(); devkit(); m75()
+tx(); devkit(); m75(); ips()
 small('max', 'MAX97220 — підсилювач навушників / headphone amplifier (за бажанням / optional)', RED, 'MAX97220',
       ['VCC', 'GND', 'R− ← 18', 'R+ ← 17'], ['L− ← 18', 'L+ ← 17', 'CTRL', 'R · G · L → навушники'],
       ['Різницевий вхід: «+» на L+ і R+, «−» на L− і R−; у меню приймача «Виводи: протифаза».',

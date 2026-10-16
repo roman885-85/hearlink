@@ -6,7 +6,7 @@ import io, os, re, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from lang_en import PAIRS, KEEP
-SRC = [os.path.join(HERE, '..', 'hearlink', f) for f in ('txui.h', 'fmui.h', 'ui_tx.h', 'ui_rx.h', 'rxscreens.h', 'rxlink.h')]
+SRC = [os.path.join(HERE, '..', 'hearlink', f) for f in ('txui.h', 'fmui.h', 'ui_tx.h', 'ui_rx.h', 'rxscreens.h', 'rxlink.h', 'rxcolor.h')]
 lit = re.compile(r'"((?:[^"\\]|\\.)*)"')
 cyr = re.compile(u'[А-Яа-яІіЇїЄєҐґ]')
 found = {}

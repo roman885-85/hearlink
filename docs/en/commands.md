@@ -123,8 +123,15 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `n12=1…4` / `n12=0` | check of the receiver radio self-repair without a real fault: 1 — the driver “took the packet and stays silent”; 2 — packets “go nowhere” (until the radio is reloaded); 3 — the same until the board restarts; 4 — and after the restart too; 0 — off |
 | `Y2` | (since 2.93) free time of both cores over a second, arbitrary units: more means freer. The receiver's second core runs the sound and the display |
 | `Y12` / `Y13` | (since 2.93) a frame goes to the display at the display's priority, as before 2.93 (to compare) / above the sound (the default). Until a restart; the frame rate is in the report with `G1` — «екран: N кадрів за секунду, малювання …, передача кадру …» (display: N frames a second, drawing, frame transfer) |
-| `Y15` | (since 2.94) stages of the sound chain, µs per 1 ms block since the previous such call: before the pace conversion (buffer, pace, settings, volume), pace conversion, noise suppression, processing and output, the rest; the longest block. Above ~900 µs on average the sound core is short of time |
+| `Y15` | (since 2.94) stages of the sound chain, µs per 1 ms block since the previous such call: the total and the longest block (since 3.12 at the start of the line — a long line is cut over the radio), before the pace conversion (buffer, pace, settings, volume), pace conversion, noise suppression, processing and output, the rest. Above ~900 µs on average the sound core is short of time |
 | `Y16` | (since 2.98) the pace-conversion convolution alone: cycles per call (3.02 — 648) |
+| `n14` | (since 3.03; since 3.13 information only) which display is in use: a jumper selects it — pin 21 to GND — colour, open — OLED |
+| `n15=1…5` | (since 3.03) brightness: colour display backlight or OLED contrast (as the "Brightness" menu item) |
+| `n27=<sum of bits>` | (since 3.03) colour module options, restart: 1 — rotated by 180°, 2 — BGR colours, 4 — 80 MHz bus, 8 — 40 MHz (as before 3.11; without 4 and 8 — 20 MHz), 16 — strong bus outputs (as before 3.11; without it — the weakest) |
+| `Y17` / `Y18` | (since 3.12) OLED: the main-screen status line redrawn every frame (as before 3.12) / taken from a cache and redrawn only when something in it changed (the default). Compare "drawing" in the display report |
+| `Y19` / `Y20` / `Y21` | (since 3.12) spectrum analysis with the own FFT (as before 3.12) / with the esp-dsp library (the default; 5.4 times faster) / both on one copy of the audio window: band levels, the largest difference in dB and the time of each |
+| `Y22` | (since 3.10) colour display: interference check from its bus — 7 phases of 5 s (display still / bus busy non-stop with different output drive); in each — radio noise, "air busy", packet losses; the summary as a table in the report |
+| `Y23[=0…3]` | (since 3.11) colour display: 8 s of full frames non-stop — listen for pick-up in the headphones; bus output drive for that time (without a number — as configured) |
 | `Y14` | core time per task over 2 s — only in a build with `#define HL_TASK_LOAD` (the FreeRTOS functions take 600 bytes of fast memory, which the transmitter cannot spare) |
 
 The receiver's `?` report (since 2.63) has two lines about its radio: how many packets were sent and how many the

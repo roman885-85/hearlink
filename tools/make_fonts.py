@@ -27,13 +27,18 @@ SET = [
     ("fTxt",   "Roboto-Regular.ttf",  13, 24),
     ("fTxtB",  "Roboto-Bold.ttf",     13, 24),
     ("fNum",   "Montserrat-Bold.otf", 44, 60, 0x3A),     # крупные числа: только цифры и знаки
+    # цветной экран приёмника 320×170 (IPS 1,9″, 0,13 мм на точку; с 3.03): текст крупнее, чем у передатчика, — «H»
+    # 16 точек = 2,1 мм, как у букв OLED-экрана 1,3″ (6×13 при 0,23 мм на точку); громкость — цифрами 9,6 мм
+    ("rxTxt",  "Roboto-Regular.ttf",  16, 26),
+    ("rxTxtB", "Roboto-Bold.ttf",     16, 26),
+    ("rxNum",  "Montserrat-Bold.otf", 72, 96, 0x3A),
 ]
 GAMMA = 0.85          # трохи густіші краї: дрібний світлий текст на темному інакше «худне»
 
 
 def cap_size(path, cap_px):
     """Розмір шрифту (px), за якого «H» має задану висоту."""
-    lo, hi = 4.0, 80.0
+    lo, hi = 4.0, 200.0
     for _ in range(30):
         mid = (lo + hi) / 2
         f = ImageFont.truetype(path, mid)
@@ -94,5 +99,8 @@ def build(name, file, cap, yadv, last=0xFF):
     print(f"{name}: {file} {size:.1f}px, бітмапи {len(bitmaps)} байт")
 
 
+import sys
+ONLY = sys.argv[1:]   # имена шрифтов: собрать только их (например, rxTxt rxTxtB rxNum), без имён — все
 for args in SET:
-    build(*args)
+    if not ONLY or args[0] in ONLY:
+        build(*args)

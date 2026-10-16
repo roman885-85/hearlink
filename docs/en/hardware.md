@@ -22,6 +22,7 @@
 |---|---|---|
 | Board | **ESP32-S3-DevKitC-1 N16R8** (or a compatible one with 16 MB flash and 8 MB PSRAM) | PSRAM is needed for the over-the-air update: the 2.2 MB image is received into memory as a whole |
 | Display with knob | "M75" module: OLED **SH1106 1.3″ 128×64 I2C** + **EC11** encoder with a button | power it **from 3.3 V only**: the I2C pull-ups on the module go to VCC |
+| Colour display (optional, since 3.03) | **IPS 1.9″ 170×320 ST7789** (MSP1901 module), SPI bus | instead of the OLED; selected by a jumper "pin 21 → GND"; the knob and buttons stay as before. See the section [below](#colour-ips-19-display-on-the-receiver-firmware-303-and-later) |
 | Audio output | headphones directly: 1 kΩ + 10 nF on each leg and a 1 µF coupling capacitor | or a headphone amplifier with a differential input (MAX97220) |
 | External DAC (optional) | **PCM5102** or **CS4344** module (since 2.85) | cleaner sound: CPU supply noise does not reach the headphones; see the sections below |
 | Power | power bank or a battery with a 5 V output | the display is optional: without it the receiver simply plays |
@@ -54,6 +55,7 @@ board.
 ![ESP32-4848S040](../img/mod-esp32-4848s040.png)
 ![ESP32-S3-DevKitC-1](../img/mod-esp32-s3-devkitc.png)
 ![M75](../img/mod-m75-oled-encoder.png)
+![IPS 1.9″ ST7789](../img/mod-ips-1.9-st7789.png)
 ![MAX97220](../img/mod-max97220.png)
 ![PCM5102](../img/mod-pcm5102.png)
 ![PCM1808](../img/mod-pcm1808.png)
@@ -76,6 +78,8 @@ easy to find by name: “ESP32-4848S040”, “SH1106 1.3 OLED EC11”, “MAX97
 | PCM5102: BCK, LCK, DIN, XSMT; SCK — to GND (or to pin 10, held low) | 11, 12, 13, 14 |
 | CS4344: MCLK, SCLK, LRCK, SDIN (supply VCC — from 3V3) | 10, 11, 12, 13 |
 | On-board RGB LED (WS2812) | 48 (38 on newer boards) |
+| Colour IPS 1.9″ display: SCL, SDA, DC, CS, RES, BLK (since 3.03) | 42, 41, 40, 39, 2, 1 |
+| Display select jumper: to GND — colour, open — OLED (since 3.13) | 21 |
 
 ### Transmitter on the ESP32-4848S040 module
 
@@ -118,7 +122,8 @@ Receiver with a headphone amplifier ("antiphase" output):
 
 Variants with external converters (not verified on the boards):
 [transmitter + PCM1808](../skhema-peredatchik-4848-pcm1808.png),
-[receiver + PCM5102](../skhema-priemnik-s3-pcm5102.png), [receiver + CS4344](../skhema-priemnik-s3-cs4344.png).
+[receiver + PCM5102](../skhema-priemnik-s3-pcm5102.png), [receiver + CS4344](../skhema-priemnik-s3-cs4344.png),
+[receiver + colour display](../skhema-priemnik-s3-ips.png).
 
 The schematics are drawn by `tools/gen_schema.py`; they are also available as SVG.
 
@@ -271,6 +276,51 @@ scheme: master clock 8.000 MHz (divider 20, no fraction — read from the proces
 output 31,249 samples per second, the tempo adjustment keeps the buffer, sound plays. **Not verified on an actual
 CS4344 module** — there is none in the kit.
 
+## Colour IPS 1.9″ display on the receiver (firmware 3.03 and later)
+
+Instead of the OLED, a receiver can have a colour **IPS 1.9″ 170×320 display with an ST7789 controller** — the MSP1901
+module ([LCDwiki description](https://www.lcdwiki.com/1.9inch_IPS_Module); an ESP32 example —
+[mboehmerm/IPS-Display-ST7789-170x320](https://github.com/mboehmerm/IPS-Display-ST7789-170x320)). The display is
+landscape, 320×170; every screen, menu, icon, the splash and the transitions are redrawn for it, in colour. Control is
+the same — with the knob (the M75 module or a separate EC11 encoder on the same pins).
+
+| Module pin | To | Why |
+|---|---|---|
+| VCC | receiver **3V3** | power for the module and the backlight |
+| GND | GND | |
+| SCL | **42** | SPI clock |
+| SDA | **41** | SPI data |
+| RES | **2** | reset |
+| DC | **40** | command / data |
+| CS | **39** | chip select |
+| BLK | **1** | backlight: 30 kHz PWM (above hearing), brightness 1…5 |
+
+**The display is selected by a jumper (since 3.13).** Pin **21** connected to GND — the receiver uses the colour
+display; pin left open (pulled up inside) — the OLED. It is read at power-up: after fitting or removing the jumper,
+restart the receiver. The module cannot be detected in software: it has no read line. If both displays are fitted, the
+OLED shows a hint for 10 s while the colour display is in use ("OLED: remove the jumper 21-GND") and goes dark. The
+serial command `n14` tells which display is in use. Before 3.13 the display was chosen with the "Screen type" menu item —
+it was removed: with only the colour display fitted, there is nothing to switch the menu back with.
+
+![Receiver with the colour display](../skhema-priemnik-s3-ips.png)
+
+**The bus.** The direct (IO MUX) SPI pins (10–13) are taken by audio, so the bus goes through the GPIO matrix. Since
+3.11 it runs at **20 MHz with the weakest output drive** on its lines: at 40 MHz with normal drive, picture changes caused
+faint clicks in the headphones (owner, 15.10.2026; measurements showed the radio and the digital audio path are not
+affected — it is pick-up after the DAC). After 3.11 — "practically gone, barely noticeable". If you still hear clicks:
+
+- **33–68 Ω** resistors in the SCL and SDA lines next to the board (dashed on the diagram, optional);
+- keep the wires to the module as short as possible and away from the DAC wires and the antenna;
+- a separate ground wire from the module to the board GND; 10 µF + 100 nF across the module supply.
+
+Module options — serial command `n27=<sum of bits>` (restart): 1 — module rotated by 180°, 2 — BGR colour order (if
+red and blue are swapped), 4 — 80 MHz bus, 8 — 40 MHz (as before 3.11), 16 — strong bus outputs (as before 3.11).
+Brightness — the "Brightness" menu item or `n15=1…5`.
+
+**What was checked (15.10.2026, receiver 884A94).** Main screen — 62–63 frames per second, 3.6–4.9 ms per frame; only
+what changed goes to the display (hundreds of pixels per frame out of 54,400). Firmware updates over the air in colour
+mode — six in a row without a failure. Sleep and wake — as with the OLED.
+
 ## Two ways to connect headphones
 
 In the receiver menu «Виводи» (Pins) (and on the transmitter: receiver window → «Налаштування» (Settings) →
@@ -291,4 +341,5 @@ depends on their impedance: with 32 Ω it is quieter than with an amplifier.
 2. Connect **the display only** — check the splash screen. Then the knob. Then the audio. One part at a time: this
    way you can see exactly what does not work.
 3. Before applying power, check that the display VCC is on 3V3, not on 5V.
+   The colour display is also powered from 3V3; fit the 21 → GND jumper together with it.
 4. Connect the audio from the mixer last, starting from a low level.

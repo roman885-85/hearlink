@@ -1025,6 +1025,60 @@ static void command(String s) {
                       ym + ysum == 12345.0f ? "!" : "ok");
         return;
       }
+      if (!cfg.isTx && (v == 17 || v == 18)) {   // Y17 — строка состояния OLED каждый кадр заново (как до 3.12), Y18 — из запаса (с 3.12)
+        oledCache = v == 18;
+        oledStaticKey = 0;
+        Serial.printf("рядок стану OLED: %s\n", oledCache ? "із запасу, малюється лише при зміні" : "щокадру заново (як до 3.12)");
+        return;
+      }
+      if (!cfg.isTx && (v == 19 || v == 20)) {   // Y19 — разбор спектра своим БПФ (как до 3.12), Y20 — esp-dsp (с 3.12, ui_rx.h)
+        fftUseDsp = v == 20;
+        Serial.printf("розбір спектра: %s\n", fftUseDsp ? (fftDsp ? "esp-dsp" : "esp-dsp не запустився — свій") : "свій (як до 3.12)");
+        return;
+      }
+      if (!cfg.isTx && v == 21) {   // Y21 — оба разбора на одном окне звука: уровни полос и разница (с 3.12)
+        fftCmpReady = false;
+        fftCmpAsk = true;
+        for (int t = 0; t < 300 && !fftCmpReady; t++) delay(1);
+        if (!fftCmpReady) {
+          fftCmpAsk = false;
+          Serial.println("спектр зараз не рахується (не головний екран зі спектром)");
+          return;
+        }
+        float dmax = 0;
+        char line[200];
+        int n = snprintf(line, sizeof(line), "смуги, дБ (свій / esp-dsp):");
+        for (int b = 0; b < specBands && n < (int)sizeof(line) - 16; b++) {
+          float d = fabsf(fftCmpA[b] - fftCmpB[b]);
+          if (d > dmax) dmax = d;
+          n += snprintf(line + n, sizeof(line) - n, " %.0f/%.0f", fftCmpA[b], fftCmpB[b]);
+        }
+        Serial.println(line);
+        Serial.printf("найбільша різниця %.3f дБ; розбір: свій %u мкс, esp-dsp %u мкс\n", dmax, (unsigned)fftCmpUsA, (unsigned)fftCmpUsB);
+        return;
+      }
+      if (!cfg.isTx && v == 23) {   // Y23[=сила 0…3] — приёмник с цветным экраном: 8 с кадр целиком без остановки — послушать наводку (с 3.11)
+        if (!uiHaveColor) {
+          Serial.println("кольорового екрана немає (n14=1)");
+          return;
+        }
+        int eq = arg.indexOf('=');
+        int cap = eq > 0 ? arg.substring(eq + 1).toInt() : -1;
+        if (cap > 3) cap = 3;
+        rxLcdDrive(cap);
+        lcdStressUntil = (millis() + 8000) | 1;
+        Serial.printf("8 с — кадр цілком без упину, виводи шини %d, шина %u МГц\n", cap < 0 ? (int)rxLcdCap : cap, (unsigned)rxLcdMhz(cfg.rxDispOpt));
+        return;
+      }
+      if (!cfg.isTx && v == 22) {   // Y22 — приёмник с цветным экраном: помеха шины экрана радио, 7 фаз по 5 с (с 3.09; ui_rx.h, LCD_EMI)
+        if (!uiHaveColor) {
+          Serial.println("кольорового екрана немає (n14=1)");
+          return;
+        }
+        lcdEmiStart();
+        Serial.printf("перевірка завад від шини екрана: %d фаз по %u с, підсумок — у звіті за ~%u с\n", LCD_EMI_N, (unsigned)(LCD_EMI_MS / 1000), (unsigned)(LCD_EMI_N * LCD_EMI_MS / 1000 + 2));
+        return;
+      }
       if (!cfg.isTx && v == 15) {   // Y15 — приёмник: ступени тракта, мкс на блок 1 мс с прошлого такого вызова (с 2.94)
         rxStReady = false;
         rxStAsk = true;
@@ -1036,8 +1090,9 @@ static void command(String s) {
         }
         uint32_t n = rxStResN, *c = rxStRes;
         float k = n ? 1.0f / n : 0;
-        Serial.printf("тракт приймача, мкс на блок 1 мс (блоків %u): до підгонки темпу %.0f, підгонка темпу %.0f, шумозаглушення %.0f, обробка й вихід %.0f, решта %.0f; усього %.0f, найдовший блок %u\n",
-                      (unsigned)n, c[0] * k, c[1] * k, c[2] * k, c[3] * k, c[4] * k, ((float)c[0] + c[1] + c[2] + c[3] + c[4]) * k, (unsigned)rxStResMax);
+        // самое важное — в начале строки: по радио (отладка G1) длинная строка обрезается
+        Serial.printf("тракт приймача: усього %.0f мкс на блок 1 мс, найдовший блок %u (блоків %u): до підгонки темпу %.0f, підгонка темпу %.0f, шумозаглушення %.0f, обробка й вихід %.0f, решта %.0f\n",
+                      ((float)c[0] + c[1] + c[2] + c[3] + c[4]) * k, (unsigned)rxStResMax, (unsigned)n, c[0] * k, c[1] * k, c[2] * k, c[3] * k, c[4] * k);
         Serial.printf("  до підгонки темпу: запас %.0f, темп %.0f, налаштування %.0f, гучність %.0f\n", c[5] * k, c[6] * k, c[7] * k, c[8] * k);
         return;
       }
@@ -1146,6 +1201,7 @@ static void command(String s) {
     case 'n':   // приёмник: настройки «для слуха и удобства» — n показать; n<номер>=<значение> сменить; n9=1 / n9=0 — проверка наушников
       if (!cfg.isTx) {
         int p = -1, val = 0;
+        if (arg == "14") arg = "14=0";   // n14 без значения — тоже справка об экране (с 3.13)
         if (sscanf(arg.c_str(), "%d=%d", &p, &val) == 2) {
           if (p == 9) rxEarStart(val != 0);
           else if (p == 10) {   // n10=<дБ 0…24> — усиление (с 2.48)
@@ -1163,6 +1219,26 @@ static void command(String s) {
           else if (p == 13) {   // n13=<0|1> — проверка: сообщать о себе по-старому, «всем», без подтверждения (см. rxSendTo в radio.h)
             rxUniOff = val ? 1 : 0;
             Serial.printf("повідомлення про себе: %s\n", rxUniOff ? "по-старому, «всім» (перевірка)" : "на адресу передавача, з підтвердженням");
+          }
+          else if (p == 14) {   // n14 — какой экран (с 3.13 только справка: тип задаёт перемычка вывода 21 на «землю», ui_rx.h)
+            Serial.printf("екран: %s; вибір — перемичкою: вивід %d на землі — кольоровий IPS 1,9″ (SCL 42, SDA 41, DC 40, CS 39, RES 2, BLK 1), вільний — OLED\n",
+                          uiHaveColor ? "кольоровий" : rxColorJumper ? "перемичку поставлено, але кольоровий не запустився" : "OLED", PIN_RX_COLOR);
+          }
+          else if (p == 15) {   // n15=<1…5> — яркость экрана (с 3.03)
+            cfg.rxBright = (uint8_t)(val < 1 ? 1 : val > 5 ? 5 : val);
+            dispBright();
+            settingsSave();
+            Serial.printf("яскравість екрана %u з 5\n", cfg.rxBright);
+          }
+          else if (p == 27) {   // n27=<біти> — свойства цветного модуля (с 3.03; перезапуск): 1 — повёрнут на 180°, 2 — цвета BGR, 4 — шина 80 МГц,
+                                // 8 — шина 40 МГц (без 4 и 8 — 20, с 3.11), 16 — сильные выводы шины (без него — самые слабые, с 3.11)
+            cfg.rxDispOpt = (uint8_t)(val & 31);
+            settingsSave();
+            Serial.printf("кольоровий екран: %s, кольори %s, шина %u МГц, виводи шини %s — перезапуск\n", (cfg.rxDispOpt & 1) ? "повернутий на 180°" : "як є",
+                          (cfg.rxDispOpt & 2) ? "BGR" : "RGB", (unsigned)rxLcdMhz(cfg.rxDispOpt), (cfg.rxDispOpt & 16) ? "сильні (як до 3.11)" : "найслабші");
+            Serial.flush();
+            delay(100);
+            ESP.restart();
           }
           else if (p == 7) rxUiAsk = (uint8_t)val;   // n7=1 меню, n7=2 «Зв'язок», n7=3 главный экран — для замеров
           else if (p == 8) {   // n8=1 — как настроен вывод кнопки ручки; n8=<мс> — «нажать» её программно на столько миллисекунд
@@ -1726,6 +1802,14 @@ static void reportRx() {
   rxPeakL = 0;
   rxPeakR = 0;
   rxLinkCount(frames, rec, lost, under);
+  if (lcdEmiPh >= 0) {   // проверка Y22: потери этой секунды — в её фазу
+    int p = lcdEmiPh;
+    lcdEmiFr[p] += frames;
+    lcdEmiRec[p] += rec;
+    lcdEmiLost[p] += lost;
+    lcdEmiUnder[p] += under;
+    lcdEmiSec[p]++;
+  }
   sFrames = 0;
   sRecovered = 0;
   sLostFrames = 0;
@@ -1743,15 +1827,27 @@ static void reportRx() {
     rForeign = 0;
     return;
   }
-  if (uiHaveOled) {   // экран приёмника: сколько кадров в секунду и сколько идёт один кадр (плавность спектра)
-    uint32_t n = oledFrames, sum = oledFrameUsSum, mx = oledFrameUsMax, ds = oledDrawUsSum, dm = oledDrawUsMax;
+  if (uiHaveColor) {   // цветной экран (с 3.03): кадров в секунду, сколько считается кадр и сколько точек уходит на экран
+    uint32_t n = oledFrames, ds = oledDrawUsSum, dm = oledDrawUsMax, px = lcdSentSum, cr = lcdCycR, ch = lcdCycH, cs = lcdCycS, cw = lcdCycW, sp = specUsSum;
+    oledFrames = 0;
+    oledDrawUsSum = 0;
+    oledDrawUsMax = 0;
+    lcdSentSum = 0;
+    specUsSum = 0;
+    lcdCycR = lcdCycH = lcdCycS = lcdCycW = 0;
+    float k = n ? 1.0f / (n * 240000.0f) : 0;   // такты → мс на кадр
+    Serial.printf("екран кольоровий: %u кадрів за секунду, кадр сер. %.1f мс, найдовший %.1f мс (спектр %.2f, малювання %.1f, відбитки %.1f, відправка %.1f, чекання шини %.1f); на екран сер. %u точок за кадр (повний — 54400), шина %u МГц\n",
+                  (unsigned)n, n ? ds / 1000.0f / n : 0.0f, dm / 1000.0f, n ? sp / 1000.0f / n : 0.0f, cr * k, ch * k, cs * k, cw * k, n ? (unsigned)(px / n) : 0u, (unsigned)rxLcdMhz(cfg.rxDispOpt));
+  } else if (uiHaveOled) {   // экран приёмника: сколько кадров в секунду и сколько идёт один кадр (плавность спектра)
+    uint32_t n = oledFrames, sum = oledFrameUsSum, mx = oledFrameUsMax, ds = oledDrawUsSum, dm = oledDrawUsMax, sp = specUsSum;
+    specUsSum = 0;
     oledFrames = 0;
     oledFrameUsSum = 0;
     oledFrameUsMax = 0;
     oledDrawUsSum = 0;
     oledDrawUsMax = 0;
-    Serial.printf("екран: %u кадрів за секунду, малювання сер. %.1f мс, найдовше %.1f мс; передача кадру сер. %.1f мс, найдовша %.1f мс, обмін %s кГц\n", (unsigned)n,
-                  n ? ds / 1000.0f / n : 0.0f, dm / 1000.0f, n ? sum / 1000.0f / n : 0.0f, mx / 1000.0f, oledFast ? "800" : "400");
+    Serial.printf("екран: %u кадрів за секунду, малювання сер. %.1f мс (з них спектр %.2f), найдовше %.1f мс; передача кадру сер. %.1f мс, найдовша %.1f мс, обмін %s кГц\n", (unsigned)n,
+                  n ? ds / 1000.0f / n : 0.0f, n ? sp / 1000.0f / n : 0.0f, dm / 1000.0f, n ? sum / 1000.0f / n : 0.0f, mx / 1000.0f, oledFast ? "800" : "400");
   }
   {
     static uint8_t ledShown = 255;
@@ -1771,6 +1867,16 @@ static void reportRx() {
                   (unsigned)((millis() - rxPowerAt) / 1000), (unsigned)rxWakes, (unsigned)rxSleeps);
   if (cfg.output == OUT_PDM && (rxPower != PW_RUN || !rxOutLive()))
     Serial.printf("виводи виходу: %u і %u %% одиниць (%s)\n", rxOutDuty[0], rxOutDuty[1], rxOutLive() ? "сигнал іде" : "стоять");
+  if (lcdEmiDone) {   // проверка Y22 кончилась
+    lcdEmiDone = false;
+    Serial.println("завади від шини екрана (Y22): фаза | шум радіо сер. / найб., дБм | «з заліза» сер., дБм | ефір зайнятий, % | секунд: кадрів звуку, відновлено, втрачено, порожньо мс | кадрів екрана");
+    for (int i = 0; i < LCD_EMI_N; i++) {
+      float n = lcdEmiN[i] ? (float)lcdEmiN[i] : 1.0f;
+      Serial.printf("  %-38s | %6.1f / %6.1f | %6.1f | %5.1f | %u: %u, %u, %u, %.1f | %u\n", LCD_EMI[i].name, lcdEmiNf[i] / n / 4, lcdEmiNfMax[i] / 4.0f,
+                    lcdEmiNfHw[i] / n / 4, lcdEmiBusy[i] * 100 / n, (unsigned)lcdEmiSec[i], (unsigned)lcdEmiFr[i], (unsigned)lcdEmiRec[i], (unsigned)lcdEmiLost[i],
+                    lcdEmiUnder[i] * 1000.0f / SRATE, (unsigned)lcdEmiFrames[i]);
+    }
+  }
   if (!secHave) {
     Serial.printf("ПРИЙМАЧ к=%u | НЕ ПІДКЛЮЧЕНО до набору: прошу доступ, код %04u, запитів %u, передавач %s\n", cfg.channel, (unsigned)rxPairCode,
                   (unsigned)rxPairAsked, msSince(rLastAnyMs) < 1000 && rLastAnyMs ? "чути" : "не чути");

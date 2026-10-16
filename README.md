@@ -41,7 +41,9 @@ in the board itself.
 - speech clarity (treble boost +4/+8/+12 dB), left/right balance, volume limit, headphone test;
 - a “Link” screen with a one-minute signal graph;
 - falls asleep when the transmitter is silent and wakes up by itself; while asleep the screen, audio and radio are off — it listens to the air twice a second;
-- RGB status LED, smooth animations, notifications.
+- RGB status LED, smooth animations, notifications;
+- optionally a colour IPS 1.9″ display (ST7789, 320×170) instead of the OLED: every screen in colour, an analyser with
+  peak marks, 60 frames per second; selected by a "pin 21 → GND" jumper (since 3.03).
 
 **Security.** Everything on air is encrypted and signed (hardware AES-128). A foreign receiver cannot hear the
 sound and a foreign transmitter cannot inject its own. A receiver is added from the transmitter screen by
