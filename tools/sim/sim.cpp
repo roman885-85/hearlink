@@ -85,6 +85,10 @@ int main() {
   view.airAvgMs = 0.8f;
   view.airMaxMs = 9;
   view.levelDb = -17;
+  view.brOk = true;      // мост на связи, аналоговый вход (4.00)
+  view.brSrc = 2;
+  view.brAes = 2;
+  view.brRate = 48000;
   view.holdDb = -9;
   view.peakDb = -9;
   for (int i = 0; i < SPEC_BARS; i++) view.spec[i] = (uint8_t)(30 + 150 * fabsf(sinf(i * 0.37f)) * (1.0f - i / 48.0f));
@@ -138,6 +142,22 @@ int main() {
   save("01b-golovna-perevirka-yde");
   { Box b = itemBox(ID_SRC_LIVE); tap(b.x + 40, b.y + 20); }
   save("01c-golovna-znovu-z-pulta");
+  // 4.00: цифровой вход моста — выбран, сигнал AES есть / пропал; мост не отвечает; снова аналоговый
+  { Box b = itemBox(ID_SRC_DIG); tap(b.x + 40, b.y + 20); }
+  printf("вхід моста: прохання %d\n", out.bridgeSrc);
+  out.bridgeSrc = 0;
+  save("01e-golovna-tsyfrovyi-vkhid");
+  view.brAes = 0;
+  for (int k = 0; k < 18; k++) frame(false, 0, 0);
+  save("01f-golovna-tsyfrovyi-bez-aes");
+  view.brAes = 2;
+  view.brOk = false;
+  for (int k = 0; k < 18; k++) frame(false, 0, 0);
+  save("01g-golovna-mist-movchyt");
+  view.brOk = true;
+  { Box b = itemBox(ID_SRC_LIVE); tap(b.x + 40, b.y + 20); }
+  out.bridgeSrc = 0;
+  save("01h-golovna-analogovyi");
   { Box b = itemBox(ID_MUTE); tap(b.x + 40, b.y + 20); }
   for (int k = 0; k < 12; k++) { fakeMs += 20; frame(false, 0, 0); }
   save("01d-golovna-tysha");
@@ -297,6 +317,13 @@ int main() {
     needFull = true;
     frame(false, 0, 0);
     save("18c-pryimach-vikno-2.32");
+    // 4.00: строка «Тембр» — что у приёмника меняет звук (эквалайзер, срез низов, чіткість)
+    r.eq[0] = 3; r.eq[4] = 11; r.lowCut = 1; r.par[0] = 3;
+    needFull = true;
+    frame(false, 0, 0);
+    save("18c2-pryimach-tembr-zmineno");
+    for (int k = 0; k < 5; k++) r.eq[k] = 6;
+    r.lowCut = 0; r.par[0] = 0;
     { Box b = rxBtn(ID_RX_SET); tap(b.x + 30, b.y + 20); }
     save("18d-pryimach-nalashtuvannya");
     { Box b = rxsBox(ID_RXS_PLUS + 7); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }   // блокировка: немає → меню → гучність
@@ -375,6 +402,13 @@ int main() {
   frame(false, 0, 0);
   tap(40 + 160, 450);
   save("03-zvuk");
+  view.txLowCut = 1;   // 4.00: огонёк на «Еквалайзер» — срез низов включён
+  needFull = true;
+  frame(false, 0, 0);
+  save("03-zvuk-ekv-zmineno");
+  view.txLowCut = 0;
+  needFull = true;
+  frame(false, 0, 0);
   {   // столбики спектра во весь рост и «дёргаются» — кнопка «Еквалайзер» над ними должна остаться целой
     uint8_t keep[SPEC_BARS];
     memcpy(keep, view.spec, sizeof(keep));

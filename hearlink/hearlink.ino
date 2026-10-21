@@ -72,6 +72,7 @@ void settingsFactory();
 #include "dbgtee.h"   // с этого места Serial — порт «с ответвлением» (отладка по радио)
 #include "radio.h"
 #include "eq.h"       // эквалайзер — общий для входа передатчика и для приёмника
+#include "txbridge.h"  // 4.x: мост на Pi Pico — входы аналоговый и цифровой (до txaudio.h: звуковая задача кладёт ему байты)
 #include "txaudio.h"
 #include "txpeers.h"
 #include "rxaudio.h"
@@ -1248,6 +1249,18 @@ static void command(String s) {
         } else recWantStop = true;
       }
       return;
+    case 'C':   // передатчик 4.x: мост — C стан; C1 — цифровий вхід (AES), C2 — аналоговий (PCM1808)
+      if (cfg.isTx) {
+        if (arg.length() && (v == BP_SRC_AES || v == BP_SRC_PCM)) {
+          cfg.bridgeSrc = (uint8_t)v;
+          if (cfg.tone) cfg.tone = 0;   // выбор входа — это и «в ефір вхід» (как кнопка на экране)
+          txBr.kick = true;
+          settingsSave();
+          if (cfg.board == BOARD_4848) ui::needFull = true;
+        }
+        txBridgePrint();
+      }
+      return;
     case 'S':   // передатчик: имя источника звука на кнопке (S без имени — вернуть «З пульта»)
       if (cfg.isTx) {
         strlcpy(cfg.srcName, arg.c_str(), sizeof(cfg.srcName));
@@ -2250,6 +2263,7 @@ void loop() {
   if (!cfg.isTx) dbgPumpRx();
   otaAutoTick();            // передатчик: приёмник со старой прошивкой на связи — обновить его самому
   if (cfg.isTx) txRawCapTick();
+  if (cfg.isTx && cfg.input == IN_I2S) txBridgeTick();   // мост: его стан из обратного канала и команда «какой вход»
   if (cfg.isTx && cfg.board == BOARD_4848) {   // драйвер экрана сбился с очереди буферов (panel4848.h): отметить, когда
     static uint32_t seenFlips;
     uint32_t f = lcdBbFlips;

@@ -135,7 +135,10 @@ static bool txI2sBegin() {
   sc.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
   sc.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
   bool m = cfg.board == BOARD_4848;
-  txI2sProbe = txI2sNoMclk == I2S_NO_MCLK;
+  // 4.x («Next Edition»): вход — мост на Pi Pico, такт PCM1808 даёт он сам; вывод 43 всегда отдан порту (по нему же идут
+  // команды мосту, txbridge.h). То, что в 3.x было пробой a2 на один запуск, теперь — всегда. Данные моста выровнены
+  // (сдвига на бит, как у PCM1808 напрямую, нет): узнавание сдвига не нужно — «як є».
+  txI2sProbe = true;
   txI2sNoMclk = 0;
   sc.gpio_cfg.mclk = txI2sProbe ? I2S_GPIO_UNUSED : (gpio_num_t)(m ? PIN_I2S_MCLK_4848 : PIN_I2S_MCLK);
   sc.gpio_cfg.bclk = (gpio_num_t)(m ? PIN_I2S_BCK_4848 : PIN_I2S_BCK);
@@ -232,7 +235,7 @@ static volatile uint32_t txAdcRailUi;    // отсчётов АЦП на кра�
 // совпадает с битом 0 ПРЕДЫДУЩЕГО слова буфера в 100 % слов (с любым другим соседом — 55–59 %); с пультом сборка убирает
 // все «перевороты» (188 и 201 за 1,5 с → 0). С 3.21 снова «само» по умолчанию.
 static volatile bool txAdcShift = true;    // сейчас данные считаются сдвинутыми (у владельца так; само поправится за 8 мс)
-static volatile uint8_t txAdcFmtForce;     // 0 — само (по умолчанию), 1 — как есть, 2 — сдвиг
+static volatile uint8_t txAdcFmtForce = 1; // 0 — само, 1 — как есть (с 4.00 по умолчанию: данные моста выровнены), 2 — сдвиг
 static volatile uint32_t txAdcWords, txAdcBit0, txAdcBit8, txAdcFlips;
 // Запись «сырых» 32-битных слов АЦП (с 3.20) — для разбора на компьютере: e19=<мс> — записать, когда вход оживёт;
 // e21=<мс> — то же, но вход включить самому (проверочный звук снимается на время записи и возвращается сам);
@@ -265,6 +268,7 @@ static NSX_HOT bool txReadI2s(int16_t *pcm, int16_t *sd) {
   static int8_t vote;      // кадров подряд «сдвинуто» (+) или «как есть» (−)
   size_t got = 0;
   if (i2s_channel_read(txI2s, raw, sizeof(raw), &got, 50) != ESP_OK || got != sizeof(raw)) return false;
+  txBridgeFeed(raw, FRAME);   // обратный канал моста — биты 7…4 слов (txbridge.h)
   uint32_t b0 = 0, b8 = 0, nz = 0, lo = 0;
   for (int i = 0; i < FRAME * 2; i++) {
     uint32_t w = (uint32_t)raw[i];

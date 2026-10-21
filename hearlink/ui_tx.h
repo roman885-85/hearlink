@@ -11,6 +11,7 @@
 #include "upd.h"      // обновление с карты памяти: файл прошивки в папке UPDATE (нужны и карта, и ota.h)
 #include "txpeers.h"
 #include "txui.h"
+static_assert(UB_FIRSTED == ui::CARD_WHY_FIRSTED, "UB_FIRSTED (upd.h) != CARD_WHY_FIRSTED (txui.h)");   // причина «первая модификация» — одно число
 #include "esp_dsp.h"
 
 void settingsSave();      // в hearlink.ino
@@ -62,10 +63,12 @@ static volatile bool offAsk;              // с порта попросили в
 static const uint8_t RATE_IDX[9] = { 8, 7, 6, 4, 3, 2, 1, 0, 12 };   // 24, 18, 12, 6, 11, 5,5, 2, 1 и 0,5 Мбит/с в таблице RATES
 static const uint8_t DIM_MIN[4] = { 0, 1, 5, 15 };
 
-// Спектр входа — алгоритм из «ПОТУЖНОГО РАДІО» (yoSpectrum): 2048 отсчётов, окно Ханна, преобразование Фурье,
-// 32 полосы с логарифмическим шагом 50 Гц … 16 кГц (узкие нижние берутся между соседними отсчётами),
-// наклон 4 дБ на октаву, шкала идёт за громкостью (верх — недавний пик, низ — на 30 дБ ниже), уровень
-// усредняется по времени и риска едет к нему мягко: вверх быстрее, вниз медленнее.
+// Спектр входа: 2048 отсчётов, окно Ханна, преобразование Фурье, 32 полосы с логарифмическим шагом 50 Гц … 16 кГц —
+// мощность полосы, как у анализатора пульта (розовый шум — ровно). Шкала идёт за громкостью (верх — недавний пик, низ —
+// на 42 дБ ниже), уровень усредняется по времени и риска едет к нему мягко: вверх быстрее, вниз медленнее.
+// До 4.00 алгоритм был из «ПОТУЖНОГО РАДІО» (yoSpectrum): с наклоном +4 дБ на октаву и шкалой 30 дБ — музыка на нём
+// «стояла ровно», но рядом с анализатором пульта картинка выходила почти зеркальной: верх на 20–30 дБ выше, чем есть
+// (владелец 21.10: «чуть ли не зеркальный анализатор вижу на пульте»). Теперь — как на пульте.
 // Само преобразование — из esp-dsp, на векторных инструкциях ESP32-S3.
 static float *fftBuf, *fftWin;
 static float spAvg[ui::SPEC_BARS], spSmooth[ui::SPEC_BARS], spRef = -30;
@@ -107,7 +110,7 @@ static void specAnimate(uint8_t *out) {
 // Полосы спектра посчитаны заранее: с какого отсчёта по какой, поправка наклона, и доля для узких полос.
 struct SpecBand {
   uint16_t i0, i1;   // отсчёты [i0, i1) — широкая полоса; i1 == 0 — узкая: между отсчётами i0 и i0 + 1
-  float frac, tilt;  // доля между двумя отсчётами; поправка +4 дБ на октаву
+  float frac, wid;   // доля между двумя отсчётами; у узкой полосы — её ширина в долях отсчёта (мощность — по ширине)
 };
 static SpecBand spBand[ui::SPEC_BARS];
 static bool spBandOk;
@@ -118,7 +121,7 @@ static void specBands() {
     float f0 = fmin * powf(fmax / fmin, (float)b / n), f1 = fmin * powf(fmax / fmin, (float)(b + 1) / n);
     float fc = sqrtf(f0 * f1), b0 = f0 * N / sr, b1 = f1 * N / sr;
     SpecBand &s = spBand[b];
-    s.tilt = 4 * log2f(fc / 1000.0f);
+    s.wid = b1 - b0;
     if (b1 - b0 < 1.5f) {
       float fb = fc * N / sr;
       int i = (int)fb;
@@ -137,7 +140,7 @@ static void specBands() {
 
 static void specUpdate() {
   const int N = TX_SPEC_N, n = ui::SPEC_BARS;
-  const float range = 30, head = 6, decay = 5, avgK = 0.7f;
+  const float range = 42, head = 6, decay = 5, avgK = 0.7f;
   uint32_t tSpec = micros();
   if (!spBandOk) specBands();
   uint32_t now = millis();
@@ -161,7 +164,7 @@ static void specUpdate() {
     float p = 0;
     if (!sb.i1) {
       float q0 = sqrtf(mag2(sb.i0)), q1 = sqrtf(mag2(sb.i0 + 1)), m = q0 + (q1 - q0) * sb.frac;
-      p = m * m;
+      p = m * m * sb.wid / 1.5f;   // полоса уже отсчёта: её доля мощности (как у широких — «/1,5» за окно Ханна)
     } else {
       for (int i = sb.i0; i < sb.i1; i++) p += mag2(i);   // вся мощность полосы: один наибольший отсчёт скачет от кадра к кадру
       p /= 1.5f;                                           // окно Ханна размазывает тон на полтора отсчёта
@@ -172,7 +175,7 @@ static void specUpdate() {
       p = pAvg[b];
     }
     float amp = sqrtf(p) / (N / 4.0f);
-    dbs[b] = 20 * log10f(amp + 1e-9f) + sb.tilt;
+    dbs[b] = 20 * log10f(amp + 1e-9f);
     if (dbs[b] > fm) fm = dbs[b];
   }
   if (!spRefOk) {
@@ -557,6 +560,10 @@ static void task(void *) {
     v.card = recCard;
     strlcpy(v.cardFs, recCardFs, sizeof(v.cardFs));
     v.rec = recOn;
+    v.brSrc = cfg.bridgeSrc == BP_SRC_AES ? 1 : 2;   // мост (4.00, txbridge.h)
+    v.brOk = txBridgeOk();
+    v.brAes = txBr.st.aes;
+    v.brRate = txBr.st.aesRate;
     v.recS = recSamples / SRATE;
     v.sdFreeMb = recFreeMb;
     v.scanning = scanRunning;
@@ -812,6 +819,12 @@ static void task(void *) {
       txMute = o.mute;
       cfg.txMute = o.mute;
       o.mute = -1;
+      saveAt = now + 600;
+    }
+    if (o.bridgeSrc) {   // вход моста (4.00): аналоговый или цифровой — команда мосту сейчас же
+      cfg.bridgeSrc = (uint8_t)(o.bridgeSrc == 1 ? BP_SRC_AES : BP_SRC_PCM);
+      o.bridgeSrc = 0;
+      txBr.kick = true;
       saveAt = now + 600;
     }
     if (o.setParam >= 0) {

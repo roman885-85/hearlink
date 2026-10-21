@@ -102,6 +102,11 @@ struct View {
   bool sd = false, rec = false;
   bool sdFull = false;                 // на карте не осталось места для записи
   bool fileOn = false;                 // в эфир идёт файл с карты (вместо входа и проверочного звука)
+  // мост на Pi Pico (4.x, txbridge.h): какой вход выбран, на связи ли он, есть ли сигнал AES
+  uint8_t brSrc = 2;                   // 1 — цифровой вход, 2 — аналоговый (как cfg.bridgeSrc)
+  bool brOk = false;                   // мост на связи (стан за последние 1,5 с)
+  uint8_t brAes = 0;                   // стан AES: 0 — немає, 1 — ловить, 2 — є, 3 — частота, якої міст не бере
+  uint32_t brRate = 0;                 // частота AES, Гц
   uint8_t card = 0;                    // почему карты нет: 0 — не отвечает, 2 — не та разметка, 3 — отвечает, но не запускается
   char cardFs[12] = "";                // какая на ней разметка, если не та
   uint32_t recS = 0, sdFreeMb = 0;
@@ -197,6 +202,7 @@ struct Out {
   bool otaCard = false, otaDemo = false, updScan = false;   // обновить всё файлом с карты / пробное / просмотреть папку на карте
   int pairOpen = -1;                   // открыть (1) или закрыть (0) приём просьб о доступе
   int pairApprove = -1;                // дозволить доступ: место просьбы
+  int bridgeSrc = 0;                   // выбрали вход моста: 1 — цифровой, 2 — аналоговый (0 — нет)
 };
 enum { RXC_IDENTIFY = 1, RXC_NAME, RXC_ENABLE, RXC_VOLUME, RXC_FORGET, RXC_STEREO,
        RXC_SET,       // настройка приёмника: rxArg = номер настройки × 32 + значение (как в команде CMD_SET)
@@ -221,7 +227,7 @@ static const char *const SHORT_QUAL[] = { "найвища", "стандартн�
 // список мелодий заполняет устройство: «По черзі», затем названия из памяти; конец списка — nullptr
 static const char *OPT_TRACK[9] = { "По черзі", "Мелодія 1", "Мелодія 2", nullptr };
 static const char *const OPT_STEREO[] = { "Моно", "Стерео", nullptr };
-static const char *const OPT_INPUT[] = { "Вбудований вхід", "Модуль PCM1808", nullptr };
+static const char *const OPT_INPUT[] = { "Вбудований вхід", "Міст Pi Pico", nullptr };
 static const char *const OPT_LANG[] = { "Українська", "English", nullptr };
 static const char *const OPT_HOP[] = { "Не міняти — лишатись на своєму каналі", "Міняти самому на вільніший", nullptr };
 static const char *const OPT_WEAK[] = { "Не знижувати — завжди як обрано", "Знижувати швидкість самому", nullptr };
@@ -231,7 +237,7 @@ static const char *const OPT_TEST[] = { "Вимкнено — іде звук і
 static const char *const TEST_COMPACT[] = { "тон", "тон", "голос", "голос+музика", "музика", "музика+голос", "канали" };
 static const char *const SHORT_TEST[] = { "вимкнено", "тон", "голос", "голос і музика", "музика", "музика з голосом", "перевірка каналів" };
 static const char *const OPT_DIM[] = { "Ніколи", "Через 1 хвилину", "Через 5 хвилин", "Через 15 хвилин", nullptr };
-static const char *const SHORT_INPUT[] = { "вбудований", "PCM1808" };
+static const char *const SHORT_INPUT[] = { "вбудований", "міст Pi Pico" };
 static const char *const SHORT_DIM[] = { "ніколи", "1 хв", "5 хв", "15 хв" };
 static const ParamDef PARAM[P_COUNT] = {
   { "Канал", "Радіоканал, на якому йде передача. Приймачі знаходять його самі. Якщо звук переривається — спробуйте інший або «Знайти вільний канал».", K_STEP, 1, 13, 1, "", nullptr },
@@ -239,7 +245,7 @@ static const ParamDef PARAM[P_COUNT] = {
   { "Швидкість радіо", "Найнадійніше — 5,5 Мбіт/с і нижче: що менша швидкість, то далі чути. На 6–24 Мбіт/с пакети губляться навіть поруч із приймачем — не радимо. Для 2 Мбіт/с і нижче передавач сам знизить якість звуку. «Сама» — обирає від 5,5 униз за сигналом приймачів.", K_LIST, 0, 9, 1, "", OPT_RATE },
   { "Потужність", "Сила сигналу передавача. У малому залі можна зменшити — менше завад сусідам.", K_STEP, 2, 20, 1, " дБм", nullptr },
   { "Підсилення входу", "Додає гучності тихому джерелу. Краще виставити рівень на пульті, а тут лишити 0.", K_STEP, -12, 24, 3, " дБ", nullptr },
-  { "Вхід з пульта", "Яким входом передавач приймає звук з пульта. Вбудований вхід працює одразу; модуль PCM1808 дає чистіший звук і стерео, але його треба під'єднати.", K_LIST, 0, 1, 1, "", OPT_INPUT },
+  { "Вхід передавача", "Звідки передавач бере звук. «Міст Pi Pico» — два входи: аналоговий (модуль PCM1808) і цифровий (AES з пульта); між ними перемикають кнопки «Аналоговий вхід» і «Цифровий вхід». Вбудований вхід — запасний, без моста.", K_LIST, 0, 1, 1, "", OPT_INPUT },
   { "Перевірочний звук", "Замість входу в ефір іде голос, музика або тон — щоб перевірити приймачі без пульта. «Канали» — перевірка стерео: один гудок ліворуч, два праворуч.", K_LIST, 0, 6, 1, "", OPT_TEST },
   { "Яскравість екрана", "Яскравість підсвітки цього екрана.", K_STEP, 10, 100, 10, " %", nullptr },
   { "Гасити екран", "Через який час без дотиків екран пригасне. Передача при цьому триває. Дотик повертає яскравість.", K_LIST, 0, 3, 1, "", OPT_DIM },
@@ -346,7 +352,9 @@ constexpr int ID_HOME_CH = 10, ID_HOME_KIT = 11, ID_HOME_REC = 12, ID_HOME_RX = 
 constexpr int ID_HOME_FILES = 14;                   // «Файли» на плитке карты — открывает файловый менеджер
 constexpr int ID_ROW = 300;                    // +номер настройки (до 2.83 — 20: двадцать первая настройка совпала бы с ID_SCAN)
 constexpr int ID_SCAN = 40, ID_ABOUT = 41, ID_RESTART = 42, ID_FACTORY = 43, ID_POWEROFF = 44;
-constexpr int ID_SRC_LIVE = 45, ID_SRC_TEST = 46;   // что идёт в эфир: звук с пульта / проверочный звук
+constexpr int ID_SRC_LIVE = 45, ID_SRC_TEST = 46;   // что идёт в эфир: вход / проверочный звук (с 4.00 LIVE — аналоговый вход моста)
+constexpr int ID_SRC_DIG = 39;                      // цифровой вход моста (AES3 с пульта), с 4.00
+constexpr uint8_t CARD_WHY_FIRSTED = 6;             // файл на карте — прошивка первой модификации (= UB_FIRSTED, upd.h)
 constexpr int ID_MUTE = 47;                         // тишина в эфире
 constexpr int ID_SRCNAME = 49;                      // «Назва джерела звуку» на странице настроек — открывает клавиатуру
 constexpr int ID_POWER = 48;                        // выключение передатчика — кнопка в шапке, посередине (на всех страницах)
@@ -790,9 +798,11 @@ static Box itemBox(int id) {
     case ID_HOME_FILES: return Box{ 198, RC_Y + 8, 98, RC_H - 16 };
     case ID_HOME_RX: return Box{ 323, TL_Y, 141, TL_H };
     // переключатель источника: на главной — во всю ширину сверху, на вкладке «Звук» — в строке проверочного звука
-    case ID_SRC_LIVE: return page == PG_HOME ? Box{ 16, SW_Y, 150, SW_H } : Box{ 16, 280, 150, 54 };
-    case ID_SRC_TEST: return page == PG_HOME ? Box{ 174, SW_Y, 150, SW_H } : Box{ 174, 280, 150, 54 };
-    case ID_MUTE: return Box{ 332, SW_Y, 132, SW_H };
+    // с 4.00 источников три: аналоговый вход, цифровой вход, проверка (кнопки уже, подписи входов — в две строки)
+    case ID_SRC_LIVE: return page == PG_HOME ? Box{ 16, SW_Y, 108, SW_H } : Box{ 16, 280, 106, 54 };
+    case ID_SRC_DIG: return page == PG_HOME ? Box{ 130, SW_Y, 108, SW_H } : Box{ 126, 280, 106, 54 };
+    case ID_SRC_TEST: return page == PG_HOME ? Box{ 244, SW_Y, 108, SW_H } : Box{ 236, 280, 96, 54 };
+    case ID_MUTE: return Box{ 358, SW_Y, 106, SW_H };
     case ID_POWER: return Box{ 218, 12, 40, 40 };
     case ID_RX_PREV: return Box{ 320, 364, 48, 40 };
     case ID_RX_NEXT: return Box{ 416, 364, 48, 40 };
@@ -806,7 +816,7 @@ static Box itemBox(int id) {
     case ID_TXEQ_OPEN: return Box{ 312, 79, 144, 31 };
     case ID_ROW + P_GAIN: return Box{ 16, 218, 218, 54 };
     case ID_ROW + P_INPUT: return Box{ 246, 218, 218, 54 };
-    case ID_ROW + P_TONE: return Box{ 332, 280, 132, 54 };   // «який звук» — открывает окно настроек проверки
+    case ID_ROW + P_TONE: return Box{ 338, 280, 126, 54 };   // «який звук» — открывает окно настроек проверки (с 4.00 уже: рядом три источника)
     case ID_ROW + P_QUALITY: return Box{ 16, 342, 288, 54 };
     case ID_ROW + P_STEREO: return Box{ 312, 342, 152, 54 };
     case ID_SCAN: return Box{ 16, 222, 448, 50 };
@@ -943,23 +953,39 @@ static void drawRxRow(int k, bool pressed) {
   if (r.online) drawToggle(b.x + b.w - 68, b.y + 13, r.off ? 0 : 1);
 }
 
-static int srcShown = -1;      // какая половина переключателя нарисована выбранной
+static int srcShown = -1;      // что нарисовано выбранным (srcState)
+// что сейчас в эфире: 0 — аналоговый вход, 3 — цифровой, 1 — проверочный звук, 2 — файл с карты
+static int srcState() { return view.fileOn ? 2 : view.val[P_TONE] ? 1 : view.brSrc == 1 ? 3 : 0; }
 static void drawSource(int id, bool pressed) {
   Box b = itemBox(id);
-  bool file = view.fileOn, test = view.val[P_TONE] != 0, mine = file ? id == ID_SRC_TEST : (id == ID_SRC_TEST) == test;
+  int st = srcState();
+  bool file = st == 2, test = st == 1, mine = id == ID_SRC_TEST ? (file || test) : id == ID_SRC_DIG ? st == 3 : st == 0;
   uint16_t fill = pressed ? C_SECONDARY : mine ? C_PRIMARY : C_CARD, ink = mine && !pressed ? C_PRIMARY_FG : C_FG;
   g.fill(b.x, b.y, b.w, b.h, C_BG);
   g.box(b.x, b.y, b.w, b.h, RADIUS, mine || pressed ? fill : C_BORDER);
   if (!mine && !pressed) g.box(b.x + 1, b.y + 1, b.w - 2, b.h - 2, RADIUS - 1, C_CARD);
-  // имя источника задаёт владелец («Налашт.» › «Назва джерела звуку»); не задано — «З пульта»
-  // пока в эфире файл с карты, правая кнопка — он («Файл»): нажать — открыть карту; левая — вернуть звук источника
-  const char *label = id == ID_SRC_LIVE ? (view.srcName[0] ? view.srcName : tr("З пульта")) : file ? tr("Файл") : tr("Перевірка");
-  int cx = b.x + b.w / 2 + (mine ? 8 : 0);
-  int w = g.text(cx, b.y + b.h / 2 + 6, label, F_TXTB, ink, AL_C, b.w - (mine ? 44 : 16));
-  if (w > b.w - 44) w = b.w - 44;
+  // С 4.00 входов два — у моста на Pi Pico: «Аналоговий вхід» (PCM1808) и «Цифровий вхід» (AES3 с пульта). Владелец
+  // 21.10: «вместо пульта название аналоговый вход и отдельно кнопка цифровой вход». Кнопки стали уже — подписи входов
+  // в две строки. Пока в эфире файл с карты, кнопка проверки — он («Файл»): нажать — открыть карту; кнопка входа —
+  // вернуть вход.
+  const char *l1, *l2 = nullptr;
+  if (id == ID_SRC_LIVE) {
+    l1 = tr("Аналоговий");
+    l2 = tr("вхід");
+  } else if (id == ID_SRC_DIG) {
+    l1 = tr("Цифровий");
+    l2 = tr("вхід");
+  } else l1 = file ? tr("Файл") : tr("Перевірка");
+  int cx = b.x + b.w / 2 + (mine ? 8 : 0), maxw = b.w - (mine ? 24 : 8), w;
+  if (l2) {
+    int w1 = g.text(cx, b.y + b.h / 2 - 2, l1, F_CAPB, ink, AL_C, maxw);
+    int w2 = g.text(cx, b.y + b.h / 2 + 14, l2, F_CAPB, ink, AL_C, maxw);
+    w = w1 > w2 ? w1 : w2;
+  } else w = g.text(cx, b.y + b.h / 2 + 5, l1, F_CAPB, ink, AL_C, maxw);   // тем же шрифтом, что и входы
+  if (w > maxw) w = maxw;
   lampDrop(id);
-  if (mine) {   // огонёк у выбранного: зелёный — звук источника или файл; красный — проверочный звук
-    float dx = cx - w / 2 - 14, dy = b.y + b.h / 2;
+  if (mine) {   // огонёк у выбранного: зелёный — вход или файл; красный — проверочный звук
+    float dx = cx - w / 2 - 10, dy = b.y + b.h / 2;
     // Красный был янтарным и на песочной кнопке терялся (владелец 07.10: «почти не видно красной точки, она
     // сливается с кнопкой») — теперь ярко-красный с тёмным ободком. И оба огонька живые (lampSet).
     // Зелёный (звук источника, файл) — того же вида, что красный: яркий, с тёмным ободком
@@ -969,7 +995,7 @@ static void drawSource(int id, bool pressed) {
     lampDraw(l, 1);
     if (!pressed) lampSet(id, l.x, l.y, l.r, l.c, l.ring);
   }
-  srcShown = file ? 2 : test;
+  srcShown = st;
 }
 
 // Кнопка «Тиша»: пока тишина включена — красная, с перечёркнутым динамиком.
@@ -980,24 +1006,30 @@ static void drawMute(bool pressed) {
   g.fill(b.x, b.y, b.w, b.h, C_BG);
   g.box(b.x, b.y, b.w, b.h, RADIUS, pressed ? C_SECONDARY : on ? C_DANGER : C_BORDER);
   if (!on && !pressed) g.box(b.x + 1, b.y + 1, b.w - 2, b.h - 2, RADIUS - 1, C_CARD);
-  int ix = b.x + 26, iy = b.y + b.h / 2;
+  int ix = b.x + 22, iy = b.y + b.h / 2;   // с 4.00 кнопка уже (132 → 106): рядом встал цифровой вход
   const float horn[] = { ix - 9.0f, iy - 4.0f, ix - 3.0f, iy - 4.0f, ix + 5.0f, iy - 11.0f, ix + 5.0f, iy + 11.0f, ix - 3.0f, iy + 4.0f, ix - 9.0f, iy + 4.0f };
   g.poly(horn, 6, C_FG);                                         // динамик
   if (on) g.line(ix - 11, iy + 11, ix + 11, iy - 11, 3, C_FG);   // перечёркнут
   else g.arc(ix + 5, iy, 8, 2.2f, C_FG, 40, 140);                // звуковая волна
-  g.text(b.x + 48, iy + 6, on ? tr("ТИША") : tr("Тиша"), F_TXTB, C_FG);
+  g.text(b.x + 40, iy + 6, on ? tr("ТИША") : tr("Тиша"), F_TXTB, C_FG);
   lampDrop(LAMP_MUTE);
-  if (on && !pressed) lampSet(LAMP_MUTE, b.x + b.w - 15, iy, 3.5f, C_FG, C_DANGER);   // тишина включена — белый огонёк на красной кнопке
+  if (on && !pressed) lampSet(LAMP_MUTE, b.x + b.w - 10, iy, 3.5f, C_FG, C_DANGER);   // тишина включена — белый огонёк на красной кнопке
   muteShown = on;
 }
 
 static void drawItem(int id, bool pressed) {
   char t[40];
   Box b = itemBox(id);
-  if (id == ID_SRC_LIVE || id == ID_SRC_TEST) return drawSource(id, pressed);
+  if (id == ID_SRC_LIVE || id == ID_SRC_DIG || id == ID_SRC_TEST) return drawSource(id, pressed);
   if (id == ID_MUTE) return drawMute(pressed);
   if (id == ID_POWER) return drawPower(pressed);
-  if (id == ID_TXEQ_OPEN) return drawButton(b, tr("Еквалайзер"), 0, pressed);
+  if (id == ID_TXEQ_OPEN) {   // с 4.00: огонёк — эквалайзер входа не ровный или включён срез низов (меняют тембр для всех)
+    drawButton(b, tr("Еквалайзер"), 0, pressed);
+    bool eq = view.txLowCut;
+    for (int k = 0; k < 5; k++) eq |= view.txEq[k] != 0;
+    if (eq) g.circle(b.x + 12, b.y + b.h / 2, 4, C_WARN);
+    return;
+  }
   if (id >= ID_RXROW && id < ID_RXROW + RX_ROWS) return drawRxRow(id - ID_RXROW, pressed);
   if (id >= ID_ROW && id < ID_ROW + P_COUNT) return drawRow(id - ID_ROW, pressed);
   if (id >= ID_HELP && id < ID_HELP + HELP_N) {
@@ -1225,10 +1257,28 @@ static void drawContent() {
   switch (page) {
     case PG_HOME:
       item(ID_SRC_LIVE);
+      item(ID_SRC_DIG);
       item(ID_SRC_TEST);
       item(ID_MUTE);
       card(Box{ 16, LV_Y, 448, LV_H });
-      g.text(32, LV_Y + 28, view.fileOn ? tr("Рівень звуку з файлу") : view.val[P_TONE] ? tr("Рівень перевірочного звуку") : tr("Рівень входу"), F_CAP, C_MUTED_FG);
+      {   // что идёт в эфир; у входов моста (4.00) — и его стан: нет моста, нет сигнала AES — предупреждением
+        const char *t = view.fileOn ? tr("Рівень звуку з файлу") : view.val[P_TONE] ? tr("Рівень перевірочного звуку") : nullptr;
+        char tt[80];
+        uint16_t ink = C_MUTED_FG;
+        if (!t) {
+          if (!view.brOk) {
+            t = tr("Міст не відповідає — входу немає");
+            ink = C_WARN;
+          } else if (view.brSrc == 1 && view.brAes != 2) {
+            t = view.brAes == 3 ? tr("Цифровий вхід: частота, якої міст не бере") : tr("Цифровий вхід: немає сигналу AES");
+            ink = C_WARN;
+          } else if (view.brSrc == 1) {
+            snprintf(tt, sizeof(tt), tr("Рівень цифрового входу (AES, %u кГц)"), (unsigned)((view.brRate + 500) / 1000));
+            t = tt;
+          } else t = tr("Рівень аналогового входу");
+        }
+        g.text(32, LV_Y + 28, t, F_CAP, ink, AL_L, 330);
+      }
       for (int m : { -48, -36, -24, -12, -6, 0 }) {
         char t[8];
         snprintf(t, sizeof(t), "%d", m);
@@ -1266,12 +1316,13 @@ static void drawContent() {
     case PG_SOUND:
       card(Box{ 16, 76, 448, 134 });
       g.text(32, 100, tr("Спектр входу"), F_CAP, C_MUTED_FG);
-      g.text(300, 100, tr("100 Гц … 12 кГц"), F_CAP, C_MUTED_FG, AL_R);
+      g.text(300, 100, tr("50 Гц … 16 кГц"), F_CAP, C_MUTED_FG, AL_R);   // до 4.00 надпись была «100 Гц … 12 кГц» — неверно
       drawSpectrum(true);
       item(ID_TXEQ_OPEN);   // эквалайзер входа — рядом со спектром, который он меняет
       item(ID_ROW + P_GAIN);
       item(ID_ROW + P_INPUT);
       item(ID_SRC_LIVE);
+      item(ID_SRC_DIG);
       item(ID_SRC_TEST);
       item(ID_ROW + P_TONE);
       item(ID_ROW + P_QUALITY);
@@ -1471,10 +1522,29 @@ static void drawRxLines() {
   line(tr("Сигнал"), t);
   snprintf(t, sizeof(t), "%d %%%s", r.volume * 5, r.mute ? tr(", тиша") : "");
   line(tr("Гучність"), t);
-  snprintf(t, sizeof(t), tr("%.1f %% пакетів"), r.lossPm / 10.0f);
-  line(tr("Втрати"), t);
-  snprintf(t, sizeof(t), tr("%u мс"), r.depthMs);
-  line(tr("Запас (затримка)"), t);
+  snprintf(t, sizeof(t), tr("%.1f %% пакетів · %u мс"), r.lossPm / 10.0f, r.depthMs);
+  line(tr("Втрати · запас"), t);
+  {   // тембр (с 4.00): всё, что у приёмника меняет звук, — на виду. Владелец 21.10 искал «лишние высокие» в эквалайзере,
+      // а их давала «чіткість» с другого листа, и срез низов — отдельной строкой: «все настройки эквалайзера в нулях»
+    char v[64] = "";
+    if (r.hasEq) {
+      bool eq = false;
+      for (int k = 0; k < 5; k++) eq |= r.eq[k] != 6;
+      if (eq) strlcat(v, tr("еквалайзер"), sizeof(v));
+      if (r.lowCut) {
+        if (v[0]) strlcat(v, ", ", sizeof(v));
+        strlcat(v, tr("зріз"), sizeof(v));
+      }
+    }
+    if (r.hasInfo && r.par[0]) {   // RXP_CLARITY
+      if (v[0]) strlcat(v, ", ", sizeof(v));
+      strlcat(v, r.par[0] == 1 ? tr("чіткість легка") : r.par[0] == 2 ? tr("чіткість середня") : tr("чіткість сильна"), sizeof(v));
+    }
+    g.fill(mBox.x + 20, y - 19, mBox.w - 40, 24, C_CARD);
+    g.text(mBox.x + 22, y, tr("Тембр"), F_CAP, C_MUTED_FG);
+    g.text(mBox.x + mBox.w - 22, y, v[0] ? v : tr("рівний"), F_CAPB, v[0] ? C_WARN : C_FG, AL_R, 300);
+    y += 25;
+  }
   line(tr("Вихід звуку"), r.fw < 11 ? tr("протифаза (стара версія)") : r.stereo ? tr("два канали (навушники)") : tr("протифаза (підсилювач)"));
   // версия — точная (до 2.59 здесь стояло округление до десятых из старого поля: приёмник 2.58 показывался как «2.6»)
   if (r.fwMaj) snprintf(t, sizeof(t), tr("%u год %02u хв, версія %u.%02u"), r.uptimeMin / 60, r.uptimeMin % 60, r.fwMaj, r.fwMin);
@@ -1681,7 +1751,7 @@ static void drawOtaModal() {
       case 4: snprintf(t, sizeof(t), tr("На картці та сама прошивка, що вже працює (%s)."), o.cardVer); break;
       case 3: snprintf(t, sizeof(t), "%s", tr("У теці UPDATE на картці прошивки немає.")); break;
       case 6:
-        if (o.cardWhy == UB_FIRSTED) snprintf(t, sizeof(t), tr("%s — прошивка першої модифікації (3.x), не для цього набору."), o.cardFile);
+        if (o.cardWhy == CARD_WHY_FIRSTED) snprintf(t, sizeof(t), tr("%s — прошивка першої модифікації (3.x), не для цього набору."), o.cardFile);
         else snprintf(t, sizeof(t), tr("Файл %s не годиться."), o.cardFile);
         cink = C_WARN;
         break;
@@ -3053,17 +3123,25 @@ static void activate(int id) {
       drawItem(ID_MUTE, false);
       break;
     case ID_SRC_LIVE:
-      if (view.fileOn) {        // в эфире файл с карты — остановить его: вернётся звук источника
+    case ID_SRC_DIG: {   // вход моста (4.00): аналоговый или цифровой — сразу, без вопросов
+      uint8_t want = id == ID_SRC_DIG ? 1 : 2;
+      if (view.brSrc != want) {
+        view.brSrc = want;
+        out.bridgeSrc = want;
+        needFull = true;
+      }
+      if (view.fileOn) {        // в эфире файл с карты — остановить его: вернётся вход
         uiFm(FM_STOP, NULL, NULL);
         break;
       }
-      if (view.val[P_TONE]) {   // вернуть звук с пульта — сразу, без вопросов
+      if (view.val[P_TONE]) {   // в эфире проверка — вернуть вход
         out.setParam = P_TONE;
         out.setValue = 0;
         view.val[P_TONE] = 0;
         needFull = true;
       }
       break;
+    }
     case ID_SRC_TEST:
       if (view.fileOn) {        // в эфире файл — показать карту (там его можно остановить)
         fmOpen();
@@ -3616,11 +3694,20 @@ static void frameBody(bool down, int tx, int ty) {
       if (strcmp(v, rowShown[p])) drawItem(hot[i].id, false);
     }
     if (page == PG_HOME && muteShown != (int)view.muted) drawItem(ID_MUTE, false);        // тишину переключили не отсюда
-    if ((page == PG_HOME || page == PG_SOUND) && srcShown != (view.fileOn ? 2 : view.val[P_TONE] != 0)) {   // источник сменили не отсюда
+    if ((page == PG_HOME || page == PG_SOUND) && srcShown != srcState()) {   // источник сменили не отсюда
       if (page == PG_HOME) needFull = true;   // на главной меняется и подпись уровня
       else {
         drawItem(ID_SRC_LIVE, false);
+        drawItem(ID_SRC_DIG, false);
         drawItem(ID_SRC_TEST, false);
+      }
+    }
+    {   // мост (4.00): пропал или вернулся, появился или пропал сигнал AES — на главной это в подписи уровня
+      static int brShown = -1;
+      int br = (view.brOk ? 1 : 0) | (view.brAes << 1) | (int)(((view.brRate + 500) / 1000) << 4);
+      if (br != brShown) {
+        if (page == PG_HOME) needFull = true;
+        brShown = br;
       }
     }
   }

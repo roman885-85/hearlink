@@ -326,7 +326,7 @@ static void specPowOwn(const int16_t *src, uint32_t pos, float *pw) {
     float p = 0;
     for (int i = bandLo[b]; i <= bandHi[b]; i++) {
       float m = fftRe[i] * fftRe[i] + fftIm[i] * fftIm[i];
-      if (m > p) p = m;
+      p += m;   // мощность полосы (с 4.00; было — наибольший столбец)
     }
     pw[b] = p;
   }
@@ -344,13 +344,17 @@ static void specPowDsp(const int16_t *src, uint32_t pos, float *pw) {
     for (int i = bandLo[b]; i <= bandHi[b]; i++) {
       const float *c = fftBuf + 2 * fftRev[i];
       float m = c[0] * c[0] + c[1] * c[1];
-      if (m > p) p = m;
+      p += m;   // мощность полосы (с 4.00; было — наибольший столбец)
     }
     pw[b] = p;
   }
 }
-static float specDb(float p, int b) {   // полная шкала синуса после окна даёт (N/4)²; подъём 3 дБ на октаву
-  return 10 * log10f(p / ((SPEC_N / 4.0f) * (SPEC_N / 4.0f)) + 1e-12f) + b * (18.0f / specBands);
+// Полная шкала синуса после окна даёт (N/4)². С 4.00 — мощность полосы без наклона, как у анализатора пульта (розовый
+// шум — ровно); до 4.00 брался наибольший столбец полосы и прибавлялось ~3 дБ на октаву — рядом с пультом верх
+// выглядел на 15–20 дБ громче, чем есть (владелец 21.10: «чуть ли не зеркальный анализатор вижу на пульте»).
+static float specDb(float p, int b) {
+  (void)b;
+  return 10 * log10f(p / ((SPEC_N / 4.0f) * (SPEC_N / 4.0f)) + 1e-12f);
 }
 static void specUpdate() {
   if (!fftRe || !specBuf) return;
@@ -379,7 +383,7 @@ static void specUpdate() {
   if (fftDsp && fftUseDsp) specPowDsp(specBuf, pos, pw);
   else specPowOwn(specBuf, pos, pw);
   for (int b = 0; b < specBands; b++) {
-    float lv = (specDb(pw[b], b) + 60) / 54;   // низ шкалы −60 дБ, верх −6 дБ
+    float lv = (specDb(pw[b], b) + 66) / 60;   // низ шкалы −66 дБ, верх −6 дБ (с 4.00 шире: без наклона верх ниже)
     lv = lv < 0 ? 0 : lv > 1 ? 1 : lv;
     barLevel[b] = lv;   // сглаживание — в specAnimate, по времени
   }
