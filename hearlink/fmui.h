@@ -12,7 +12,8 @@ constexpr int ID_FM_PASTE = 206, ID_FM_UNCLIP = 207, ID_FM_STOP = 208;
 constexpr int ID_FM_ROW = 210;   // +строка списка
 constexpr int ID_FM_PLAY = 220, ID_FM_COPY = 221, ID_FM_DEL = 222, ID_FM_VIEW = 223, ID_FM_X = 224, ID_FM_YES = 225, ID_FM_NO = 226;
 constexpr int ID_FM_RMDIR = 227, ID_FM_FORMAT = 228, ID_FM_ABORT = 229, ID_FM_REFRESH = 230;
-enum { FS_LIST, FS_ITEM, FS_CONFIRM, FS_BUSY, FS_TEXT, FS_MENU };
+constexpr int ID_FM_PL_B10 = 231, ID_FM_PL_PAUSE = 232, ID_FM_PL_STOP = 233, ID_FM_PL_F10 = 234, ID_FM_NOW = 235;   // плеер (3.28)
+enum { FS_LIST, FS_ITEM, FS_CONFIRM, FS_BUSY, FS_TEXT, FS_MENU, FS_PLAYER };
 enum { FQ_DEL_FILE = 1, FQ_DEL_DIR, FQ_FORMAT, FQ_FORMAT2 };
 static const int FM_ROWS = 6;
 static int fmSt = FS_LIST, fmPage = 0, fmQ = 0, fmBusyOp = 0;
@@ -27,6 +28,7 @@ static bool fmWantList = false, fmWantInfo = false, fmListBad = false, fmInfoOk 
 static char fmNoteText[160] = "";
 
 static void fmDraw();
+static void fmFoot();
 static void drawModal();
 static void fmNote(const char *text) {   // сообщение внизу экрана на четыре секунды (вместо подсказки)
   strlcpy(fmNoteText, tr(text), sizeof(fmNoteText));
@@ -114,6 +116,11 @@ static Box fmBox(int id) {
     case ID_FM_PASTE: return Box{ 180, 378, 160, 44 };
     case ID_FM_UNCLIP: return Box{ 346, 378, 122, 44 };
     case ID_FM_STOP: return Box{ 356, 432, 112, 40 };
+    case ID_FM_NOW: return Box{ 12, 432, 336, 40 };          // полоска «файл в ефірі» внизу списка — открыть плеер
+    case ID_FM_PL_B10: return Box{ 12, 366, 104, 54 };
+    case ID_FM_PL_PAUSE: return Box{ 124, 366, 112, 54 };
+    case ID_FM_PL_STOP: return Box{ 244, 366, 112, 54 };
+    case ID_FM_PL_F10: return Box{ 364, 366, 104, 54 };
     // окно файла: два ряда по две кнопки и «Закрити»
     case ID_FM_PLAY: return Box{ (int16_t)(w.x + 16), (int16_t)(w.y + 176), 200, 50 };
     case ID_FM_COPY: return Box{ (int16_t)(w.x + 224), (int16_t)(w.y + 176), 200, 50 };
@@ -173,6 +180,11 @@ static void fmItem(int id, bool pressed) {
     case ID_FM_PASTE: drawButton(b, tr("Вставити сюди"), 1, pressed); break;
     case ID_FM_UNCLIP: drawButton(b, tr("Скасувати"), 0, pressed); break;
     case ID_FM_STOP: drawButton(b, tr("Зупинити"), 2, pressed); break;
+    case ID_FM_NOW: fmFoot(); break;
+    case ID_FM_PL_B10: drawButton(b, tr("-10 с"), 0, pressed); break;
+    case ID_FM_PL_F10: drawButton(b, tr("+10 с"), 0, pressed); break;
+    case ID_FM_PL_STOP: drawButton(b, tr("Стоп"), 2, pressed); break;
+    case ID_FM_PL_PAUSE: drawButton(b, cpPause ? tr("Грати") : tr("Пауза"), 1, pressed); break;
     case ID_FM_PLAY:
       if (fmPlayingThis(fmSelName)) drawButton(b, tr("Зупинити"), 2, pressed);
       else if (fmInfoOk && fm.info.playable) drawButton(b, tr("В ефір"), 1, pressed);
@@ -276,7 +288,10 @@ static void fmScreen() {
     fmHot(ID_FM_MORE);
   }
   fmFoot();
-  if (fm.playing && !fmNoteShown && hotN < 32) hot[hotN++] = Hot{ fmBox(ID_FM_STOP), ID_FM_STOP };
+  if (fm.playing && !fmNoteShown && hotN < 31) {
+    hot[hotN++] = Hot{ fmBox(ID_FM_STOP), ID_FM_STOP };
+    hot[hotN++] = Hot{ fmBox(ID_FM_NOW), ID_FM_NOW };
+  }
 }
 
 static void fmWinFrame(const char *title, uint16_t edge = C_BORDER) {
@@ -379,7 +394,214 @@ static void fmProgress() {
   g.text(w.x + w.w - 20, w.y + 105, t, F_TXTB, C_FG, AL_R);
 }
 
+// ---- плеер файла в эфире (с 3.28; данные волны — cw в fm.h, считает задача волны в txfiles.h)
+// Как плеер фонограмм в «Слове» (NativeWaveformView.swift): весь трек одним взглядом, как в Audacity; сыгранное — цветом
+// акцента, остальное — серым; белая риска с треугольником сверху — где звук сейчас. Касание или протягивание по волне —
+// головка идёт за пальцем, время подписано рядом; отпустили — играть отсюда. Кнопки: −10 с, пауза, стоп, +10 с.
+// Волна строится в фоне слева направо (на экране видно, сколько готово); перерисовывается только то, что сдвинулось.
+constexpr int PL_X = 20, PL_W = CW_N * 2, PL_TOP = 146, PL_H = 156, PL_MID = PL_TOP + PL_H / 2, PL_HALF = PL_H / 2 - 4;
+static const Box PL_CARD = { 12, 136, 456, 176 };
+static int plCur = -1;            // где нарисована головка (точка экрана)
+static int plDrag = -1;           // палец на волне: где (точка экрана); −1 — не тянут
+static uint32_t plGen = 0xFFFFFFFF, plSec = 0xFFFFFFFF, plSeekMs = 0, plSeekUntil = 0;
+static int plReady = -1, plRef = -1, plPct = -1, plTotal = -1;
+static bool plPaused = false;
+static uint32_t plDur() { return cw.durMs ? cw.durMs : fm.playTotalS * 1000; }
+static uint32_t plPos() {   // что показывать: только что попросили переход — его место, пока звук туда не пришёл
+  if (plSeekUntil && millis() < plSeekUntil) {
+    uint32_t p = fm.playMs, d = p > plSeekMs ? p - plSeekMs : plSeekMs - p;
+    if (d > 400) return plSeekMs;
+  }
+  plSeekUntil = 0;
+  return fm.playMs;
+}
+static int plCursorX() {
+  if (plDrag >= 0) return plDrag;
+  uint32_t d = plDur(), p = plPos();
+  if (!d) return PL_X;
+  if (p > d) p = d;
+  return PL_X + (int)((uint64_t)p * PL_W / d);
+}
+static int plHeight(uint8_t lev) {   // высота половины столбца: 10^((уровень − ref) / 20) от полной
+  static float tab[61];
+  if (!tab[0])
+    for (int i = 0; i <= 60; i++) tab[i] = powf(10.0f, -i / 20.0f);
+  if (!lev) return 1;
+  int d = (int)cw.ref - lev;
+  float k = d <= 0 ? 1.0f : d >= 60 ? 0.0f : tab[d];
+  int h = (int)(k * PL_HALF + 0.5f);
+  return h < 1 ? 1 : h;
+}
+// Столбцы c0…c1 (включительно) — заново, с головкой, если она в этом куске.
+static void plCols(int c0, int c1) {
+  if (c0 < 0) c0 = 0;
+  if (c1 > CW_N - 1) c1 = CW_N - 1;
+  if (c1 < c0) return;
+  const uint16_t PLAYED = C_PRIMARY, REST = m2::Gfx::blend(C_CARD, C_MUTED_FG, 120);
+  int cx = plCursorX(), x0 = PL_X + c0 * 2, w = (c1 - c0 + 1) * 2;
+  g.fill(x0, PL_TOP, w, PL_H, C_CARD);
+  int ready = cw.ready;
+  for (int c = c0; c <= c1; c++) {
+    int x = PL_X + c * 2;
+    if (c >= ready) {   // ещё не посчитан — тонкая средняя линия
+      g.fill(x, PL_MID, 2, 1, C_BORDER);
+      continue;
+    }
+    int h = plHeight(cw.lev[c]);
+    g.fill(x, PL_MID - h, 2, 2 * h, x + 1 < cx ? PLAYED : REST);
+  }
+  if (cx + 5 >= x0 && cx - 5 < x0 + w) {   // головка: белая риска и треугольник сверху (как в Audacity)
+    m2::Rect was = g.narrow(x0, PL_TOP, w, PL_H);
+    int hx = cx < PL_X ? PL_X : cx > PL_X + PL_W - 1 ? PL_X + PL_W - 1 : cx;
+    g.fill(hx - 1, PL_TOP, 2, PL_H, C_FG);
+    for (int k = 0; k < 6; k++) g.fill(hx - 5 + k, PL_TOP + k, 10 - 2 * k, 1, C_FG);
+    g.restore(was);
+  }
+}
+static void plTimeText(uint32_t ms, char *t, size_t n) {
+  uint32_t s = ms / 1000;
+  if (s >= 3600) snprintf(t, n, "%u:%02u:%02u", (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
+  else snprintf(t, n, "%u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
+}
+static void plTimeRow() {   // время: сыграно — слева, всего — справа; пока тянут — куда перейдём
+  char a[16], b[16];
+  g.fill(12, 318, 456, 42, C_BG);
+  uint32_t d = plDur(), p = plDrag >= 0 && d ? (uint32_t)((uint64_t)(plDrag - PL_X) * d / PL_W) : plPos();
+  plTimeText(p, a, sizeof(a));
+  g.text(20, 350, a, F_H, plDrag >= 0 ? C_PRIMARY : C_FG);
+  if (d) {
+    plTimeText(d, b, sizeof(b));
+    g.text(460, 350, b, F_H, C_MUTED_FG, AL_R);
+  }
+}
+static void plFootText() {   // низ: ход построения волны, пауза или подсказка
+  char t[96];
+  g.fill(0, 428, W, 52, C_BG);
+  if (cw.failed) wrap(16, 452, 448, 18, "Хвилю не вдалося прочитати — грати з місця можна кнопками ±10 с.", F_CAP, C_WARN, 2);
+  else if (!cw.done) {
+    snprintf(t, sizeof(t), tr("Будую хвилю… %u %%"), (unsigned)cw.pct);
+    g.text(20, 452, t, F_CAP, C_MUTED_FG);
+  } else if (cpPause) g.text(20, 452, tr("Пауза — в ефірі тиша"), F_CAPB, C_WARN);
+  else wrap(16, 446, 448, 18, "Торкніться хвилі або протягніть пальцем — грати з того місця.", F_CAP, C_MUTED_FG, 2);
+}
+static void fmPlayerScreen() {
+  char t[FM_NAME + 80];
+  g.fill(0, 0, W, H, C_BG);
+  fmHot(ID_FM_BACK);
+  fmHot(ID_FM_CLOSE);
+  g.text(74, 40, tr("Плеєр"), F_H2, C_FG);
+  g.text(20, 90, fm.playName, F_TXTB, C_FG, AL_L, 440);
+  const FmInfo &i = fm.info;
+  if (!strcmp(i.name, fm.playName) && i.playable) {
+    char b[24];
+    if (i.kind == FK_MP3) snprintf(b, sizeof(b), tr("%u кбіт/с"), (unsigned)i.kbps);
+    else snprintf(b, sizeof(b), tr("%u біт"), (unsigned)i.bits);
+    snprintf(t, sizeof(t), "%s · %u,%u %s · %s · %s", i.kind == FK_MP3 ? "MP3" : "WAV", (unsigned)(i.rate / 1000), (unsigned)(i.rate % 1000 / 100), tr("кГц"),
+             i.chans == 2 ? tr("стерео") : tr("моно"), b);
+    g.text(20, 116, t, F_CAP, C_MUTED_FG, AL_L, 440);
+  }
+  card(PL_CARD, C_CARD, C_BORDER);
+  plCur = plCursorX();
+  plCols(0, CW_N - 1);
+  plReady = cw.ready;
+  plRef = cw.ref;
+  plGen = cw.gen;
+  plTimeRow();
+  plSec = plPos() / 1000;
+  plTotal = (int)(plDur() / 1000);
+  fmHot(ID_FM_PL_B10);
+  fmHot(ID_FM_PL_PAUSE);
+  fmHot(ID_FM_PL_STOP);
+  fmHot(ID_FM_PL_F10);
+  plPaused = cpPause;
+  plFootText();
+  plPct = cw.done ? 101 : cw.pct;
+}
+// Каждый кадр, пока плеер открыт: дорисовать то, что сдвинулось.
+static void fmPlayerLive() {
+  if (!fm.playing) {   // доиграл или остановили — назад к списку (сообщение о конце скажет fmEndNotice)
+    fmSt = FS_LIST;
+    plDrag = -1;
+    fmDraw();
+    return;
+  }
+  if (cw.gen != plGen || cw.ref != plRef) {   // другой файл или новая «полная высота» — волну целиком
+    plGen = cw.gen;
+    plRef = cw.ref;
+    plReady = cw.ready;
+    plCur = plCursorX();
+    plCols(0, CW_N - 1);
+  } else if (cw.ready != plReady) {   // досчитались новые столбцы
+    int from = plReady < 0 ? 0 : plReady;
+    if (cw.ready < from) from = 0;
+    plReady = cw.ready;
+    plCols(from - 1, plReady);
+  }
+  int cx = plCursorX();
+  if (cx != plCur) {   // головка сдвинулась: старое место и новое
+    int a = plCur < cx ? plCur : cx, b = plCur < cx ? cx : plCur;
+    plCur = cx;
+    plCols((a - PL_X - 6) / 2, (b - PL_X + 6) / 2);
+  }
+  uint32_t sec = plPos() / 1000;
+  int total = (int)(plDur() / 1000);
+  if (plDrag < 0 && (sec != plSec || total != plTotal)) {
+    plSec = sec;
+    plTotal = total;
+    plTimeRow();
+  }
+  if (cpPause != plPaused) {
+    plPaused = cpPause;
+    fmItem(ID_FM_PL_PAUSE, pressId == ID_FM_PL_PAUSE);
+    plFootText();
+  }
+  int pct = cw.done ? 101 : cw.pct;
+  if (pct != plPct && (pct > plPct + 2 || pct == 101 || pct < plPct)) {
+    plPct = pct;
+    plFootText();
+  }
+  if (!cw.done && !cw.failed && (frameNo & 1)) waitDots(28 + m2::Gfx::textW(tr("Будую хвилю… 100 %"), F_CAP), 447, C_BG);
+}
+// Палец на волне (вызывается из frameBody до обычных нажатий): true — касание наше.
+static bool fmPlayerTouch(bool down, int tx, int ty) {
+  if (modal != M_FILES || fmSt != FS_PLAYER) return false;
+  auto clampX = [](int x) { return x < PL_X ? PL_X : x > PL_X + PL_W - 1 ? PL_X + PL_W - 1 : x; };
+  if (down && !wasDown) {
+    if (!fm.playing || tx < PL_CARD.x || tx >= PL_CARD.x + PL_CARD.w || ty < PL_CARD.y - 10 || ty >= PL_CARD.y + PL_CARD.h + 10) return false;
+    plDrag = clampX(tx);
+  } else if (plDrag < 0) return false;
+  else if (down) plDrag = clampX(tx);
+  else {   // отпустили — играть отсюда (с того места, где палец ушёл с экрана: быстрый рывок мог не дать кадра посередине)
+    plDrag = clampX(tx);
+    uint32_t d = plDur(), ms = d ? (uint32_t)((uint64_t)(plDrag - PL_X) * d / PL_W) : 0;
+    plDrag = -1;
+    if (d) {
+      cardSeekMs(ms);
+      plSeekMs = ms;
+      plSeekUntil = millis() + 2500;
+    }
+  }
+  int cx = plCursorX();
+  if (cx != plCur) {
+    int a = plCur < cx ? plCur : cx, b = plCur < cx ? cx : plCur;
+    plCur = cx;
+    plCols((a - PL_X - 6) / 2, (b - PL_X + 6) / 2);
+  }
+  plTimeRow();
+  return true;
+}
+static void plOpen() {
+  fmSt = FS_PLAYER;
+  plDrag = -1;
+  plSeekUntil = 0;
+}
+
 static void fmDraw() {
+  if (fmSt == FS_PLAYER) {
+    hotN = 0;
+    fmPlayerScreen();
+    return;
+  }
   hotN = 0;
   fmScreen();
   if (fmSt != FS_LIST) fmOverlay();
@@ -452,6 +674,10 @@ static void fmActivate(int id) {
   switch (id) {
     case ID_FM_CLOSE: fmClose(); return;
     case ID_FM_BACK:
+      if (fmSt == FS_PLAYER) {   // из плеера — к списку; файл играет дальше
+        fmSt = FS_LIST;
+        break;
+      }
       if (fmRoot()) return fmClose();
       {
         char *sl = strrchr(fmCur, '/');
@@ -479,12 +705,39 @@ static void fmActivate(int id) {
     case ID_FM_PASTE: return fmBusy(FM_COPY, fmClip, fmCur);
     case ID_FM_UNCLIP: fmClip[0] = 0; break;
     case ID_FM_STOP: uiFm(FM_STOP, NULL, NULL); break;
-    case ID_FM_PLAY:
-      if (fmPlayingThis(fmSelName)) uiFm(FM_STOP, NULL, NULL);
-      else if (fmInfoOk && fm.info.playable) {
-        if (uiFm(FM_PLAY, fmSelPath, NULL)) fmNote("Файл пішов в ефір");
-      } else return;
+    case ID_FM_NOW:   // полоска «в ефірі» — открыть плеер
+      if (!fm.playing) return;
+      plOpen();
+      break;
+    case ID_FM_PL_STOP:
+      uiFm(FM_STOP, NULL, NULL);
       fmSt = FS_LIST;
+      break;
+    case ID_FM_PL_PAUSE:
+      cardPause(!cpPause);
+      fmItem(ID_FM_PL_PAUSE, false);
+      plFootText();
+      return;
+    case ID_FM_PL_B10:
+    case ID_FM_PL_F10: {
+      uint32_t p = plPos(), d = plDur(), ms = id == ID_FM_PL_B10 ? (p > 10000 ? p - 10000 : 0) : p + 10000;
+      if (d && ms > d) ms = d;
+      cardSeekMs(ms);
+      plSeekMs = ms;
+      plSeekUntil = millis() + 2500;
+      return;
+    }
+    case ID_FM_PLAY:
+      if (fmPlayingThis(fmSelName)) {
+        uiFm(FM_STOP, NULL, NULL);
+        fmSt = FS_LIST;
+      } else if (fmInfoOk && fm.info.playable) {
+        if (uiFm(FM_PLAY, fmSelPath, NULL)) plOpen();   // пустили — сразу плеер
+        else {
+          fmNote("Картка зайнята — спробуйте ще раз");
+          fmSt = FS_LIST;
+        }
+      } else return;
       break;
     case ID_FM_COPY:
       strlcpy(fmClip, fmSelPath, sizeof(fmClip));
@@ -612,6 +865,7 @@ static void fmLive() {
     else if (fmSt == FS_ITEM && !fmInfoOk) waitDots(w.x + 24 + m2::Gfx::textW(tr("Читаю файл…"), F_CAP), w.y + 127, C_CARD);
     else if (fmSt == FS_LIST && !fmListReady() && !fmListBad) waitDots(222, 246, C_BG);
   }
+  if (fmSt == FS_PLAYER) return fmPlayerLive();
   if (fmSt != FS_LIST) return;
   bool note = fmNoteUntil && millis() < fmNoteUntil;
   int pl = fm.playing ? (int)fm.playS : -1;

@@ -420,7 +420,34 @@ static void task(void *) {
       v.txNs = cfg.txNs > 3 ? 0 : cfg.txNs;
       v.txNsSens = cfg.txNsSens > 4 ? 2 : cfg.txNsSens;
       v.txNsFrozen = txNsFrozen || txNsLearnAsk || txNsLearning;
+      v.txGate = cfg.txGate > 4 ? 0 : cfg.txGate;
+      v.txGateThr = cfg.txGateThr > 4 ? 2 : cfg.txGateThr;
+      v.txGateRel = cfg.txGateRel > 2 ? 1 : cfg.txGateRel;
+      v.txGateDb = cfg.txGateDb;
+      v.txLim = cfg.txLim ? 1 : 0;   // ограничитель пиков входа (с 3.24 — и на экране)
+      v.txLimCeil = cfg.txLimCeil > 3 ? 1 : cfg.txLimCeil;
+      v.txLimComp = cfg.txLimComp > 3 ? 1 : cfg.txLimComp;
+      v.txLimRel = cfg.txLimRel > 2 ? 1 : cfg.txLimRel;
     }
+    {   // пики входа за последнюю секунду: сколько убавлял ограничитель и сколько отсчётов АЦП было на краю шкалы
+      static uint32_t lastMs;
+      static float red;
+      static uint32_t clips;
+      if (now - lastMs >= 1000) {
+        lastMs = now;
+        float lo = txLimLowUi;
+        txLimLowUi = 1;
+        red = lo < 0.9999f ? -20.0f * log10f(lo > 1e-6f ? lo : 1e-6f) : 0;
+        clips = txAdcRailUi;
+        txAdcRailUi = 0;
+      }
+      v.limRedDb = red;
+      v.adcClips = clips;
+    }
+    v.gateFloorDb = txGateFloorDb;   // шумовой порог входа (с 3.17): шум входа и порог сейчас
+    v.gateThrDb = txGateThrDb;
+    v.gateOpen = txGateOpen;
+    v.gateActive = txGateActive;
     v.val[ui::P_INPUT] = cfg.input;
     v.val[ui::P_TONE] = cfg.tone;
     v.lastTone = cfg.lastTone;
@@ -445,7 +472,7 @@ static void task(void *) {
     }
     if (fmStateAsk) {
       fmStateAsk = false;
-      Serial.printf("екран картки: вікно %d (0 список, 1 файл, 2 питання, 3 робота, 4 текст, 5 інше), тека «%s», у списку %d (готовий: %s), сторінка %d з %d, кнопок %d, вибрано «%s», копіюється «%s»\n",
+      Serial.printf("екран картки: вікно %d (0 список, 1 файл, 2 питання, 3 робота, 4 текст, 5 інше, 6 плеєр), тека «%s», у списку %d (готовий: %s), сторінка %d з %d, кнопок %d, вибрано «%s», копіюється «%s»\n",
                     ui::modal == ui::M_FILES ? ui::fmSt : -1, ui::fmCur, fm.n, ui::fmListReady() ? "так" : "ні", ui::fmPage + 1, ui::fmPages(), ui::hotN, ui::fmSelName, ui::fmClip);
     }
     v.val[ui::P_BRIGHT] = cfg.brightness;
@@ -877,6 +904,14 @@ static void task(void *) {
         if (o.eqVal) txNsLearnAsk = cfg.txNs && !cfg.tone;
         else txNsFrozen = false;
       }
+      else if (o.eqBand == 9) cfg.txGate = (uint8_t)constrain(o.eqVal, 0, 4);       // шумовой порог входа (с 3.17)
+      else if (o.eqBand == 10) cfg.txGateThr = (uint8_t)constrain(o.eqVal, 0, 4);
+      else if (o.eqBand == 11) cfg.txGateRel = (uint8_t)constrain(o.eqVal, 0, 2);
+      else if (o.eqBand == 12) cfg.txGateDb = 0;                                    // ручной порог — снова «от шума»
+      else if (o.eqBand == 13) cfg.txLim = o.eqVal ? 1 : 0;                         // пики входа (с 3.24; порт — e14…e17)
+      else if (o.eqBand == 14) cfg.txLimCeil = (uint8_t)constrain(o.eqVal, 0, 3);
+      else if (o.eqBand == 15) cfg.txLimComp = (uint8_t)constrain(o.eqVal, 0, 3);
+      else if (o.eqBand == 16) cfg.txLimRel = (uint8_t)constrain(o.eqVal, 0, 2);
       else cfg.txLowCut = o.eqVal ? 1 : 0;
       txEqGen = txEqGen + 1;
       o.eqBand = -1;

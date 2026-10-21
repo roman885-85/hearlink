@@ -22,22 +22,289 @@ static void fmFull(char *dst, size_t cap, const char *p) {
 
 static bool fmAsk(int op, const char *a, const char *b);
 
+// ---- волна файла в эфире (с 3.28; данные — cw в fm.h, рисует плеер в fmui.h)
+// Отдельная задача с низшим приоритетом: создаётся на время подсчёта и сама уходит (внутренней памяти у передатчика в
+// обрез — постоянный стек нельзя). Файл читает своим дескриптором, большими кусками в свой буфер во внешней памяти;
+// новая просьба (другой файл) прерывает подсчёт старой.
+#define CW_BUF 16384
+static char cwPath[FM_PATH + 8];
+static volatile uint32_t cwWant, cwSeen;
+static TaskHandle_t cwTaskH;
+static portMUX_TYPE cwMux = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t *cwBuf;
+static uint32_t *cwHist;   // уровни кадров (или столбцов WAV): сколько каких — для «громкого места» ref
+
+// Уровень по ходу подсчёта: такой, что громче него лишь 0,5 % кадров.
+static uint8_t cwRef(uint32_t n) {
+  uint32_t lim = n - n / 200, sum = 0;
+  for (int v = 1; v < 256; v++) {
+    sum += cwHist[v];
+    if (sum >= lim) return (uint8_t)v;
+  }
+  return 255;
+}
+// Служебная часть кадра MP3 → оценка уровня, дБ (см. fm.h); 0 — кадр без звука.
+static uint8_t cwMp3Level(const uint8_t *f, bool mpeg1, int nch, bool crc) {
+  const uint8_t *p = f + 4 + (crc ? 2 : 0);
+  uint32_t bit = 0;
+  auto get = [&](int n) {
+    uint32_t v = 0;
+    for (int i = 0; i < n; i++, bit++) v = v << 1 | ((p[bit >> 3] >> (7 - (bit & 7))) & 1);
+    return v;
+  };
+  uint32_t gg = 0, p23 = 0;
+  if (mpeg1) {
+    get(9);
+    get(nch == 1 ? 5 : 3);
+    get(4 * nch);
+    for (int gr = 0; gr < 2; gr++)
+      for (int ch = 0; ch < nch; ch++) {
+        uint32_t a = get(12);
+        get(9);
+        uint32_t g = get(8);
+        get(30);   // scalefac_compress, окно, таблицы, флаги
+        if (a > p23) p23 = a;
+        if (g > gg) gg = g;
+      }
+  } else {   // MPEG-2 и 2.5: одна гранула
+    get(8);
+    get(nch == 1 ? 1 : 2);
+    for (int ch = 0; ch < nch; ch++) {
+      uint32_t a = get(12);
+      get(9);
+      uint32_t g = get(8);
+      get(34);
+      if (a > p23) p23 = a;
+      if (g > gg) gg = g;
+    }
+  }
+  if (p23 < 8) return 0;
+  float l = 0.65f * gg + 3.0f * log2f((float)p23 + 1);
+  return (uint8_t)(l > 255 ? 255 : l < 1 ? 1 : l + 0.5f);
+}
+static void cwMp3(FILE *f, uint32_t want) {
+  static const uint16_t BR1[16] = { 0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0 };
+  static const uint16_t BR2[16] = { 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0 };
+  static const uint32_t SR[4][3] = { { 11025, 12000, 8000 }, { 0, 0, 0 }, { 22050, 24000, 16000 }, { 44100, 48000, 32000 } };
+  if (fseek(f, 0, SEEK_END)) return;
+  uint32_t size = (uint32_t)ftell(f), start = (uint32_t)mp3SkipTag(f), end = size;
+  uint8_t tag[3];
+  if (size > 128 && !fseek(f, size - 128, SEEK_SET) && fread(tag, 1, 3, f) == 3 && !memcmp(tag, "TAG", 3)) end = size - 128;
+  if (start >= end) return;
+  cw.start = start;
+  cw.end = end;
+  if (!cw.off) {   // места кадров и их уровни — во внешней памяти, один раз и с запасом (1,3 МБ: до ~114 мин 44,1 кГц);
+                   // не освобождаются никогда — экран может читать их в любой миг
+    cw.off = (uint32_t *)heap_caps_malloc(262144 * 4, MALLOC_CAP_SPIRAM);
+    cw.flev = (uint8_t *)heap_caps_malloc(262144, MALLOC_CAP_SPIRAM);
+    cw.cap = cw.off && cw.flev ? 262144 : 0;
+  }
+  int fd = fileno(f);
+  if (fd < 0 || lseek(fd, start, SEEK_SET) != (off_t)start) return;
+  uint8_t colMax[CW_N] = {};
+  uint32_t pos = start, histN = 0, frames = 0;
+  int have = 0, i = 0, lockVer = -1, lockSri = -1, lastCol = 0;
+  bool eof = false;
+  memset(cwHist, 0, 256 * 4);
+  for (;;) {
+    if (cwWant != want) return;
+    if (have - i < 2048 && !eof) {   // в буфере — больше самого длинного кадра (1441 байт)
+      memmove(cwBuf, cwBuf + i, have - i);
+      pos += i;
+      have -= i;
+      i = 0;
+      int n = (int)read(fd, cwBuf + have, CW_BUF - have);
+      if (n <= 0) eof = true;
+      else have += n;
+      if (pos + have >= end) {
+        if (pos + have > end) have = end > pos ? end - pos : 0;
+        eof = true;
+      }
+    }
+    if (i + 4 > have) break;
+    const uint8_t *h = cwBuf + i;
+    if (h[0] != 0xFF || (h[1] & 0xE0) != 0xE0) {
+      i++;
+      continue;
+    }
+    int ver = (h[1] >> 3) & 3, layer = (h[1] >> 1) & 3, bri = h[2] >> 4, sri = (h[2] >> 2) & 3;
+    if (ver == 1 || layer != 1 || bri == 0 || bri == 15 || sri == 3 || (lockVer >= 0 && (ver != lockVer || sri != lockSri))) {
+      i++;
+      continue;
+    }
+    bool mpeg1 = ver == 3;
+    uint32_t rate = SR[ver][sri], kbps = mpeg1 ? BR1[bri] : BR2[bri];
+    int flen = (int)((mpeg1 ? 144000u : 72000u) * kbps / rate + ((h[2] >> 1) & 1));
+    if (i + flen + 2 <= have && (cwBuf[i + flen] != 0xFF || (cwBuf[i + flen + 1] & 0xE0) != 0xE0)) {   // следующий кадр не там — ложное начало
+      i++;
+      continue;
+    }
+    if (i + 4 + 2 + 32 > have) break;   // оборванный хвост
+    lockVer = ver;
+    lockSri = sri;
+    if (!frames) {
+      cw.rate = rate;
+      cw.spf = mpeg1 ? 1152 : 576;
+    }
+    int nch = (h[3] >> 6) == 3 ? 1 : 2;
+    uint8_t l = cwMp3Level(h, mpeg1, nch, !(h[1] & 1));
+    uint32_t at = pos + i;
+    if (frames < cw.cap) {
+      cw.off[frames] = at;
+      cw.flev[frames] = l;
+    }
+    frames++;
+    cw.frames = frames < cw.cap ? frames : cw.cap;
+    if (l) {
+      cwHist[l]++;
+      histN++;
+    }
+    int c = (int)((uint64_t)(at - start) * CW_N / (end - start));   // пока считаем — столбец по месту в файле
+    if (c >= CW_N) c = CW_N - 1;
+    if (l > colMax[c]) colMax[c] = l;
+    if (c > lastCol || (frames & 255) == 0) {   // готовые столбцы — на экран
+      for (int k = 0; k < c; k++) cw.lev[k] = colMax[k];
+      if (histN) cw.ref = cwRef(histN);
+      cw.ready = (uint16_t)c;
+      cw.pct = (uint8_t)((uint64_t)(at - start) * 100 / (end - start));
+      lastCol = c;
+    }
+    i += flen;
+  }
+  if (!frames) return;
+  // Всё посчитано: столбцы — по времени (номеру кадра), а не по месту в файле (у переменного потока это разное).
+  uint32_t n = frames < cw.cap ? frames : cw.cap;
+  if (n == frames)
+    for (int c = 0; c < CW_N; c++) {
+      uint32_t a = (uint64_t)c * n / CW_N, b = (uint64_t)(c + 1) * n / CW_N;
+      uint8_t m = 0;
+      for (uint32_t k = a; k < b || k == a; k++)
+        if (k < n && cw.flev[k] > m) m = cw.flev[k];
+      cw.lev[c] = m;
+    }
+  else
+    for (int c = 0; c < CW_N; c++) cw.lev[c] = colMax[c];
+  if (histN) cw.ref = cwRef(histN);
+  cw.durMs = (uint32_t)((uint64_t)frames * cw.spf * 1000 / cw.rate);
+  cw.ready = CW_N;
+  cw.pct = 100;
+  cw.done = true;
+}
+static void cwWav(FILE *f, uint32_t want) {
+  WavFmt w;
+  if (wavParse(f, w) || !w.block || !w.rate) return;
+  cw.rate = w.rate;
+  cw.block = w.block;
+  cw.start = w.dataPos;
+  cw.end = w.dataPos + w.dataLen;
+  int fd = fileno(f);
+  if (fd < 0) return;
+  uint32_t total = w.dataLen / w.block, histN = 0;
+  int bs = w.bits / 8;
+  memset(cwHist, 0, 256 * 4);
+  cw.durMs = (uint32_t)((uint64_t)total * 1000 / w.rate);
+  for (int c = 0; c < CW_N; c++) {
+    if (cwWant != want) return;
+    uint32_t a = (uint64_t)c * total / CW_N, b = (uint64_t)(c + 1) * total / CW_N;
+    uint32_t span = b > a ? b - a : 1, peak = 0;
+    for (int part = 0; part < 3; part++) {   // три выборки по 256 отсчётов внутри столбца
+      uint32_t s = a + (uint64_t)span * part / 3, k = 256;
+      if (s >= total) break;
+      if (s + k > total) k = total - s;
+      uint32_t byte = w.dataPos + s * w.block, len = k * w.block;
+      if (len > CW_BUF) len = CW_BUF - CW_BUF % w.block;
+      if (lseek(fd, byte, SEEK_SET) != (off_t)byte) return;
+      int got = (int)read(fd, cwBuf, len);
+      if (got <= 0) return;
+      for (int j = 0; j + (int)w.block <= got; j += w.block)
+        for (int ch = 0; ch < w.chans; ch++) {
+          const uint8_t *q = cwBuf + j + ch * bs;
+          int v = bs == 1 ? (q[0] - 128) << 8 : (int16_t)(q[bs - 2] | q[bs - 1] << 8);
+          uint32_t av = v < 0 ? -v : v;
+          if (av > peak) peak = av;
+        }
+    }
+    uint8_t l = peak ? (uint8_t)(20 * log10f((float)peak + 1) + 0.5f) : 0;   // 0…90 дБ (16 бит)
+    cw.lev[c] = l;
+    if (l) {
+      cwHist[l]++;
+      histN++;
+      cw.ref = cwRef(histN);
+    }
+    cw.ready = (uint16_t)(c + 1);
+    cw.pct = (uint8_t)((c + 1) * 100 / CW_N);
+  }
+  cw.done = true;
+}
+static void cwTask(void *) {
+  for (;;) {
+    uint32_t want;
+    portENTER_CRITICAL(&cwMux);
+    want = cwWant;
+    bool idle = want == cwSeen;
+    if (idle) cwTaskH = NULL;   // работы нет — уйти (новая просьба создаст задачу заново)
+    portEXIT_CRITICAL(&cwMux);
+    if (idle) vTaskDelete(NULL);
+    cwSeen = want;
+    cw.done = false;
+    cw.failed = false;
+    cw.ready = 0;
+    cw.pct = 0;
+    cw.ref = 0;
+    cw.frames = 0;
+    cw.durMs = 0;
+    cw.rate = 0;   // пока не узнали заново — переход недоступен (cardSeekMs)
+    cw.spf = 0;
+    cw.start = cw.end = 0;
+    cw.block = 0;
+    memset((void *)cw.lev, 0, sizeof(cw.lev));
+    cw.gen = want;
+    if (!cwBuf) cwBuf = (uint8_t *)heap_caps_malloc(CW_BUF, MALLOC_CAP_SPIRAM);
+    if (!cwHist) cwHist = (uint32_t *)heap_caps_malloc(256 * 4, MALLOC_CAP_SPIRAM);
+    FILE *f = cwBuf && cwHist ? fopen(cwPath, "rb") : NULL;
+    if (!f) {
+      cw.failed = true;
+      continue;
+    }
+    cw.mp3 = fmKind(cwPath) != FK_WAV;
+    if (cw.mp3) cwMp3(f, want);
+    else cwWav(f, want);
+    fclose(f);
+    if (!cw.done && cwWant == want) cw.failed = true;
+  }
+}
+static void cwStart(const char *full) {   // полный путь («/sd/…»)
+  bool need;
+  portENTER_CRITICAL(&cwMux);
+  strlcpy(cwPath, full, sizeof(cwPath));
+  cwWant = cwWant + 1;
+  need = !cwTaskH;
+  if (need) cwTaskH = (TaskHandle_t)1;   // занято: задача создаётся
+  portEXIT_CRITICAL(&cwMux);
+  if (need && xTaskCreatePinnedToCore(cwTask, "wave", 4096, NULL, 1, &cwTaskH, 1) != pdPASS) cwTaskH = NULL;
+}
+
 // ---- файл в эфир
 static void cardPlay(const char *path) {
   fmFull(cpPath, sizeof(cpPath), path);
   strlcpy(fm.playName, fmBase(path), sizeof(fm.playName));
   fm.playTotalS = !strcmp(fm.info.name, fmBase(path)) ? fm.info.durS : 0;
   fm.playS = 0;
+  fm.playMs = 0;
   fm.playEnd = 0;
   fm.playSeq = fm.playSeq + 1;
   cpPlayed = 0;
   cpErr = 0;
+  cpPause = false;
+  cpSeekReqByte = 0xFFFFFFFF;
+  cpSeekByte = 0xFFFFFFFF;
   txCardStop = false;
   mpItem = -2;
   mpStarted = false;
   mpWantGen = mpWantGen + 1;
   txCardOn = true;
   fm.playing = true;
+  cwStart(cpPath);   // волна для плеера — в фоне
 }
 static void cardStop() {
   if (fm.playing) txCardStop = true;   // звук плавно уйдёт, дальше — cardTick
@@ -46,6 +313,8 @@ static void cardStop() {
 static void cardTick() {
   if (!fm.playing) return;
   fm.playS = cpPlayed / SRATE;
+  fm.playMs = (uint32_t)((uint64_t)cpPlayed * 1000 / SRATE);
+  if (cw.done && cw.durMs && cw.gen == cwSeen) fm.playTotalS = (cw.durMs + 500) / 1000;   // у MP3 — точная, по счёту кадров
   if (txCardOn) return;
   mpItem = -1;
   mpWantGen = mpWantGen + 1;   // задача разбора закроет файл

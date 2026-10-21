@@ -15,6 +15,7 @@
 #include "assets.h"
 #include "txmp3.h"
 #include "nsfx.h"
+#include <new>
 #include "subc.h"
 
 static adc_continuous_handle_t txAdc;
@@ -97,10 +98,34 @@ static void txAdcRestart() {
 static RTC_NOINIT_ATTR uint32_t txI2sNoMclk;
 #define I2S_NO_MCLK 0x6E6F4D43u
 static bool txI2sProbe;   // этот запуск — такая проба
+// Стык кадров (3.21). Знак первого отсчёта кадра лежит в последнем слове ПРОШЛОГО кадра, а между кадрами I2S иногда
+// теряет кусок (на записи без пульта — 10 стыков из 749, внутри кадров — ни одного расхождения из 95 250): тогда знак
+// чужой и отсчёт улетает на всю шкалу — щелчок. Это и был «постоянный треск в покое» 3.19. Теперь из двух вариантов
+// знака первого отсчёта берётся тот, что ближе к следующему отсчёту того же канала. Потери самого I2S считает txI2sOvf.
+static volatile uint32_t txAdcEdgeFix, txI2sOvfN;
+static bool IRAM_ATTR txI2sOvf(i2s_chan_handle_t, i2s_event_data_t *, void *) {
+  txI2sOvfN = txI2sOvfN + 1;
+  return false;
+}
+// Такты PCM1808 — самыми слабыми выходами (с 3.26). Владелец 16.10: «сигнал однозначно стал хуже… не поменяли мы
+// что-то в частотах работы оборудования, что может мешать работе wifi». Частоты не менялись (MCLK 8,192 МГц, BCK 2,048,
+// LRCK 32 кГц), но пульт сегодня в эфире почти всё время, а с ним — такт на выводе 43: по журналу карты шум радио у
+// передатчика при пульте на 2–3 дБ выше (−87…−88 дБм против −90…−91). Гармоники такта идут каждые 8,192 МГц — в любом
+// канале 2,4 ГГц их две-три. Слабый выход (~5 мА) делает фронты мягче, а верхние гармоники — тише; входам PCM1808
+// (триггеры Шмитта) короткими проводами этого хватает — шине цветного экрана 20 МГц хватило (3.11).
+static void txI2sWeakPins() {
+  if (cfg.board != BOARD_4848) return;
+  gpio_set_drive_capability((gpio_num_t)PIN_I2S_BCK_4848, GPIO_DRIVE_CAP_0);
+  gpio_set_drive_capability((gpio_num_t)PIN_I2S_WS_4848, GPIO_DRIVE_CAP_0);
+  if (!txI2sProbe) gpio_set_drive_capability((gpio_num_t)PIN_I2S_MCLK_4848, GPIO_DRIVE_CAP_0);
+}
 // Внешний АЦП PCM1808 по I2S. Написано по описанию микросхемы; на модуле не проверено.
 static bool txI2sBegin() {
   i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-  cc.dma_desc_num = 4;
+  // 8 кадров по 2 мс (с 3.21; было 4): задача передачи иногда задерживается дольше 6 мс, и I2S терял кадр — разрыв
+  // звука с пульта, щелчок (проверочный звук делается на месте и от этого не страдает). Запас не добавляет задержки:
+  // кадр забирается, как только готов; копится только после задержки задачи.
+  cc.dma_desc_num = 8;
   cc.dma_frame_num = FRAME;
   if (i2s_new_channel(&cc, NULL, &txI2s) != ESP_OK) return false;
   i2s_std_config_t sc = {};
@@ -117,6 +142,10 @@ static bool txI2sBegin() {
   sc.gpio_cfg.dout = I2S_GPIO_UNUSED;
   sc.gpio_cfg.din = (gpio_num_t)(m ? PIN_I2S_DIN_4848 : PIN_I2S_DIN);
   if (i2s_channel_init_std_mode(txI2s, &sc) != ESP_OK) return false;
+  txI2sWeakPins();
+  i2s_event_callbacks_t cbs = {};
+  cbs.on_recv_q_ovf = txI2sOvf;   // потери кадров I2S (задача не успела забрать) — для отчёта e14
+  i2s_channel_register_event_callback(txI2s, &cbs, NULL);
   return i2s_channel_enable(txI2s) == ESP_OK;
 }
 
@@ -137,9 +166,11 @@ static void txMclkPin(bool mclk) {
     gpio_reset_pin((gpio_num_t)PIN_I2S_MCLK_4848);
     gpio_set_direction((gpio_num_t)PIN_I2S_MCLK_4848, GPIO_MODE_OUTPUT);
     esp_rom_gpio_connect_out_signal(PIN_I2S_MCLK_4848, I2S0_MCLK_OUT_IDX, false, false);
+    gpio_set_drive_capability((gpio_num_t)PIN_I2S_MCLK_4848, GPIO_DRIVE_CAP_0);   // такт — слабым выходом (3.26)
     txMclkOnPin = true;
   } else {
     uart_set_pin(UART_NUM_0, PIN_I2S_MCLK_4848, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    gpio_set_drive_capability((gpio_num_t)PIN_I2S_MCLK_4848, GPIO_DRIVE_CAP_DEFAULT);   // порту — обычный выход
     txMclkOnPin = false;
     Serial.println("порт знову працює: в ефірі не вхід PCM1808 (його такт з виводу порту знято)");
   }
@@ -179,15 +210,132 @@ static bool txReadAdc(int16_t *pcm) {
   return true;
 }
 
+// Счёт самого АЦП (с 3.18, для txLimPrint): упирается ли он в край шкалы, нет ли «перескоков» отсчёта через весь
+// размах за один шаг (у настоящего звука их не бывает — так выглядит сдвиг данных на бит: старший разряд теряется и
+// громкое «переворачивается»), что в младшем байте 32-битного слова (PCM1808 шлёт 24 бита — там должны быть нули).
+static volatile uint32_t txAdcFrames, txAdcPeakL, txAdcPeakR, txAdcRailL, txAdcRailR, txAdcJumpL, txAdcJumpR, txAdcLowOr;
+static volatile uint32_t txAdcRailUi;    // отсчётов АЦП на краю шкалы — для листа «Піки входу» (с 3.24; обнуляет ui_tx.h)
+// Сдвиг данных PCM1808 на бит (с 3.19). Счёт 3.18 на приборе владельца (16.10, вход с пульта в перегрузе): «перескоков
+// через весь розмах» Л 774, П 476, на краю шкалы — по 2 отсчёта, в младшем байте слова взводится только бит 0. Так
+// бывает, когда данные приходят на такт раньше, чем их ждёт I2S (АЦП в «левом выравнивании» при Philips у ESP32 — или
+// ESP32 берёт бит на такт позже): старший разряд отсчёта уходит в бит 0 ПРОШЛОГО слова, в слове остаются D22…D0.
+// Отсчёт выходит вдвое громче настоящего, а всё, что выше половины шкалы АЦП, «переворачивается» через весь размах —
+// треск на громком (владелец: «на тестовом звуке все идеально, даже при полном перегрузе на индикаторе уровня, а через
+// ацп этот же уровень это просто треск на выходе»). Отличить по самим данным: у правильного слова бит 8 — младший
+// разряд D0 (шум, взводится в половине слов), а бит 0 — всегда 0; у сдвинутого — бит 8 всегда 0 (бит после D0),
+// а бит 0 — знак следующего отсчёта. Сдвинутые слова собираются заново: знак — из бита 0 предыдущего слова потока
+// (Л₀ П₀ Л₁ П₁…: знак Л₁ — в П₀, знак П₀ — в Л₀), D22…D0 — из своего. Решение меняется после 4 кадров подряд с
+// однозначным признаком; тишина без такта (одни нули) решения не меняет. Порт: e18 — показать, e18=0 — само,
+// 1 — читать как есть, 2 — всегда собирать заново (проба на слух; не сохраняется).
+// Проверено на записях настоящих слов с прибора владельца (3.20, `build/adcraw/`): без пульта (шум АЦП) знак отсчёта
+// совпадает с битом 0 ПРЕДЫДУЩЕГО слова буфера в 100 % слов (с любым другим соседом — 55–59 %); с пультом сборка убирает
+// все «перевороты» (188 и 201 за 1,5 с → 0). С 3.21 снова «само» по умолчанию.
+static volatile bool txAdcShift = true;    // сейчас данные считаются сдвинутыми (у владельца так; само поправится за 8 мс)
+static volatile uint8_t txAdcFmtForce;     // 0 — само (по умолчанию), 1 — как есть, 2 — сдвиг
+static volatile uint32_t txAdcWords, txAdcBit0, txAdcBit8, txAdcFlips;
+// Запись «сырых» 32-битных слов АЦП (с 3.20) — для разбора на компьютере: e19=<мс> — записать, когда вход оживёт;
+// e21=<мс> — то же, но вход включить самому (проверочный звук снимается на время записи и возвращается сам);
+// e20 — выгрузить в порт (строки «@@ADC …», tools/adcdump.py). Память — внешняя (до 1,5 с = 384 КБ).
+static int32_t *txRawCap;
+static volatile uint32_t txRawCapN, txRawCapWant;
+static volatile uint8_t txRawCapState;           // 0 нет, 1 ждёт живого входа, 2 пишет, 3 готово
+static volatile uint8_t txRawCapTone = 0xFF;     // какой проверочный звук вернуть после записи (e21); 0xFF — не трогали
+static volatile uint32_t txRawCapT0, txRawCapLive; // когда дана команда; когда вход ожил (0 — ещё нет)
+static volatile uint16_t txRawCapDelay;          // начинать через столько мс живого входа (АЦП после такта успокаивается ~1 с)
+static volatile uint8_t txRawCapKind;            // 0 — слова АЦП как пришли; 1 — то, что уходит в эфир (середина | разность << 16)
+// Начать ли запись сейчас: вход живой уже txRawCapDelay мс.
+static bool txRawCapGo(bool live) {
+  if (txRawCapState != 1) return false;
+  if (!live) {
+    txRawCapLive = 0;
+    return false;
+  }
+  uint32_t now = millis();
+  if (!txRawCapLive) txRawCapLive = now ? now : 1;
+  if (now - txRawCapLive < txRawCapDelay) return false;
+  txRawCapState = 2;
+  return true;
+}
 // Внешний АЦП даёт два канала: в pcm — середина (Л+П)/2, в sd — разность (Л−П)/2.
-static bool txReadI2s(int16_t *pcm, int16_t *sd) {
+static NSX_HOT bool txReadI2s(int16_t *pcm, int16_t *sd) {
   static int32_t raw[FRAME * 2];
+  static int lp, rp;
+  static uint32_t carry;   // бит 0 последнего слова прошлого кадра — знак первого отсчёта этого
+  static int8_t vote;      // кадров подряд «сдвинуто» (+) или «как есть» (−)
   size_t got = 0;
   if (i2s_channel_read(txI2s, raw, sizeof(raw), &got, 50) != ESP_OK || got != sizeof(raw)) return false;
+  uint32_t b0 = 0, b8 = 0, nz = 0, lo = 0;
+  for (int i = 0; i < FRAME * 2; i++) {
+    uint32_t w = (uint32_t)raw[i];
+    if (w) nz++;
+    b0 += w & 1;
+    b8 += (w >> 8) & 1;
+    lo |= w & 0xFF;
+  }
+  if (b0 && !b8) vote = vote < 0 ? 1 : vote < 4 ? vote + 1 : 4;
+  else if (b8 && !b0) vote = vote > 0 ? -1 : vote > -4 ? vote - 1 : -4;
+  bool sh = txAdcFmtForce ? txAdcFmtForce == 2 : txAdcShift;
+  if (!txAdcFmtForce && ((vote == 4 && !sh) || (vote == -4 && sh))) {
+    sh = !sh;
+    txAdcShift = sh;
+    txAdcFlips = txAdcFlips + 1;
+  }
+  txAdcWords = txAdcWords + nz;
+  txAdcBit0 = txAdcBit0 + b0;
+  txAdcBit8 = txAdcBit8 + b8;
+  if (txRawCapKind == 0) txRawCapGo(nz > FRAME);   // вход ожил (АЦП после такта молчит ~0,3 с)
+  if (txRawCapKind == 0 && txRawCapState == 2 && txRawCap) {
+    uint32_t n = txRawCapN, m = FRAME * 2;
+    if (n + m > txRawCapWant) m = txRawCapWant - n;
+    memcpy(txRawCap + n, raw, m * sizeof(int32_t));
+    n += m;
+    txRawCapN = n;
+    if (n >= txRawCapWant) txRawCapState = 3;
+  }
+  if (sh) {   // собрать заново: знак — бит 0 предыдущего слова потока, D22…D0 — биты 31…9 своего
+    uint32_t c = carry;
+    for (int i = 0; i < FRAME * 2; i++) {
+      uint32_t w = (uint32_t)raw[i];
+      raw[i] = (int32_t)((c << 31) | ((w >> 1) & 0x7FFFFF00u));
+      c = w & 1;
+    }
+    carry = c;
+    int64_t a = raw[0], o = (int32_t)((uint32_t)raw[0] ^ 0x80000000u), nx = raw[2];
+    if (llabs(o - nx) < llabs(a - nx)) {
+      raw[0] = (int32_t)o;
+      txAdcEdgeFix = txAdcEdgeFix + 1;
+    }
+  } else carry = (uint32_t)raw[FRAME * 2 - 1] & 1;
+  uint32_t pl = txAdcPeakL, pr = txAdcPeakR, rl = 0, rr = 0, jl = 0, jr = 0;
+  // Причина сдвига у владельца (16.10): вывод FMT модуля — на 3,3 В, это «левое выравнивание» (описание PCM1808,
+  // табл. 3), а по нашей схеме FMT — на GND (I2S). В «левом выравнивании» левый канал идёт при ВЫСОКОМ LRCK, а I2S у
+  // ESP32 считает левым низкий — каналы переставлены. Поэтому при сдвиге слова кадра берутся наоборот.
+  const int iL = sh ? 1 : 0, iR = sh ? 0 : 1;
   for (int i = 0; i < FRAME; i++) {
-    int l = raw[2 * i] >> 16, r = raw[2 * i + 1] >> 16;
+    int l = raw[2 * i + iL] >> 16, r = raw[2 * i + iR] >> 16;
     pcm[i] = (int16_t)((l + r) / 2);
     sd[i] = (int16_t)((l - r) / 2);
+    uint32_t al = l < 0 ? -l : l, ar = r < 0 ? -r : r;
+    if (al > pl) pl = al;
+    if (ar > pr) pr = ar;
+    if (al >= 32766) rl++;
+    if (ar >= 32766) rr++;
+    if (abs(l - lp) > 49152) jl++;
+    if (abs(r - rp) > 49152) jr++;
+    lp = l;
+    rp = r;
+  }
+  txAdcPeakL = pl;
+  txAdcPeakR = pr;
+  txAdcRailL = txAdcRailL + rl;
+  txAdcRailR = txAdcRailR + rr;
+  txAdcJumpL = txAdcJumpL + jl;
+  txAdcJumpR = txAdcJumpR + jr;
+  txAdcLowOr = txAdcLowOr | lo;
+  txAdcFrames = txAdcFrames + 1;
+  if (rl || rr) {
+    txClips = txClips + rl + rr;   // для отметки «перевантаження» на экране, как у встроенного АЦП
+    txAdcRailUi = txAdcRailUi + rl + rr;
   }
   txRawSamples = txRawSamples + FRAME;
   return true;
@@ -354,11 +502,15 @@ static volatile bool txCardOn;       // в эфир идёт файл с кар�
 static volatile bool txCardStop;     // попросили остановить: звук плавно уходит, затем txCardOn снимается
 static volatile bool txTestReset;    // проверочный звук начать заново (задачу разбора занимал файл)
 static volatile uint32_t cpPlayed;   // сколько отсчётов файла ушло в эфир
+// Переход по треку и пауза (с 3.28, плеер fmui.h): звук уходит за 20 мс; когда он в нуле — пауза перестаёт брать звук
+// из запаса (разбор встаёт, место в треке держится), а переход перезапускает разбор с нужного байта (cpSeekByte) и
+// ставит время; новый звук входит с нуля за те же 20 мс — без щелчка.
 static void txCardSound(int16_t *pcm, int16_t *sd) {
   static float g = 0;
+  bool seek = cpSeekReqByte != 0xFFFFFFFF, hold = seek || cpPause;
   for (int i = 0; i < FRAME; i++) {
     int16_t l = 0, r = 0;
-    int k = mp3Get(l, r);
+    int k = hold && g <= 0 ? 0 : mp3Get(l, r);
     if (k < 0) {                     // файл кончился (или не читается)
       for (; i < FRAME; i++) pcm[i] = sd[i] = 0;
       g = 0;
@@ -367,10 +519,17 @@ static void txCardSound(int16_t *pcm, int16_t *sd) {
       return;
     }
     if (k > 0) cpPlayed = cpPlayed + 1;
-    float d = (txCardStop ? 0.0f : 1.0f) - g;
+    float d = (txCardStop || hold ? 0.0f : 1.0f) - g;
     g += d > 1.0f / 640 ? 1.0f / 640 : d < -1.0f / 640 ? -1.0f / 640 : d;
     pcm[i] = (int16_t)((l + r) * 0.5f * g);
     sd[i] = (int16_t)((l - r) * 0.5f * g);
+  }
+  if (seek && g <= 0) {   // звук ушёл — перейти
+    cpPlayed = cpSeekReqPlayed;
+    cpSeekByte = cpSeekReqByte;
+    cpSeekReqByte = 0xFFFFFFFF;
+    mpStarted = false;
+    mpWantGen = mpWantGen + 1;   // задача разбора откроет файл заново с cpSeekByte
   }
   if (txCardStop && g <= 0) {
     fm.playEnd = 2;
@@ -517,6 +676,173 @@ static bool txNsStart() {
   if (!txNsIn || !txNsOut) return false;
   return xTaskCreatePinnedToCore(txNsTask, "txns", 4096, NULL, 18, &txNsTaskH, 1) == pdPASS;
 }
+// Шумовой порог входа (с 3.17; настройки cfg.txGate…). Владелец 16.10: «имеется ровный фоновый шум в виде шипения с
+// передатчика. Аппаратные решения в виде добавления конденсаторов по питанию результатов не дали», «при проверочном
+// звуке шипение полностью отсутствует, а значит причина точно в adc», «функции настраиваемые должны быть». Он предлагал
+// простой порог: «если средняя амплитуда в буфере ниже порога — заполнить буфер нулями». Так у слов срезались бы
+// окончания и тихие слоги, а у порога звук «дребезжал» бы (то пропадает, то нет) со щелчками на краях кадров. Здесь —
+// тот же порог, но как у приёмника «у паузах» (nsfx.h, NsDyn): шум входа меряется сам (самое тихое: вниз быстро, вверх
+// на 0,25 дБ/с), порог — на 3…15 дБ над ним (или вручную, в дБ), мягкое колено 6 дБ, после звука порог держится
+// открытым 60…300 мс (окончания слов), открывается за кадр (2 мс), закрывается ровно (в децибелах) за 60…400 мс; в
+// паузах звук тише на 12 / 20 / 30 дБ или глушится в ноль. Множитель меняется по отсчётам — без щелчков. Только звук с пульта:
+// проверочный звук и файлы с карты чистые.
+struct TxGate {
+  float floorDb = -60, levDb = -96, thrDb = -60, gDb = 0, g = 1;
+  int hold = 0;
+  bool openNow = true;
+  void open() {
+    gDb = 0;
+    g = 1;
+    hold = 0;
+    openNow = true;
+  }
+  // уровень кадра (сумма квадратов отсчётов середины и разности) в дБ от полной шкалы и шум входа
+  NSX_HOT void measure(float sumSq) {
+    float ms = sumSq * (1.0f / FRAME) * (1.0f / (32768.0f * 32768.0f));
+    levDb = 3.01029996f * nsxLog2a(ms + 1e-12f);   // 10·lg
+    if (levDb < floorDb) floorDb += (levDb - floorDb) * 0.05f;   // вниз — быстро (за ~40 мс)
+    else floorDb += 0.0005f;                                     // вверх — 0,25 дБ в секунду
+    if (floorDb > -36) floorDb = -36;                            // громче — уже не шум, а звук
+    if (floorDb < -96) floorDb = -96;
+  }
+  float thrFor(uint8_t thr, int8_t manDb) const {
+    return manDb ? (float)manDb : floorDb + 3.0f + 3.0f * (thr > 4 ? 2 : thr);
+  }
+  // depth 1…4 — в паузах тише на 12 / 20 / 30 дБ / тишина; rel 0…2 — быстро / средне / медленно. Убавление считается в
+  // децибелах и гаснет ровно (децибелы за кадр), а не «по экспоненте» множителя: иначе тишина наступала бы через секунду.
+  void apply(int16_t *m, int16_t *s, int n, uint8_t depth, uint8_t thr, uint8_t rel, int8_t manDb);
+};
+NSX_HOT IRAM_ATTR void TxGate::apply(int16_t *m, int16_t *s, int n, uint8_t depth, uint8_t thr, uint8_t rel, int8_t manDb) {
+  static const float DEPTH[5] = { 0, 12, 20, 30, 60 };   // «тишина» — до −60 дБ, дальше ровно ноль
+  static const int HOLD[3] = { 30, 75, 150 };            // кадров по 2 мс: держится открытым 60 / 150 / 300 мс
+  static const int FALL[3] = { 30, 75, 200 };            // и гаснет до конца за 60 / 150 / 400 мс
+  if (depth > 4) depth = 4;
+  if (rel > 2) rel = 1;
+  thrDb = thrFor(thr, manDb);
+  float x = (levDb - thrDb) * (1.0f / 6.0f);   // мягкое колено: 0 — у порога, 1 — на 6 дБ громче
+  x = x < 0 ? 0 : x > 1 ? 1 : x;
+  if (x >= 1) hold = HOLD[rel];
+  else if (hold > 0) {
+    hold--;
+    x = 1;
+  }
+  float tDb = -DEPTH[depth] * (1 - x), g0 = g;
+  if (tDb >= gDb) gDb = tDb;   // открыть — за этот кадр
+  else {                       // закрыть — ровно, по настройке
+    gDb -= DEPTH[depth] / FALL[rel];
+    if (gDb < tDb) gDb = tDb;
+  }
+  g = depth == 4 && gDb <= -59.9f ? 0.0f : nsxExp2a(gDb * 0.166096405f);   // 10^(дБ/20)
+  openNow = gDb > -6;
+  if (g0 == 1 && g == 1) return;
+  if (g0 == 0 && g == 0) {
+    memset(m, 0, n * sizeof(int16_t));
+    memset(s, 0, n * sizeof(int16_t));
+    return;
+  }
+  float d = (g - g0) / n;   // множитель — по отсчётам: без щелчка на краю кадра
+  for (int i = 0; i < n; i++) {
+    float k = g0 + d * (i + 1);
+    m[i] = (int16_t)lrintf(m[i] * k);
+    s[i] = (int16_t)lrintf(s[i] * k);
+  }
+}
+// Ограничитель пиков входа (с 3.18; настройки cfg.txLim…). Владелец 16.10: «при перегрузах на входе начинается треск
+// на выходе. Нужно, чтобы передатчик выполнял компрессию звука в таких пиках, чтобы при завышенном входе, на выходе был
+// максимально громкий звук без искажений и треска»; «на тестовом звуке, даже при переусилении, на выходе приемников звук
+// чистый. проблема с треском только на ацп». До 3.18 эквалайзер входа и подсиление упирались в край шкалы жёстко
+// (срез — тот же треск), а у владельца на входе эквалайзер +2 дБ на верхах. Теперь после эквалайзера и подсиления звук
+// идёт через задержку LA отсчётов (1,5 мс), и усиление опускается заранее — к приходу пика ровно настолько, чтобы
+// больший из каналов (|Л| или |П| = |середина| + |разность|) не вышел за потолок; ниже потолка, по настройке, пики
+// мягко сжимаются (колено ±3 дБ). Устроено как ограничитель приёмника (rxaudio.h, с 2.86): наименьшее «надо убавить»
+// по окну — очередью, затем отпускание и среднее за окно; поэтому за потолок отсчёт не выходит (каждое из LA прошлых
+// значений не больше нужного выходящему отсчёту — все их окна его видели). Что сам АЦП срезал, ограничитель не вернёт —
+// для этого счёт АЦП (txAdc…) и совет в описании: убавить уровень до АЦП.
+struct TxLim {
+  enum { LA = 48, DQ = 64 };
+  float bm[LA], bs[LA], box[LA], dqV[DQ];
+  uint32_t dqT[DQ];
+  uint32_t t = 0, dqH = 0, dqE = 0;
+  int pos = 0, bpos = 0, bN = 0;
+  float r1 = 1, boxSum = LA;
+  TxLim() {
+    for (int i = 0; i < LA; i++) {
+      bm[i] = bs[i] = 0;
+      box[i] = 1;
+    }
+  }
+  // m, s — середина и разность после эквалайзера и подсиления (в шкале 16 бит, могут быть за краем); выход — с задержкой LA.
+  // С 3.21 — во внутренней памяти и с -O2 (см. txInEqGain).
+  void run(const float *m, const float *s, int16_t *om, int16_t *os, int n, uint8_t ceil, uint8_t comp, uint8_t rel, float &lowG, uint32_t &busy);
+};
+NSX_HOT IRAM_ATTR void TxLim::run(const float *m, const float *s, int16_t *om, int16_t *os, int n, uint8_t ceil, uint8_t comp, uint8_t rel, float &lowG, uint32_t &busy) {
+  static const float CEIL[4] = { 30934.0f, 29205.0f, 26029.0f, 23198.0f };   // −0,5 / −1 / −2 / −3 дБ от 32768
+  static const float KNEE[4] = { 0, -7.0f, -11.0f, -15.0f };                 // колено (дБ от полной шкалы) при потолке −1 дБ
+  static const float SLOPE[4] = { 0, 0.5f, 0.6667f, 0.75f };                 // 1 − 1/R: 2:1, 3:1, 4:1
+  static const float REL[3] = { 1 - 0.99921907f, 1 - 0.99973961f, 1 - 0.99989584f };   // 40 / 120 / 300 мс при 32 кГц
+  const float lim = CEIL[ceil > 3 ? 1 : ceil];
+  const uint8_t c = comp > 3 ? 1 : comp;
+  const float kneeDb = KNEE[c] + (lim == CEIL[1] ? 0 : 20 * log10f(lim * (1.0f / 29205.0f))), relK = REL[rel > 2 ? 1 : rel];
+  const float kneeLin = c ? 32768.0f * powf(10.0f, (kneeDb - 3) / 20) : 1e9f;
+  for (int i = 0; i < n; i++) {
+    float pk = fabsf(m[i]) + fabsf(s[i]), need = pk > lim ? lim / pk : 1.0f;
+    if (pk > kneeLin) {   // мягкое сжатие пиков ниже потолка
+      float d = 6.02059991f * nsxLog2a(pk * (1.0f / 32768)), over = d - kneeDb, red;
+      if (over < 3) red = (over + 3) * (over + 3) * (1.0f / 12) * SLOPE[c];
+      else red = over * SLOPE[c];
+      float g = nsxExp2a(-red * 0.166096405f);
+      if (g < need) need = g;
+    }
+    float dm = bm[pos], ds = bs[pos];   // отсчёт, пришедший LA назад, — он сейчас пойдёт на выход
+    bm[pos] = m[i];
+    bs[pos] = s[i];
+    pos = pos + 1 == LA ? 0 : pos + 1;
+    t++;
+    while (dqE != dqH && dqV[(dqE - 1) & (DQ - 1)] >= need) dqE--;
+    dqV[dqE & (DQ - 1)] = need;
+    dqT[dqE & (DQ - 1)] = t;
+    dqE++;
+    while (t - dqT[dqH & (DQ - 1)] >= LA) dqH++;
+    float mn = dqV[dqH & (DQ - 1)];
+    if (mn < r1) r1 = mn;
+    else r1 += (mn - r1) * relK;
+    float g = boxSum * (1.0f / LA);
+    boxSum += r1 - box[bpos];
+    box[bpos] = r1;
+    bpos = bpos + 1 == LA ? 0 : bpos + 1;
+    if (++bN >= 4096) {
+      bN = 0;
+      boxSum = 0;
+      for (int k = 0; k < LA; k++) boxSum += box[k];
+    }
+    float vm = dm * g, vs = ds * g;
+    om[i] = (int16_t)(vm > 32767 ? 32767 : vm < -32768 ? -32768 : lrintf(vm));
+    os[i] = (int16_t)(vs > 32767 ? 32767 : vs < -32768 ? -32768 : lrintf(vs));
+    if (g < lowG) lowG = g;
+    if (g < 0.999f) busy++;
+  }
+}
+// Эквалайзер и подсиление входа (3.21). Владелец 16.10: «реальный звук на приемники идет на несколько порядков тише от
+// тестового… с искажениями и треском». Замер (`Q`): с пультом задача передачи тратила на кадр в среднем 1,76 мс из 2
+// (41 % кадров — дольше 2 мс; обработка входа — 465 мкс против 232 у проверочного звука), и I2S терял кадры: 147 за 7 с —
+// каждый разрыв звука щелчок. Горячие места входа — эта функция, ограничитель и порог — с 3.21 собираются с -O2 и
+// (кроме measure) лежат во внутренней памяти: вся прошивка — -Os из флеша, а ядро радио делит кэш с драйвером Wi-Fi.
+static NSX_HOT IRAM_ATTR void txInEqGain(Eq6 &eq, bool eqS, float k, const int16_t *pcm, const int16_t *side, float *fm, float *fs) {
+  const bool any = eq.any;
+  for (int i = 0; i < FRAME; i++) {
+    float v = pcm[i], u = side[i];
+    if (any) v = eq.run(0, v);
+    if (eqS) u = eq.run(1, u);
+    fm[i] = v * k;
+    fs[i] = u * k;
+  }
+}
+static volatile float txLimLowG = 1;     // для отчёта: наименьшее усиление ограничителя (обнуляет читающий)
+static volatile float txLimLowUi = 1;    // то же для экрана (лист «Піки входу», с 3.24; обнуляет ui_tx.h раз в секунду)
+static volatile uint32_t txLimBusy;      // и сколько отсчётов он убавлял
+static volatile float txGateFloorDb = -96, txGateThrDb = -96, txGateLevDb = -96;   // для отчёта и экрана
+static volatile bool txGateOpen = true, txGateActive;
+static volatile uint32_t txGateFrames, txGateClosed, txGateCloses;
 static volatile uint32_t txLoudMs;            // когда в эфир последний раз шёл звук громче −46 дБ (0 — ещё не было)
 static bool txQuietToSave(uint32_t dueMs, uint32_t maxMs);
 static volatile bool txEqOnTone;              // проба (порт: e9=1): эквалайзер входа действует и на проверочный тон 1 кГц — для замера
@@ -696,26 +1022,38 @@ static void txTask(void *) {
         }
     }
     else if (cfg.tone) txTestSound(pcm, side);
-    else if (cfg.gainDb || inEq.any) {   // эквалайзер входа, затем подсиление — с упором в край шкалы
+    else if (cfg.gainDb || inEq.any || (cfg.txLim && got)) {   // эквалайзер входа, подсиление, ограничитель пиков (с 3.18)
       static int8_t lastDb = 0;
       static float k = 1;
+      static TxLim *lim;
       if (lastDb != cfg.gainDb) {
         lastDb = cfg.gainDb;
         k = powf(10.0f, lastDb / 20.0f);
       }
       bool eqS = inEq.any && cfg.input == IN_I2S;   // разность каналов есть только у внешнего АЦП
-      for (int i = 0; i < FRAME; i++) {
-        float v = pcm[i], u = side[i];
-        if (inEq.any) v = inEq.run(0, v);
-        if (eqS) u = inEq.run(1, u);
-        v *= k;
-        u *= k;
-        pcm[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v;
-        side[i] = u > 32767 ? 32767 : u < -32768 ? -32768 : (int16_t)u;
-      }
+      if (cfg.txLim && got && !lim) lim = new (std::nothrow) TxLim();   // из кучи: прошивка общая, приёмнику он не нужен
+      if (lim && cfg.txLim && got) {
+        static float fm[FRAME], fs[FRAME];
+        txInEqGain(inEq, eqS, k, pcm, side, fm, fs);
+        float low = 1;
+        uint32_t busy = txLimBusy;
+        lim->run(fm, fs, pcm, side, FRAME, cfg.txLimCeil, cfg.txLimComp, cfg.txLimRel, low, busy);
+        if (low < txLimLowG) txLimLowG = low;
+        if (low < txLimLowUi) txLimLowUi = low;
+        txLimBusy = busy;
+      } else
+        for (int i = 0; i < FRAME; i++) {
+          float v = pcm[i], u = side[i];
+          if (inEq.any) v = inEq.run(0, v);
+          if (eqS) u = inEq.run(1, u);
+          v *= k;
+          u *= k;
+          pcm[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v;
+          side[i] = u > 32767 ? 32767 : u < -32768 ? -32768 : (int16_t)u;
+        }
     }
     // Шумозаглушение входа (с 2.68): только звук с пульта — проверочный звук и файлы чистые. Считает его отдельная
-    // задача на ядре экрана (txNsTask): кадр отдаётся ей, а в эфир идёт кадр, отданный четыре кадра назад (8 мс).
+    // задача на ядре экрана (txNsTask): кадр отдаётся ей, а в эфир идёт кадр, отданный пять кадров назад (10 мс, с 3.23).
     {
       static bool nsWas;
       bool nsOn = cfg.txNs >= 1 && cfg.txNs <= 3 && !cfg.tone && !card && got && txNsStart();
@@ -730,22 +1068,30 @@ static void txTask(void *) {
         memcpy(f.s, side, sizeof(f.s));
         txNsPut = k + 1;
         xTaskNotifyGive(txNsTaskH);
-        // В эфир — кадр, отданный на обработку кадр назад: у задачи на него было 2 мс. Не успела (ядро экрана было
-        // занято записью во флеш) — идёт тот же звук без обработки, с той же задержкой: провала нет.
-        if ((int32_t)(txNsDone - k) >= 0 && k >= 1) {
-          const TxNsFrame &o = txNsOut[(k - 1) & (TXNS_RING - 1)];
+        // В эфир — кадр, отданный на обработку ДВА кадра назад (с 3.23; было — один): у задачи на него 4 мс. Шаг
+        // шумодава (БПФ на 256 отсчётов) приходится на каждый второй кадр и стоит ~1,3 мс, а ядро экрана делит время с
+        // выводом картинки — с одним кадром запаса задача не успевала тысячи раз (16.10: «не встигло кадрів 51772»), и в
+        // эфир шёл кадр без обработки: в тишине — всплеск шума на 2 мс, на 17 дБ громче соседних. Владелец: «частые
+        // тихие щелчки и потрескивание на фоне… как только звук очень тихий», «шум похож на цифровые помехи». Задержка
+        // пути шумодава — 10 мс (было 8). Не успела и теперь (запись во флеш) — идёт тот же звук без обработки с той же
+        // задержкой, но приглушённый на столько, сколько шумодав сейчас убирает: без всплеска.
+        if ((int32_t)(txNsDone - (k - 1)) >= 0 && k >= 2) {
+          const TxNsFrame &o = txNsOut[(k - 2) & (TXNS_RING - 1)];
           memcpy(pcm, o.m, sizeof(o.m));
           memcpy(side, o.s, sizeof(o.s));
         } else {
-          const TxNsFrame &o = txNsIn[(k - 4) & (TXNS_RING - 1)];
-          if (k >= 4) {
-            memcpy(pcm, o.m, sizeof(o.m));
-            memcpy(side, o.s, sizeof(o.s));
+          const TxNsFrame &o = txNsIn[(k - 5) & (TXNS_RING - 1)];
+          if (k >= 5) {
+            float red = txNsRedDb, g = red < 0 ? nsxExp2a(red * 0.166096405f) : 1.0f;   // 10^(дБ/20)
+            for (int i = 0; i < FRAME; i++) {
+              pcm[i] = (int16_t)lrintf(o.m[i] * g);
+              side[i] = (int16_t)lrintf(o.s[i] * g);
+            }
+            txNsLate = txNsLate + 1;
           } else {
             memset(pcm, 0, sizeof(pcm));
             memset(side, 0, sizeof(side));
           }
-          if (k >= 4) txNsLate = txNsLate + 1;
         }
       }
       nsWas = nsOn;
@@ -773,6 +1119,36 @@ static void txTask(void *) {
     if (pk > txPeak) txPeak = pk > 32767 ? 32767 : pk;
     if (pk > txPeakUi) txPeakUi = pk > 32767 ? 32767 : pk;
     if (!cfg.tone && !card && (pk >= 32000 || txClips != clipsBefore)) txClipMs = millis();
+    // Шумовой порог входа (с 3.17, TxGate выше): только звук с пульта. Шум входа меряется и при выключенном пороге —
+    // чтобы на экране и в порту было видно, насколько шипит вход.
+    {
+      static TxGate gt;
+      static float levShow = -96;
+      bool src = !cfg.tone && !card && got;
+      bool on = src && cfg.txGate >= 1 && cfg.txGate <= 4;
+      if (src) {
+        float sqS = 0;
+        for (int i = 0; i < FRAME; i++) sqS += (float)side[i] * side[i];
+        gt.measure(sq + sqS);
+        bool was = gt.openNow;
+        if (on) gt.apply(pcm, side, FRAME, cfg.txGate, cfg.txGateThr, cfg.txGateRel, cfg.txGateDb);
+        else {
+          gt.open();
+          gt.thrDb = gt.thrFor(cfg.txGateThr, cfg.txGateDb);
+        }
+        levShow += (gt.levDb - levShow) * 0.05f;
+        txGateFloorDb = gt.floorDb;
+        txGateThrDb = gt.thrDb;
+        txGateLevDb = levShow;
+        if (on) {
+          txGateFrames = txGateFrames + 1;
+          if (!gt.openNow) txGateClosed = txGateClosed + 1;
+          if (was && !gt.openNow) txGateCloses = txGateCloses + 1;
+        }
+      } else gt.open();
+      txGateOpen = gt.openNow;
+      txGateActive = on;
+    }
 
     // Тишина в эфире: уровень и спектр выше уже посчитаны по входу — оператор видит, что звук с пульта есть.
     // Звук уходит и возвращается плавно (за 15 мс), без щелчка.
@@ -794,6 +1170,17 @@ static void txTask(void *) {
       }
       if (pa > txPeakAir) txPeakAir = pa > 32767 ? 32767 : pa;
       if (pa > 160) txLoudMs = millis() ? millis() : 1;
+    }
+    if (txRawCapKind == 1) {   // запись того, что уходит в эфир (с 3.21, e22): середина и разность после всей обработки
+      txRawCapGo(!cfg.tone && !card && got);
+      if (txRawCapState == 2 && txRawCap) {
+        uint32_t n = txRawCapN, m = FRAME;
+        if (n + m > txRawCapWant) m = txRawCapWant - n;
+        for (uint32_t i = 0; i < m; i++) txRawCap[n + i] = (int32_t)((uint16_t)pcm[i] | ((uint32_t)(uint16_t)side[i] << 16));
+        n += m;
+        txRawCapN = n;
+        if (n >= txRawCapWant) txRawCapState = 3;
+      }
     }
     // Стерео идёт в эфир, когда оно включено и источник стереофонический: мелодии, проверка каналов, внешний АЦП.
     // Голос в списке с мелодиями идёт тем же видом пакета (разность — нули), чтобы приёмники не перестраивались.

@@ -475,7 +475,7 @@ static void channelLabel(G &g, const ScanInfo &s, int y) {   // подпись, 
   snprintf(num, sizeof(num), "%d", s.ch);
   snprintf(prev, sizeof(prev), "%d", s.prevCh);
   int lw = tw(s.label, RF_TXT), nw = tw("13", RF_TXTB), x0 = (W - lw - 8 - nw) / 2;
-  txt(g, x0, y, s.label, RF_TXT, C_MUTED_FG);
+  txt(g, x0, y, s.label, RF_TXT, C_FG);
   m2::Rect old = g.narrow(x0 + lw + 6, y - 20, nw + 6, 26);
   float rk = easeOut(s.roll);
   if (rk < 1) txt(g, x0 + lw + 8, y - (int)lroundf(rk * 22), prev, RF_TXTB, C_FG);
@@ -512,13 +512,13 @@ static void starting(G &g, uint32_t t, uint32_t total, const char *name, const c
   int dy = (int)((1 - easeOutBack(phase(t, 200, 500))) * 60 + 0.5f);   // подписи выезжают снизу и садятся с отскоком
   m2::Rect old = g.narrow(0, 84, W, H - 84);
   ticker(g, 10, W - 10, 118 + dy, name, RF_TXTB, C_FG, t, AL_C);
-  txt(g, W / 2, 148 + dy, info, RF_CAP, C_MUTED_FG, AL_C);
+  txt(g, W / 2, 148 + dy, info, RF_CAP, C_FG, AL_C);
   g.restore(old);
 }
 static void update(G &g, uint32_t t, const char *line, int percent, const char *foot) {
   bg(g);
   txt(g, W / 2, 34, tr("ОНОВЛЕННЯ"), fitTitle(tr("ОНОВЛЕННЯ")), C_FG, AL_C, W - 16);
-  txt(g, W / 2, 66, line, RF_TXT, C_MUTED_FG, AL_C, W - 20);
+  txt(g, W / 2, 66, line, RF_TXT, C_FG, AL_C, W - 20);
   if (percent >= 0) progress(g, 20, 82, 280, 18, percent / 100.0f, t, percent < 100);
   else g.discFast(W / 2, 92, 9, C_DANGER);
   txt(g, W / 2, 146, foot, percent >= 0 ? RF_MID : RF_TXT, percent >= 0 ? C_PRIMARY : C_FG, AL_C, W - 20);
@@ -543,22 +543,22 @@ static void going(G &g, uint32_t t, uint32_t total, bool off) {
   int drop = (int)((1 - easeOut(phase(t, 0, 320))) * 40 + 0.5f);   // заголовок опускается сверху
   if (off) {
     txt(g, W / 2, 40 - drop, tr("ВИМКНЕНО"), fitTitle(tr("ВИМКНЕНО")), C_FG, AL_C, W - 16);
-    typed(g, W / 2, 80, tr("з передавача"), RF_TXT, C_MUTED_FG, phase(t, 320, 450));
-    typed(g, W / 2, 110, tr("переходжу в сон"), RF_TXT, C_MUTED_FG, phase(t, 800, 550));
+    typed(g, W / 2, 80, tr("з передавача"), RF_TXT, C_FG, phase(t, 320, 450));
+    typed(g, W / 2, 110, tr("переходжу в сон"), RF_TXT, C_FG, phase(t, 800, 550));
   } else {
     txt(g, W / 2, 36 - drop, tr("СИГНАЛ ВІДСУТНІЙ"), fitTitle(tr("СИГНАЛ ВІДСУТНІЙ")), C_WARN, AL_C, W - 16);
     int lw = (int)(280 * easeOut(phase(t, 200, 400)));
     if (lw > 0) g.fill((W - lw) / 2, 44, lw, 2, C_BORDER);
-    typed(g, W / 2, 82, tr("переходжу у режим"), RF_TXT, C_MUTED_FG, phase(t, 400, 550));
-    typed(g, W / 2, 110, tr("очікування"), RF_TXT, C_MUTED_FG, phase(t, 950, 400));
+    typed(g, W / 2, 82, tr("переходжу у режим"), RF_TXT, C_FG, phase(t, 400, 550));
+    typed(g, W / 2, 110, tr("очікування"), RF_TXT, C_FG, phase(t, 950, 400));
   }
   timeBar(g, 148, 1 - phase(t, 0, total - fold), 280);
 }
 static void sleeping(G &g, uint32_t t) {   // выключен с передатчика, а на нём нажали ручку
   bg(g);
   txt(g, 18, 52, tr("ВИМКНЕНО"), fitTitle(tr("ВИМКНЕНО"), 200), C_FG, AL_L, 200);
-  txt(g, 18, 84, tr("з передавача"), RF_TXT, C_MUTED_FG);
-  txt(g, W / 2, 156, tr("вмикає лише передавач"), RF_TXT, C_MUTED_FG, AL_C);
+  txt(g, 18, 84, tr("з передавача"), RF_TXT, C_FG);
+  txt(g, W / 2, 156, tr("вмикає лише передавач"), RF_TXT, C_FG, AL_C);
   float mx = 250, my = 64 + 3 * sinf(t / 900.0f);   // месяц: диск, из которого вынут сдвинутый диск
   stars(g, t, 200, 22, 110, 90, 6, 0x700Du);
   g.discFast(mx, my, 30, mix(C_BG, C_GLOW, 0.12f));
@@ -580,7 +580,7 @@ static void unpaired(G &g, uint32_t t, unsigned code, bool heard) {
   snprintf(b, sizeof(b), "%s%.*s", base, dots, "...");
   char full[64];
   snprintf(full, sizeof(full), "%s...", base);
-  txt(g, (W - tw(full, RF_TXT)) / 2, 60, b, RF_TXT, C_MUTED_FG);
+  txt(g, (W - tw(full, RF_TXT)) / 2, 60, b, RF_TXT, C_FG);
   if (heard) {   // код — крупно, в рамке с бегущими штрихами («обратите внимание»)
     snprintf(b, sizeof(b), "%04u", code % 10000);
     int cw = tw(b, RF_NUM), kw = tw(tr("КОД"), RF_MID), fw = kw + 12 + cw + 36, fx = (W - fw) / 2, fy = 72, fh = 58;
@@ -595,15 +595,15 @@ static void unpaired(G &g, uint32_t t, unsigned code, bool heard) {
       else x = fx, y = fy + fh - 1 - (k - 2 * fw - fh);
       g.fill(x, y, 2, 2, C_PRIMARY);
     }
-    txt(g, fx + 18, fy + 40, tr("КОД"), RF_MID, C_MUTED_FG);
+    txt(g, fx + 18, fy + 40, tr("КОД"), RF_MID, C_FG);
     txt(g, fx + 18 + kw + 12, fy + 50, b, RF_NUM, C_GLOW);
-    txt(g, W / 2, 158, tr("Приймачі - Додати"), RF_CAP, C_MUTED_FG, AL_C);
+    txt(g, W / 2, 158, tr("Приймачі - Додати"), RF_CAP, C_FG, AL_C);
   } else {
     m2::Rect old = g.narrow(0, 66, W, 66);
     bool flash = waves(g, t, W / 2, 80, 2, 13, 11, 12);
     g.restore(old);
     tower(g, W / 2, 80, 130, flash ? 2 : 1);
-    txt(g, W / 2, 158, tr("увімкніть передавач"), RF_TXT, C_MUTED_FG, AL_C);
+    txt(g, W / 2, 158, tr("увімкніть передавач"), RF_TXT, C_FG, AL_C);
   }
 }
 
@@ -661,7 +661,7 @@ static void volumeCard(G &g, uint32_t t, float vol, float k, int limit = 20) {
   char b[8];
   snprintf(b, sizeof(b), "%d", (int)lroundf(vol * 5));
   txt(g, cx + 64, cy + 8, b, RF_NUM, C_FG, AL_R);
-  txt(g, cx + 68, cy + 8, "%", RF_MID, C_MUTED_FG);
+  txt(g, cx + 68, cy + 8, "%", RF_MID, C_FG);
   for (int i = 0; i < 20; i++) {   // двадцать делений
     int x = cx - 104 + i * 10 + 2;
     float f = vol - i;
@@ -703,7 +703,7 @@ static void statusBar(G &g, uint32_t t, float bars, const char *name, int volPct
     snprintf(b, sizeof(b), "%d", volPct);
     vw = tw(b, RF_TXTB) + tw("%", RF_CAP) + 22;
     int x = W - 8 - tw("%", RF_CAP);
-    txt(g, x, 20, "%", RF_CAP, C_MUTED_FG);
+    txt(g, x, 20, "%", RF_CAP, C_FG);
     txt(g, x - 1, 20, b, RF_TXTB, C_PRIMARY, AL_R);
     speaker(g, x - tw(b, RF_TXTB) - 19, 7, 14, C_MUTED_FG);
   }
@@ -792,15 +792,47 @@ static inline int anPeakY(float lv, float pk) {   // верх отметки п�
   if (pk <= 0.004f) return -1;
   return anTop(pk > lv ? pk : lv) - AN_PGAP - AN_PH;
 }
-static inline uint8_t anCk(float lv) {
-  return lv > 0.004f ? 1 + (uint8_t)(clamp01(lv) * 7.99f) : 0;
+// Цвет столбца — по высоте (3.23–3.24). Владелец 16.10: «столбцы, в зависимости от своей высоты, плавно меняют цвет от
+// зеленого, при уровне до 1/3 высоты столбца и далее чем выше, тем ближе к красному, выше 1/3 высоты стремится к
+// желтоватому, а при максимуме уже ярко красный»; к 3.23 (столбец целиком одного цвета, 12 ступеней): «градация цветов в
+// столбиках должна меняться не резко, а плавно оттенками». С 3.24 у каждой строки точек столбика — свой оттенок по её
+// высоте на шкале: до 1/3 — зелёный, до 2/3 — плавно к жёлтому, выше — через оранжевый к ярко-красному у самого верха.
+// Невысокий столбец — зелёный, средний — с желтоватой верхушкой, полный — зелёный, жёлтый и красный кончик. Цвет точки
+// зависит только от высоты на шкале, поэтому при росте и спаде дорисовываются только сдвинувшиеся строки (как прежде) —
+// шина экрана не загружается больше (её работа слышна в звуке, см. 3.11). Тишина — тёмная чёрточка, как прежде.
+const uint16_t C_AN_GREEN = RGB(48, 206, 72), C_AN_YELLOW = RGB(250, 212, 44), C_AN_RED = RGB(255, 34, 26);
+static inline uint8_t anCk(float lv) {   // 0 — тишина (тёмная чёрточка), 1 — звук (столбик с оттенками)
+  return lv > 0.004f ? 1 : 0;
 }
-static inline uint16_t anColor(uint8_t ck) {
-  return ck ? G::blend(C_SECONDARY, C_PRIMARY, (uint8_t)(90 + (ck - 0.5f) / 8 * 165)) : C_SECONDARY;
+static uint16_t anRowColor(int y) {   // оттенок строки y столбика: по её высоте над низом рисок
+  static uint16_t tab[AN_HMAX + 2];
+  static bool ready;
+  if (!ready) {
+    for (int k = 0; k <= AN_HMAX + 1; k++) {
+      float h = (k + 0.5f) / AN_HMAX;   // 0 — низ, 1 — верх шкалы
+      tab[k] = h <= 1.0f / 3 ? C_AN_GREEN : h <= 2.0f / 3 ? mix(C_AN_GREEN, C_AN_YELLOW, (h - 1.0f / 3) * 3)
+                                                     : mix(C_AN_YELLOW, C_AN_RED, h >= 1 ? 1.0f : (h - 2.0f / 3) * 3);
+    }
+    ready = true;
+  }
+  int k = AN_BASE - 1 - y;
+  return tab[k < 0 ? 0 : k > AN_HMAX + 1 ? AN_HMAX + 1 : k];
 }
 static void anBar(G &g, int i, int top, int pk, uint8_t ck) {   // риска i и её отметка пика
   int bx = AN_X0 + i * AN_STEP;
-  g.box(bx, top, AN_BW, AN_BASE - top, 3, anColor(ck));
+  if (!ck) g.box(bx, top, AN_BW, AN_BASE - top, 3, C_SECONDARY);
+  else {
+    const int h = AN_BASE - top, r = h < 6 ? h / 2 : 3;
+    for (int y = top; y < AN_BASE; y++) {
+      uint16_t c = anRowColor(y);
+      if (y - top >= r && AN_BASE - 1 - y >= r) g.fill(bx, y, AN_BW, 1, c);   // середина: строка целиком
+      else {   // скруглённые углы сверху и снизу — тем же box, обрезанным до этой строки
+        m2::Rect was = g.narrow(bx, y, AN_BW, 1);
+        g.box(bx, top, AN_BW, h, 3, c);
+        g.restore(was);
+      }
+    }
+  }
   if (pk >= 0) g.box(bx, pk, AN_BW, AN_PH, 1, C_PEAK);
 }
 // Целиком (вход на экран, смена «ключа», переход). В тишине эфира (передатчик молчит по кнопке) риски лежат, отметок
@@ -813,7 +845,7 @@ static void analyzer(G &g, const float *lv, const float *pk, bool airMute) {
     float l = lv ? lv[i] : 0, p = pk ? pk[i] : 0;
     anBar(g, i, anTop(l), anPeakY(l, p), anCk(l));
   }
-  if (airMute) txt(g, AN_X + AN_W / 2, AN_Y + 40, tr("ТИША В ЕФІРІ"), RF_CAPB, C_MUTED_FG, AL_C);
+  if (airMute) txt(g, AN_X + AN_W / 2, AN_Y + 40, tr("ТИША В ЕФІРІ"), RF_CAPB, C_FG, AL_C);
 }
 // Что нарисовано на экране по каждой риске — чтобы следующий кадр дорисовал только разницу.
 struct AnState {
@@ -907,7 +939,7 @@ static void volumePanel(G &g, int volPct, float vol, bool active) {
   snprintf(b, sizeof(b), "%d", v);
   int nw = tw(b, RF_NUM), pw = tw("%", RF_MID), x = VC_X + (VC_W - (nw + 4 + pw)) / 2;
   txt(g, x, VC_Y + 52, b, RF_NUM, C_FG);
-  txt(g, x + nw + 4, VC_Y + 52, "%", RF_MID, C_MUTED_FG);
+  txt(g, x + nw + 4, VC_Y + 52, "%", RF_MID, C_FG);
   speaker(g, VC_X + 10, VC_Y + 58, 16, v ? C_MUTED_FG : C_DANGER);
   float vs = v5 / 5;   // деления 0…20, дробное
   for (int i = 0; i < 20; i++) {
@@ -958,7 +990,9 @@ static void infoPanel(G &g, uint32_t t, float bars, int quality, bool stereo, bo
   if (!vis(g, IP_Y, IP_H)) return;
   const int L = IP_X + 10, R = IP_X + IP_W - 10;
   g.box(IP_X, IP_Y, IP_W, IP_H, 12, C_CARD);
-  txt(g, L, IP_Y + 20, tr("Зв'язок"), RF_CAP, C_MUTED_FG);
+  // «Зв'язок», имя приёмника и «%» — белые (с 3.23). Владелец 16.10: «все белого цвета, для лучшей читаемости (на данном
+  // дисплее из-за не качественного черного цвета, подобные цвета как сейчас сливаются)».
+  txt(g, L, IP_Y + 20, tr("Зв'язок"), RF_CAP, C_FG);
   static const char *const QW[5] = { "немає", "слабо", "помірно", "добре", "відмінно" };
   static const uint16_t QC[5] = { C_DANGER, C_DANGER, C_WARN, C_OK, C_OK };
   sigBars(g, L, IP_Y + 54, quality ? bars : 0, 6, 3, 9, 6);
@@ -969,10 +1003,10 @@ static void infoPanel(G &g, uint32_t t, float bars, int quality, bool stereo, bo
   char a[72], b[72];
   int nl = nameLines(name, a, b, sizeof(a), R - L);
   if (nl == 2) {
-    txt(g, L, IP_Y + 138, a, RF_CAP, C_MUTED_FG);
-    txt(g, L, IP_Y + 156, b, RF_CAP, C_MUTED_FG);
-  } else if (nl == 1) txt(g, L, IP_Y + 156, a, RF_CAP, C_MUTED_FG);
-  else ticker(g, L, R, IP_Y + 156, name, RF_CAP, C_MUTED_FG, t);
+    txt(g, L, IP_Y + 138, a, RF_CAP, C_FG);
+    txt(g, L, IP_Y + 156, b, RF_CAP, C_FG);
+  } else if (nl == 1) txt(g, L, IP_Y + 156, a, RF_CAP, C_FG);
+  else ticker(g, L, R, IP_Y + 156, name, RF_CAP, C_FG, t);
 }
 
 // Стрелочный прибор (вид «стрілки»): светлая шкала, как у настоящего, правая четверть — красная, стрелка качается
@@ -1008,7 +1042,7 @@ static void vuMeter(G &g, int x, int y, int w, int h, float lv, float pk, const 
   }
   g.restore(old);
   // нижняя панель: подпись и «глазок» перегруза
-  txt(g, x + 12, y + h - 6, label, RF_CAPB, C_MUTED_FG);
+  txt(g, x + 12, y + h - 6, label, RF_CAPB, C_FG);
   bool hot = pk > 0.9f && (t % 240) < 160;
   if (hot) g.discFast(x + w - 16, y + h - 12, 9, mix(C_CARD, C_DANGER, 0.3f));
   g.discFast(x + w - 16, y + h - 12, 5, hot ? C_DANGER : C_MUTED);
@@ -1032,7 +1066,7 @@ static void bigVolume(G &g, uint32_t t, float vol, int limit, float lv) {
   char b[8];
   snprintf(b, sizeof(b), "%d", (int)lroundf(vol * 5));
   txt(g, 268, 120, b, RF_HUGE, C_FG, AL_R);
-  txt(g, 272, 120, "%", RF_BIG, C_MUTED_FG);
+  txt(g, 272, 120, "%", RF_BIG, C_FG);
   for (int i = 0; i < 20; i++) {
     int x = 12 + i * 15;
     float f = vol - i;
@@ -1074,11 +1108,11 @@ static void linkScreen(G &g, uint32_t t, const LinkInfo &li) {
   if (li.signal) snprintf(b, sizeof(b), "%d", li.rssi);
   else snprintf(b, sizeof(b), "--");
   int nw = txt(g, 64, 86, b, RF_NUM, C_FG);
-  txt(g, 68 + nw, 86, tr("дБм"), RF_CAP, C_MUTED_FG);
+  txt(g, 68 + nw, 86, tr("дБм"), RF_CAP, C_FG);
   snprintf(b, sizeof(b), tr("втрати %.1f %%"), li.lossPct);
-  txt(g, W - 10, 54, b, RF_CAP, li.lossPct >= 2 ? C_WARN : C_MUTED_FG, AL_R);
+  txt(g, W - 10, 54, b, RF_CAP, li.lossPct >= 2 ? C_WARN : C_FG, AL_R);
   snprintf(b, sizeof(b), tr("запас %.0f мс"), li.reserveMs);
-  txt(g, W - 10, 74, b, RF_CAP, C_MUTED_FG, AL_R);
+  txt(g, W - 10, 74, b, RF_CAP, C_FG, AL_R);
   // график за минуту: новое справа, под кривой — заливка, внизу — потери
   const int gx0 = 8, gx1 = 310, gy0 = 98, gy1 = 156;
   for (int x = gx0; x <= gx1; x += 6) g.fill(x, gy1 + 1, 2, 1, C_BORDER);
@@ -1153,7 +1187,7 @@ static void earTest(G &g, uint32_t t, int side, bool stereo) {
     bool on = k ? r : l;
     int x = k ? W - 34 : 14;
     if (on) g.box(x - 4, cy - 2, 28, 34, 8, C_PRIMARY);
-    txt(g, x + 10, cy + 25, ch, RF_BIG, on ? C_PRIMARY_FG : C_MUTED_FG, AL_C);
+    txt(g, x + 10, cy + 25, ch, RF_BIG, on ? C_PRIMARY_FG : C_FG, AL_C);
   }
   txt(g, W / 2, 162, !side ? ". . ." : !stereo ? tr("обидва вуха") : side == 1 ? tr("ліве вухо") : tr("праве вухо"), RF_TXT, C_FG, AL_C);
 }
@@ -1185,7 +1219,7 @@ static void about(G &g, uint32_t t, const AboutInfo &a) {
         if (a.signal) snprintf(b, sizeof(b), tr("%d дБм"), a.rssi);
         else snprintf(b, sizeof(b), "--");
     }
-    txt(g, 12, y, lab[i], RF_TXT, C_MUTED_FG);
+    txt(g, 12, y, lab[i], RF_TXT, C_FG);
     txt(g, W - 12, y, b, RF_TXTB, C_FG, AL_R);
   }
 }
@@ -1499,7 +1533,9 @@ static void menuList(G &g, uint32_t t, const MenuRow *rows, int n, float sel, fl
     bool cur = fabsf(sel - i) < 0.5f;
     iconTile(g, rows[i].icon, 12, y + 4, cur, t);
     int vw = rows[i].value[0] ? tw(rows[i].value, edit && cur ? RF_TXTB : RF_TXT) : 0;
-    txt(g, 46, y + 23, rows[i].name, RF_TXT, cur ? C_FG : mix(C_MUTED_FG, C_FG, 0.4f), AL_L, W - 70 - vw - 12);
+    // Все буквы меню — белые (3.27). Владелец 16.10: «буквы в меню цветного дисплея сделай все белыми» (до того
+    // невыбранные пункты и значения — серые, выбранное значение — золотое: на этом экране серое сливается с чёрным).
+    txt(g, 46, y + 23, rows[i].name, RF_TXT, C_FG, AL_L, W - 70 - vw - 12);
     if (!vw) continue;
     if (edit && cur) {   // правка: значение «въезжает», стрелки по сторонам ходят туда-сюда
       float a = 2.5f * sinf(t / 170.0f);
@@ -1508,15 +1544,15 @@ static void menuList(G &g, uint32_t t, const MenuRow *rows, int n, float sel, fl
         float e = easeOut(editK);
         int sh = (int)lroundf(e * 20) * editDir;
         m2::Rect was = g.narrow(vx - 116, y + 3, 118, MENU_ROW_H - 6);
-        txt(g, vx, y + 23 - sh, editOld, RF_TXTB, mix(C_SEL, C_GLOW, 1 - e), AL_R);
-        txt(g, vx, y + 23 + editDir * 20 - sh, rows[i].value, RF_TXTB, mix(C_SEL, C_GLOW, e), AL_R);
+        txt(g, vx, y + 23 - sh, editOld, RF_TXTB, mix(C_SEL, C_FG, 1 - e), AL_R);
+        txt(g, vx, y + 23 + editDir * 20 - sh, rows[i].value, RF_TXTB, mix(C_SEL, C_FG, e), AL_R);
         g.restore(was);
-      } else txt(g, vx, y + 23, rows[i].value, RF_TXTB, C_GLOW, AL_R);
+      } else txt(g, vx, y + 23, rows[i].value, RF_TXTB, C_FG, AL_R);
       const float lp[6] = { vx - vw - 14 - a, y + 17.0f, vx - vw - 7 - a, y + 11.0f, vx - vw - 7 - a, y + 23.0f };
       const float rp[6] = { W - 18 + a, y + 17.0f, W - 25 + a, y + 11.0f, W - 25 + a, y + 23.0f };
       g.poly(lp, 3, C_PRIMARY);
       g.poly(rp, 3, C_PRIMARY);
-    } else txt(g, W - 20, y + 23, rows[i].value, RF_TXT, cur ? C_PRIMARY : C_MUTED_FG, AL_R);
+    } else txt(g, W - 20, y + 23, rows[i].value, RF_TXT, C_FG, AL_R);
   }
   // полоса прокрутки
   int th = H * 5 / n, ty = (int)lroundf(scroll * H / (n * MENU_ROW_H));

@@ -52,6 +52,7 @@ static char cpPath[FM_PATH + 8];            // что открыть (полны
 static FILE *cpF;                           // открытый файл (трогает только задача разбора)
 static volatile uint8_t cpErr;              // 3 — файл не открылся или не читается
 static volatile uint8_t cpChans;            // каналов в файле (1 или 2) — от этого зависит, идти ли в эфир стерео
+static volatile uint32_t cpSeekByte = 0xFFFFFFFF;   // переход по треку (с 3.28): с какого байта файла начать (ставит txCardSound)
 static volatile uint32_t cpReadUs, cpRsUs;  // для отчёта: сколько времени ушло на чтение карты и на пересчёт частоты
 // Чтение файла — крупными кусками (16 КБ) в свой буфер во внешней памяти: карта владельца на каждое обращение
 // тратит заметное время, и чтение по 1–2 КБ на каждый кадр MP3 отнимало у разбора то, чего ему и так не хватало.
@@ -219,6 +220,15 @@ static void mp3Task(void *) {
       if (card) {
         ok = cpOpen(wav, wf, size, pos);
         if (!ok) cpErr = 3;
+        uint32_t sb = cpSeekByte;   // переход по треку: с нужного места (MP3 сам найдёт начало кадра)
+        cpSeekByte = 0xFFFFFFFF;
+        if (ok && sb != 0xFFFFFFFF && sb > pos && sb < size) {
+          if (wav) sb = pos + (sb - pos) / wf.block * wf.block;
+          if (lseek(cpFd, sb, SEEK_SET) == (off_t)sb) {
+            pos = sb;
+            cpBufPos = cpBufLen = 0;
+          }
+        }
       }
       // Рабочая память декодера (около 30 КБ) должна лежать во внутренней памяти. Он берёт её обычным malloc,
       // а в этой сборке всё крупнее 4 КБ уходит во внешнюю память — медленную и занятую экраном: разбор кадра

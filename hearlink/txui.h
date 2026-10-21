@@ -81,6 +81,15 @@ struct View {
   uint8_t txNs = 0;                    // шумозаглушение входа (с 2.68): 0 — выключено, 1…3 — слабое / среднее / сильное
   uint8_t txNsSens = 2;                // его чувствительность 0…4 (с 2.72)
   bool txNsFrozen = false;             // образец шума запомнен по просьбе (иначе запоминается сам, в паузах)
+  uint8_t txGate = 0;                  // шумовой порог входа (с 3.17): 0 — выключен, 1…4 — в паузах −12 / −20 / −30 дБ / тишина
+  uint8_t txGateThr = 2;               // его порог: 0…4 — на 3…15 дБ над шумом входа
+  uint8_t txGateRel = 1;               // закрытие: 0 — быстро, 1 — средне, 2 — медленно
+  int8_t txGateDb = 0;                 // ручной порог, дБ (задаётся с порта, e12); 0 — от шума
+  float gateFloorDb = -96, gateThrDb = -96;   // шум входа и порог сейчас (дБ от полной шкалы)
+  bool gateOpen = true, gateActive = false;
+  uint8_t txLim = 1, txLimCeil = 1, txLimComp = 1, txLimRel = 1;   // ограничитель пиков входа (с 3.18; на экране — с 3.24)
+  float limRedDb = 0;                  // сколько он убавлял за последнюю секунду, дБ
+  uint32_t adcClips = 0;               // отсчётов АЦП на краю шкалы за последнюю секунду — настоящий срез самого АЦП
   // уровень входа (сглаженный); «шапка» — докуда риска недавно доходила; настоящий пик отсчётов (для подсказок)
   float levelDb = -60, holdDb = -60, peakDb = -60;
   int lastTone = 5;                    // какой проверочный звук включится по кнопке «Перевірка» (последний выбранный)
@@ -1911,8 +1920,11 @@ static void drawRxSetRow(int row) {
 // ---- Окно «Еквалайзер входу» (с 2.45): шесть строк с «−/+», как на листе эквалайзера приёмника, но для самого
 // передатчика — звук с пульта правится один раз для всех приёмников.
 // С 2.72 окно в два листа (как у приёмника): эквалайзер — и шумозаглушение входа с чувствительностью и образцом шума.
-static int txeqPage;   // 0 — эквалайзер (шесть строк), 1 — шумозаглушение входа (три строки)
-static inline int txeqRows() { return txeqPage ? 3 : 6; }
+// С 3.24 — третий лист «Піки входу»: ограничитель пиков (3.18; до того — только с порта, e14…e17) и подсиление входа
+// (то же, что «Підсилення входу» на «Звуку»: ограничитель и подсиление настраиваются вместе), внизу — сколько ограничитель
+// убавлял и упирается ли сам АЦП в край шкалы (это ограничитель не исправит — убавить уровень на пульте).
+static int txeqPage;   // 0 — эквалайзер (шесть строк), 1 — шум входу (шесть), 2 — піки входу (пять)
+static inline int txeqRows() { return txeqPage == 2 ? 5 : 6; }   // лист «Шум входу» с 3.17 — шесть строк: три шумозаглушения и три шумового порога
 static Box txeqBox(int id) {
   if (id == ID_TXEQ_OK) return Box{ (int16_t)(mBox.x + mBox.w - 16 - 134), (int16_t)(mBox.y + mBox.h - 62), 134, 48 };
   if (id == ID_TXEQ_PAGE) return Box{ (int16_t)(mBox.x + mBox.w - 16 - 176), (int16_t)(mBox.y + 8), 176, 40 };
@@ -1923,7 +1935,7 @@ static Box txeqBox(int id) {
 static void drawTxEqButton(int id, bool pressed) {
   Box b = txeqBox(id);
   if (id == ID_TXEQ_OK) return drawButton(b, tr("Готово"), 1, pressed);
-  if (id == ID_TXEQ_PAGE) return drawButton(b, txeqPage ? tr("Еквалайзер") : tr("Шумозаглушення"), 0, pressed);   // на кнопке — куда она ведёт
+  if (id == ID_TXEQ_PAGE) return drawButton(b, txeqPage == 0 ? tr("Шумозаглушення") : txeqPage == 1 ? tr("Піки входу") : tr("Еквалайзер"), 0, pressed);   // на кнопке — куда она ведёт
   bool plus = id >= ID_TXEQ_PLUS;
   int row = id - (plus ? ID_TXEQ_PLUS : ID_TXEQ_MINUS);
   if (row >= txeqRows()) return g.fill(b.x, b.y, b.w, b.h, C_CARD);
@@ -1936,7 +1948,28 @@ static void drawTxEqRow(int row) {
   int y = mBox.y + 56 + row * 46;
   g.fill(mBox.x + 16, y, mBox.w - 32 - 112, 40, C_CARD);
   if (row >= txeqRows()) return;
-  if (txeqPage) {   // шумозаглушение входа: сила, чувствительность, образец шума
+  if (txeqPage == 2) {   // пики входа (с 3.24): ограничитель, потолок, сжатие, отпускание, подсиление
+    static const char *const NAME[5] = { "Обмежувач піків", "Стеля", "Стискання піків", "Відпускання", "Підсилення входу" };
+    static const char *const CEIL[4] = { "-0,5 дБ", "-1 дБ", "-2 дБ", "-3 дБ" };
+    static const char *const COMP[4] = { "немає", "легке", "середнє", "сильне" };
+    g.text(mBox.x + 18, y + 26, tr(NAME[row]), F_CAP, C_MUTED_FG);
+    if (row == 0) snprintf(t, sizeof(t), "%s", view.txLim ? tr("увімкнено") : tr("вимкнено"));
+    else if (row == 1) snprintf(t, sizeof(t), "%s", tr(CEIL[view.txLimCeil > 3 ? 1 : view.txLimCeil]));
+    else if (row == 2) snprintf(t, sizeof(t), "%s", tr(COMP[view.txLimComp > 3 ? 1 : view.txLimComp]));
+    else if (row == 3) fxText(5, view.txLimRel, t, sizeof(t));
+    else snprintf(t, sizeof(t), tr("%s%d дБ"), view.val[P_GAIN] > 0 ? "+" : "", view.val[P_GAIN]);
+  } else if (txeqPage == 1 && row >= 3) {   // шумовой порог входа (с 3.17): глубина, порог, закрытие
+    static const char *const NAME[3] = { "Шумовий поріг", "Поріг над шумом", "Закриття порогу" };
+    g.text(mBox.x + 18, y + 26, tr(NAME[row - 3]), F_CAP, C_MUTED_FG);
+    if (row == 3) {
+      if (!view.txGate) snprintf(t, sizeof(t), "%s", tr("вимкнено"));
+      else if (view.txGate == 4) snprintf(t, sizeof(t), "%s", tr("тиша в паузах"));
+      else snprintf(t, sizeof(t), tr("у паузах -%d дБ"), view.txGate == 1 ? 12 : view.txGate == 2 ? 20 : 30);
+    } else if (row == 4) {
+      if (view.txGateDb) snprintf(t, sizeof(t), tr("вручну %d дБ"), view.txGateDb);
+      else fxText(4, view.txGateThr, t, sizeof(t));
+    } else fxText(5, view.txGateRel, t, sizeof(t));
+  } else if (txeqPage == 1) {   // шумозаглушение входа: сила, чувствительность, образец шума
     g.text(mBox.x + 18, y + 26, tr(RXS_FX_NAME[row]), F_CAP, C_MUTED_FG);
     fxText(row == 0 ? 0 : row == 1 ? 3 : 6, row == 0 ? view.txNs : row == 1 ? view.txNsSens : view.txNsFrozen, t, sizeof(t));
   } else {
@@ -1946,10 +1979,37 @@ static void drawTxEqRow(int row) {
   }
   g.text(mBox.x + mBox.w - 16 - 116, y + 26, t, F_CAPB, C_FG, AL_R, 150);
 }
+// Низ окна входа: на листе эквалайзера — «для всех приёмников», на листе шума — шум входа и порог (с 3.17), чтобы
+// было видно, насколько шипит вход и где стоит порог; обновляется, когда меняется (с точностью до децибела).
+static void drawTxEqFoot() {
+  char t[64];
+  int y = mBox.y + mBox.h - 32;
+  g.fill(mBox.x + 16, y - 20, mBox.w - 32 - 150, 28, C_CARD);
+  if (!txeqPage) {
+    g.text(mBox.x + 18, y, tr("Для всіх приймачів"), F_CAP, C_MUTED_FG);
+    return;
+  }
+  if (txeqPage == 2) {   // пики: срез самого АЦП (красное — сделать тише на пульте) важнее, чем работа ограничителя
+    uint16_t c = C_MUTED_FG;
+    if (view.adcClips) {
+      snprintf(t, sizeof(t), tr("АЦП зрізає: %u — тихіше пульт"), (unsigned)view.adcClips);
+      c = C_DANGER;
+    } else if (!view.txLim) snprintf(t, sizeof(t), "%s", tr("Обмежувач вимкнено"));
+    else if (view.limRedDb >= 0.1f) {
+      snprintf(t, sizeof(t), tr("Обмежувач знижує на %.1f дБ"), view.limRedDb);
+      c = C_OK;
+    } else snprintf(t, sizeof(t), "%s", tr("Піки в межах шкали"));
+    g.text(mBox.x + 18, y, t, F_CAP, c, AL_L, mBox.w - 32 - 150);
+    return;
+  }
+  if (view.gateFloorDb <= -95.5f) snprintf(t, sizeof(t), "%s", tr("Шум входу: немає звуку з пульта"));
+  else snprintf(t, sizeof(t), tr("Шум %d дБ, поріг %d дБ"), (int)lroundf(view.gateFloorDb), (int)lroundf(view.gateThrDb));
+  g.text(mBox.x + 18, y, t, F_CAP, view.gateActive && !view.gateOpen ? C_OK : C_MUTED_FG, AL_L, mBox.w - 32 - 150);
+}
 static void drawTxEqModal() {
   mBox = Box{ 24, 30, 432, 420 };
   modalCard();
-  g.text(mBox.x + 20, mBox.y + 36, txeqPage ? tr("Шум входу") : tr("Еквалайзер входу"), F_H, C_FG, AL_L, 208);
+  g.text(mBox.x + 20, mBox.y + 36, txeqPage == 1 ? tr("Шум входу") : txeqPage == 2 ? tr("Піки входу") : tr("Еквалайзер входу"), F_H, C_FG, AL_L, 208);
   drawTxEqButton(ID_TXEQ_PAGE, false);
   hot[hotN++] = Hot{ txeqBox(ID_TXEQ_PAGE), ID_TXEQ_PAGE };
   for (int row = 0; row < 6; row++) {
@@ -1959,7 +2019,7 @@ static void drawTxEqModal() {
       if (row < txeqRows()) hot[hotN++] = Hot{ txeqBox(id), id };
     }
   }
-  g.text(mBox.x + 18, mBox.y + mBox.h - 32, tr("Для всіх приймачів"), F_CAP, C_MUTED_FG);
+  drawTxEqFoot();
   drawTxEqButton(ID_TXEQ_OK, false);
   hot[hotN++] = Hot{ txeqBox(ID_TXEQ_OK), ID_TXEQ_OK };
 }
@@ -2698,8 +2758,8 @@ static void activate(int id) {
   }
   if (modal == M_TXEQ) {
     if (id == ID_TXEQ_OK) closeModal();
-    else if (id == ID_TXEQ_PAGE) {   // другой лист того же окна
-      txeqPage = !txeqPage;
+    else if (id == ID_TXEQ_PAGE) {   // другой лист того же окна: эквалайзер → шум → пики → эквалайзер
+      txeqPage = (txeqPage + 1) % 3;
       modalAgain = true;
       drawModal();
       modalAgain = false;
@@ -2708,7 +2768,61 @@ static void activate(int id) {
       int row = id - (plus ? ID_TXEQ_PLUS : ID_TXEQ_MINUS);
       if (row < 0 || row >= txeqRows()) return;
       int v;
-      if (txeqPage) {   // шумозаглушение входа: строка 0 — сила (поле 6), 1 — чувствительность (7), 2 — образец шума (8)
+      if (txeqPage == 2) {   // пики входа (с 3.24): поля 13…16 — как e14…e17 с порта; подсиление — как на «Звуку»
+        if (row == 4) {
+          v = view.val[P_GAIN] + (plus ? 3 : -3);
+          v = v < -12 ? -12 : v > 24 ? 24 : v;
+          if (v == view.val[P_GAIN]) return;
+          view.val[P_GAIN] = v;
+          out.setParam = P_GAIN;
+          out.setValue = v;
+          drawTxEqRow(row);
+          return;
+        }
+        uint8_t *f = row == 0 ? &view.txLim : row == 1 ? &view.txLimCeil : row == 2 ? &view.txLimComp : &view.txLimRel;
+        int hi = row == 0 ? 1 : row == 3 ? 2 : 3;
+        v = (int)*f + (plus ? 1 : -1);
+        if (row == 1) v = (int)*f + (plus ? -1 : 1);   // «+» — выше потолок (ближе к краю шкалы): −3 → −0,5 дБ
+        v = v < 0 ? 0 : v > hi ? hi : v;
+        if (v == *f) return;
+        *f = (uint8_t)v;
+        out.eqBand = 13 + row;
+        out.eqVal = v;
+        drawTxEqRow(row);
+        drawTxEqFoot();
+        return;
+      }
+      if (txeqPage == 1 && row >= 3) {   // шумовой порог (с 3.17): 3 — глубина (поле 9), 4 — порог (10), 5 — закрытие (11)
+        if (row == 3) {
+          v = (int)view.txGate + (plus ? 1 : -1);
+          v = v < 0 ? 0 : v > 4 ? 4 : v;
+          if (v == view.txGate) return;
+          view.txGate = (uint8_t)v;
+        } else if (row == 4) {
+          if (view.txGateDb) {   // был ручной порог (с порта) — любое нажатие возвращает порог «от шума»
+            view.txGateDb = 0;
+            v = view.txGateThr;
+            out.eqBand = 12;
+            out.eqVal = 0;
+            drawTxEqRow(row);
+            return;
+          }
+          v = (int)view.txGateThr + (plus ? 1 : -1);
+          v = v < 0 ? 0 : v > 4 ? 4 : v;
+          if (v == view.txGateThr) return;
+          view.txGateThr = (uint8_t)v;
+        } else {
+          v = (int)view.txGateRel + (plus ? 1 : -1);
+          v = v < 0 ? 0 : v > 2 ? 2 : v;
+          if (v == view.txGateRel) return;
+          view.txGateRel = (uint8_t)v;
+        }
+        out.eqBand = 6 + row;
+        out.eqVal = v;
+        drawTxEqRow(row);
+        return;
+      }
+      if (txeqPage == 1) {   // шумозаглушение входа: строка 0 — сила (поле 6), 1 — чувствительность (7), 2 — образец шума (8)
         if (row == 0) {
           v = (int)view.txNs + (plus ? 1 : -1);
           v = v < 0 ? 0 : v > 3 ? 3 : v;
@@ -3357,6 +3471,10 @@ static void frameBody(bool down, int tx, int ty) {
     if (needFull) drawAll();
     return;
   }
+  if (fmPlayerTouch(down, tx, ty)) {   // палец на волне плеера (с 3.28): протягивание — своё, не нажатие кнопки
+    wasDown = down;
+    return;
+  }
   // --- нажатия: действие — когда палец отпустили на том же элементе
   if (down && !wasDown) {
     pressId = ID_NONE;
@@ -3443,9 +3561,24 @@ static void frameBody(bool down, int tx, int ty) {
   }
   if (modal == M_TXEQ) {   // лист «Шум входу»: образец шума запомнился (или снова «сам») — строку обновить
     static bool shown;
-    if (txeqPage && pressId == ID_NONE && view.txNsFrozen != shown) {
+    static int footShown = 0x7fffffff;
+    if (txeqPage == 1 && pressId == ID_NONE && view.txNsFrozen != shown) {
       shown = view.txNsFrozen;
       drawTxEqRow(2);
+    }
+    if (txeqPage == 2 && pressId == ID_NONE) {   // пики (с 3.24): убавление и срез АЦП за последнюю секунду
+      int f = (int)lroundf(view.limRedDb * 10) | ((view.adcClips > 0xffff ? 0xffff : (int)view.adcClips) << 12) | (view.txLim << 30);
+      if (f != footShown) {
+        footShown = f;
+        drawTxEqFoot();
+      }
+    }
+    if (txeqPage == 1 && pressId == ID_NONE) {   // шум входу и порог (с 3.17)
+      int f = ((int)lroundf(view.gateFloorDb) & 0xff) | (((int)lroundf(view.gateThrDb) & 0xff) << 8) | ((view.gateActive && !view.gateOpen) << 16);
+      if (f != footShown) {
+        footShown = f;
+        drawTxEqFoot();
+      }
     }
     return;
   }

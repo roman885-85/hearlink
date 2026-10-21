@@ -1,12 +1,13 @@
 #!/bin/sh
 # Цветной экран приёмника (IPS 1,9″, 320×170) на компьютере: анимация out/pryimach-kolir.gif, лист ключевых кадров
-# out/kadry.png и сколько точек за кадр уходило бы на экран (по видам экрана).
+# out/kadry.png и сколько точек за кадр уходило бы на экран (по видам экрана). SIM_FLAGS=-DAN_NO_JITTER — сверка
+# дорисовки без допуска ±1 точка у столбиков (кадр «по изменениям» должен совпасть с нарисованным целиком).
 set -e
 cd "$(dirname "$0")"
 mkdir -p out build
 rm -f out/f*.rgb
 VER=$(sed -n 's/^#define FW_VERSION "\(.*\)".*/\1/p' ../../hearlink/config.h)
-c++ -std=c++17 -O2 -Wall -Wno-unused-function -Wno-unused-variable -DSIM_VERSION="\"$VER\"" -I../sim/stub -I../../hearlink sim.cpp ../../hearlink/m2gfx.cpp -o build/sim
+c++ -std=c++17 -O2 -Wall -Wno-unused-function -Wno-unused-variable $SIM_FLAGS -DSIM_VERSION="\"$VER\"" -I../sim/stub -I../../hearlink sim.cpp ../../hearlink/m2gfx.cpp -o build/sim
 ./build/sim
 python3 - <<'PY'
 # -*- coding: utf-8 -*-

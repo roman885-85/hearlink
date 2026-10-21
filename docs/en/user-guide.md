@@ -38,6 +38,38 @@ very low to very high (higher removes noise more fully, but quiet word endings g
 sample)** — “auto, in pauses” or “remember now” (for a few seconds only silence with noise must come from the mixer).
 It acts on the input sound; the test sound and card files are not touched.
 
+**«Шумовий поріг» (Noise gate)** (since 3.17, on the same “Input noise” page; the owner: “there is a steady background
+hiss from the transmitter… with the test sound the hiss is completely absent, so the cause is definitely the ADC”) — in
+pauses, when the mixer sound is not louder than the input noise, the transmitter turns it down: **«Шумовий поріг»
+(Noise gate)** off / in pauses −12 / −20 / −30 dB / silence in pauses (exactly zero goes on air); **«Поріг над шумом»
+(Threshold over noise)** — +3…+15 dB: sound quieter than the input noise plus this number counts as a pause (the
+transmitter measures the input noise itself); **«Закриття порогу» (Gate closing)** — fast / medium / slow: after sound
+the gate stays open for 60 / 150 / 300 ms (word endings) and fades the noise out in 60 / 150 / 400 ms. It opens in 2 ms,
+so the start of a word is not lost. At the bottom of the page — **the input noise and the threshold now** (green — the
+gate has closed a pause). Noise reduction removes hiss under the voice too; the gate works only in pauses, but down to
+complete silence: they can be used together.
+
+![Noise gate](../img/tx-03d-shumovyi-porih.png)
+
+**«Піки входу» (Input peaks)** (since 3.24, the third page of the same window: the top-right button pages through
+“Equalizer → Noise reduction → Input peaks”) — the peak limiter for the mixer sound (since 3.18; the owner: “with
+overloads at the input there is crackling at the output. The transmitter must compress the sound in such peaks”). It
+sits after the equalizer and the input gain and lowers the gain in advance (1.5 ms ahead) exactly enough for a peak not
+to pass the ceiling — no clipping, no crackle. **«Обмежувач піків» (Peak limiter)** on / off (on out of the box);
+**«Стеля» (Ceiling)** −0.5 / −1 / −2 / −3 dB from full scale; **«Стискання піків» (Peak compression)** none / light /
+medium / strong: below the ceiling loud passages are compressed softly (light — from −6 dB at 2:1, medium — from −10 dB
+at 3:1, strong — from −14 dB at 4:1); **«Відпускання» (Release)** fast / medium / slow (40 / 120 / 300 ms);
+**«Підсилення входу» (Input gain)** — the same as on the “Sound” tab (−12…+24 dB in 3 dB steps), here next to the
+limiter because they are set together. At the bottom, once a second: green “Limiter cuts N dB” — it is working;
+**red “ADC clips: N, desk lower”** — the ADC itself hits full scale: the limiter cannot fix that, lower the level on the
+mixer (or at the ADC input — see [Hardware](hardware.md)); “Peaks within scale” — all is well.
+
+![Input peaks](../img/tx-03e-piky-vkhodu.png)
+
+Why the mixer sound is quieter than the test sound: the test sound bypasses the input equalizer, the mixer goes through
+it; a low cut and −10 dB at 125 and 400 Hz take up to 10 dB of loudness out of music or speech. Then add **Input
+gain**: the limiter holds the peaks, the noise gate the hiss in pauses.
+
 | Quality | On air | Added delay | Lowest radio rate | When to choose |
 |---|---|---|---|---|
 | «найвища» (highest) | 32 kHz uncompressed; two frames per packet, the previous packet repeated uncompressed (since 2.77); in stereo since 2.86 the channel difference is uncompressed too — the receiver plays the very L and R of the input | 2 ms | 5.5 Mbit/s | hall up to ~15 m, clean air, music |
@@ -191,6 +223,19 @@ new firmware has been written and verified in full, the receiver starts from the
 - **«Файли» (Files)** — a file manager: folders, viewing text files, copying, deleting, new folder, formatting.
 - **File on air** — touch an MP3 or WAV file → «В ефір» (On air): the file plays instead of the input (background
   music before the service).
+- **«Плеєр» (Player)** (since 3.28; the owner: “when playing from the memory card a player should open with a playback
+  bar for fast seeking to the needed part of the track, shown like in Audacity”) — opens by itself as soon as a file
+  goes on air, and by touching the “on air” strip at the bottom of the list. The whole track is one waveform, like in
+  Audacity: played — gold, the rest — grey, a white line with a triangle — where the sound is now. **Touch the waveform
+  or drag along it** — the head follows the finger, the time is shown; release — the file plays from there (the sound
+  fades out and back in, about half a second of silence). Buttons: **-10 s**, **«Пауза» / «Грати» (Pause / Play)**
+  (paused — silence on air, the place in the track is kept), **«Стоп» (Stop)**, **+10 s**; the back arrow returns to the
+  list, the file keeps playing. The waveform is built in the background from left to right («Будую хвилю… N %»; for a
+  long MP3 — up to a minute or two, longer on a slow card); seeking works before that too. The transmitter does not decode
+  MP3 in full — it estimates the bar height from the frames' side information (the same shape as the true waveform,
+  sharp peaks may be less exact), but the place of every frame is known, so seeking by time is exact even for VBR MP3.
+
+![Player](../img/tx-fm-04b-pleyer.png)
 - The `LOG` folder — the log of the radio "black box"; the `UPDATE` folder — updates.
 
 ### «Налаштування» (Settings)
@@ -248,13 +293,19 @@ Main screen ("spectrum" view; layout by the owner since 3.08):
 - **top left — the volume** in large digits with twenty steps; while the knob is turned, the number "flips" to the
   new value and the card frame lights up;
 - **bottom left — the spectrum analyser:** 10 bars with a white peak mark above each, held for 0.45 s and then
-  falling smoothly; when the transmitter mutes the air — «ТИША В ЕФІРІ» (silence on air);
+  falling smoothly; when the transmitter mutes the air — «ТИША В ЕФІРІ» (silence on air). The bar colour follows the
+  height (since 3.23, in smooth shades since 3.25; the owner: “up to 1/3 of the height green… above 1/3 towards
+  yellowish, and at the maximum bright red”, “the colour gradation… smoothly in shades”): every row of dots has its own
+  shade — green up to a third of the height, smoothly into yellow up to two thirds, then into bright red at the top. A
+  low bar is green, a medium one has a yellowish top, a full one a red tip;
 - **right — «Зв'язок»** (link: bars and a word — none / weak / fair / good / excellent), «СТЕРЕО» (stereo) or «МОНО»
   (mono) and «ШУМОДАВ» (noise reduction, when it is on) tags, and below the line the receiver name in one or two lines.
 
 The other views ("needles", "volume"), the menu, About, Link, Mute, searching, NO SIGNAL, updating and sleep are the
 same as on the OLED, in colour. Only what changed is sent to the display, so everything moves smoothly (60 frames per
-second).
+second). All text is white (since 3.23 — the name, «Зв'язок» and “%”, since 3.27 — the whole menu and all labels; the
+owner: “on this display, because of the poor black, colours like the current ones blend in”); the state words (“good”,
+“weak”) stay coloured.
 
 ### Menu
 | Item | Values |

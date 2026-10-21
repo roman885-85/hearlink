@@ -166,7 +166,7 @@ PAIRS = [
     (r"Копіюю…", r"Copying…"), (r"Видаляю…", r"Deleting…"), (r"Форматую картку…", r"Formatting the card…"), (r"Працюю з карткою…", r"Working with the card…"),
     (r"Це триває до хвилини. Не вимикайте передавач і не виймайте картку.", r"This takes up to a minute. Do not switch the transmitter off or remove the card."),
     (r"Картка зайнята — спробуйте ще раз", r"The card is busy — try again"), (r"Надто довгий шлях", r"The path is too long"),
-    (r"Файл пішов в ефір", r"The file is on air"), (r"Картки немає", r"No card"), (r"На картці не вистачає місця", r"Not enough space on the card"),
+    (r"Картки немає", r"No card"), (r"На картці не вистачає місця", r"Not enough space on the card"),
     (r"Файл зараз в ефірі або записується", r"The file is on air or being recorded now"), (r"Скасовано", r"Cancelled"),
     (r"Така назва не годиться або вже зайнята", r"This name is not suitable or already taken"), (r"Надто багато вкладених тек", r"Too many nested folders"),
     (r"Спершу зупиніть запис", r"Stop the recording first"), (r"Не вдалося — картка не відповіла", r"Failed — the card did not respond"),
@@ -443,6 +443,10 @@ PAIRS = [
     (r"без підсилення", r"no boost"), (r"без підс.", r"no boost"), (r"ще -6 дБ", r"-6 dB more"), (r"ще -12 дБ", r"-12 dB more"),
     # настройки шумоподавителей (с 2.72)
     (r"Чутливість до шуму", r"Noise sensitivity"), (r"Зразок шуму", r"Noise sample"), (r"Поріг пауз", r"Pause threshold"), (r"Закриття пауз", r"Pause closing"),
+    # шумовий поріг входу передавача (з 3.17)
+    (r"Шумовий поріг", r"Noise gate"), (r"Поріг над шумом", r"Threshold over noise"), (r"Закриття порогу", r"Gate closing"),
+    (r"тиша в паузах", r"silence in pauses"), (r"у паузах -%d дБ", r"in pauses -%d dB"), (r"вручну %d дБ", r"manual %d dB"),
+    (r"Шум входу: немає звуку з пульта", r"Input noise: no sound from the console"), (r"Шум %d дБ, поріг %d дБ", r"Noise %d dB, threshold %d dB"),
     (r"дуже низька", r"very low"), (r"низька", r"low"), (r"висока", r"high"), (r"дуже висока", r"very high"),
     (r"сам, у паузах", r"auto, in pauses"), (r"запам'ятовано", r"memorized"), (r"швидко", r"fast"), (r"середньо", r"medium"), (r"повільно", r"slow"),
     (r"Шум входу", r"Input noise"), (r"Закриття", r"Closing"), (r"Чутл. шуму", r"Noise sens."), (r"%d з 5", r"%d of 5"), (r"взято", r"set"), (r"сам", r"auto"),
@@ -494,6 +498,19 @@ PAIRS = [
     (r"СТЕРЕО", r"STEREO"), (r"МОНО", r"MONO"), (r"ШУМОДАВ", r"NOISE RED."), (r"втрати %.1f %%", r"loss %.1f %%"),
     (r"запас %.0f мс", r"buffer %.0f ms"), (r"Версія", r"Version"), (r"Канал / набір", r"Channel / kit"), (r"Номер", r"ID"),
     (r"%.1f мс", r"%.1f ms"),
+    # лист «Піки входу» передатчика (с 3.24)
+    (r"Піки входу", r"Input peaks"), (r"Обмежувач піків", r"Peak limiter"), (r"Стеля", r"Ceiling"),
+    (r"Стискання піків", r"Peak compression"), (r"Відпускання", r"Release"),
+    (r"-0,5 дБ", r"-0.5 dB"), (r"-1 дБ", r"-1 dB"), (r"-2 дБ", r"-2 dB"), (r"-3 дБ", r"-3 dB"),
+    (r"АЦП зрізає: %u — тихіше пульт", r"ADC clips: %u, desk lower"),
+    (r"Обмежувач вимкнено", r"Limiter off"), (r"Обмежувач знижує на %.1f дБ", r"Limiter cuts %.1f dB"),
+    (r"Піки в межах шкали", r"Peaks within scale"),
+    # плеер файла с карты (с 3.28)
+    (r"Плеєр", r"Player"), (r"-10 с", r"-10 s"), (r"+10 с", r"+10 s"), (r"Стоп", r"Stop"), (r"Грати", r"Play"), (r"Пауза", r"Pause"),
+    (r"Будую хвилю… %u %%", r"Building waveform… %u %%"), (r"Будую хвилю… 100 %", r"Building waveform… 100 %"),
+    (r"Пауза — в ефірі тиша", r"Paused: silence on air"),
+    (r"Торкніться хвилі або протягніть пальцем — грати з того місця.", r"Tap or drag along the waveform to play from that point."),
+    (r"Хвилю не вдалося прочитати — грати з місця можна кнопками ±10 с.", r"The waveform could not be read; use ±10 s to move."),
 ]
 
 # то, что переводить не надо: имя церкви и буквы экранной клавиатуры

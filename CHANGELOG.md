@@ -1,5 +1,102 @@
 # Changelog / Історія версій
 
+## 3.29 — 2026-10-20 (includes 3.17–3.28, which were not released / містить 3.17–3.28, які не випускались)
+- EN: **the final version of the first modification** (transmitter, PCM1808 ADC, receivers). Next: 4.x “Next Edition”
+  with a Raspberry Pi Pico bridge (digital AES/EBU input, minimal latency). 4.x firmware carries a different tag and is
+  not offered to 3.x devices; the first modification's code stays in the `first-edition` branch.
+- UK: **остання версія першої модифікації** (передавач, АЦП PCM1808, приймачі). Далі — 4.x «Next Edition» із мостом на
+  Raspberry Pi Pico (цифровий вхід AES/EBU, мінімальна затримка). Прошивки 4.x мають іншу мітку й пристроям 3.x не
+  пропонуються; код першої модифікації лишається в гілці `first-edition`.
+
+- EN: **input noise gate on the transmitter** (the owner: “there is a steady background hiss from the transmitter.
+  Hardware fixes — adding capacitors on the power — gave no result. A software method remains”, “with the test sound the
+  hiss is completely absent, so the cause is definitely the ADC”, “the functions must be configurable”). In pauses, when
+  the mixer sound is not louder than the input noise, the transmitter turns it down by 12 / 20 / 30 dB or sends exact
+  silence; threshold 3…15 dB over the input noise (the transmitter measures it itself) or manual in dB; closing fast /
+  medium / slow (stays open 60 / 150 / 300 ms after sound for word endings, fades in 60 / 150 / 400 ms); opens within 2 ms.
+  Not a plain “zero the buffer below the threshold” (that would cut word endings and chatter with clicks at the
+  threshold). Screen: “Sound” → input equalizer → “Noise reduction” page, three new rows and the input noise with the
+  threshold at the bottom. Serial: `e10`…`e13`.
+- UK: **шумовий поріг входу передавача** (власник: «имеется ровный фоновый шум в виде шипения с передатчика. Аппаратные
+  решения в виде добавления конденсаторов по питанию, результатов не дали. Остается программный метод», «при
+  проверочном звуке шипение полностью отсутствует, а значит причина точно в adc», «фенкции настраиваемые должны быть»). У
+  паузах, коли звук із пульта не голосніший за шум входу, передавач приглушує його на 12 / 20 / 30 дБ або шле рівно
+  тишу; поріг — на 3…15 дБ над шумом входу (передавач міряє його сам) або вручну в дБ; закриття швидко / середньо /
+  повільно (після звуку тримається відкритим 60 / 150 / 300 мс — закінчення слів, гасить за 60 / 150 / 400 мс);
+  відкривається за 2 мс. Не простий «нулі в буфер нижче порога» (так зрізалися б закінчення слів, а біля порога звук
+  деренчав би з клацаннями). Екран: «Звук» → еквалайзер входу → лист «Шумозаглушення», три нові рядки й унизу — шум
+  входу та поріг. Порт: `e10`…`e13`.
+
+- EN: **crackling from the mixer input is gone** (the owner: “with overloads at the input there is crackling at the
+  output”, “on the test sound everything is perfect even at full overload on the meter, but through the ADC the same
+  level is just crackling”; after 3.22: “the crackle is gone — perfect work!!!”). Three causes, found from recordings
+  made on the device: (1) **the transmitter did not keep up with the mixer input** — about 1.8 ms of every 2 ms frame
+  went on processing and the ADC data lost 20–30 pieces of 2 ms per second (each one a click; the test sound does not go
+  through the ADC). The input processing now runs from fast internal memory, built for speed, and the I2S queue is twice
+  as deep: 0 gaps. (2) **with the module's FMT pin at 3.3 V the PCM1808 sends its data one clock early**, so the sample
+  read twice as loud and everything above half of the ADC scale flipped its sign. The transmitter now recognises this
+  format by itself, rebuilds the samples and puts left and right back in place; FMT at GND works as before. (3) a frame
+  joint error of the first rebuild attempt (3.19, “constant crackle at rest”) — fixed in 3.21.
+- UK: **тріск зі входу пульта усунуто** (власник: «при перегрузах на входе начинается треск на выходе», «на тестовом
+  звуке все идеально, даже при полном перегрузе на индикаторе уровня, а через ацп этот же уровень это просто треск»;
+  після 3.22: «треск пропал — идеальная работа!!!»). Три причини, знайдені записами з приладу: (1) **передавач не
+  встигав обробляти звук пульта** — на кадр 2 мс ішло близько 1,8 мс, і з даних АЦП губилося 20–30 шматків по 2 мс за
+  секунду (кожен — клацання; перевірочний звук іде повз АЦП). Обробка входу тепер у швидкій внутрішній пам'яті, зібрана
+  на швидкість, черга I2S удвічі глибша: розривів 0. (2) **з виводом FMT модуля на 3,3 В PCM1808 шле дані на такт
+  раніше**, і відлік читався вдвічі гучнішим, а все вище половини шкали АЦП «перевертало» знак. Тепер передавач сам
+  розпізнає цей формат, збирає відліки наново й ставить ліво/право на місце; FMT на GND працює, як і раніше. (3) помилка
+  стику кадрів першої спроби збирання (3.19, «постійний тріск у спокої») — виправлено в 3.21.
+- EN: **input peak limiter** (3.18) and the **“Input peaks” page** (3.24, the third page of the input equalizer window):
+  limiter on/off, ceiling −0.5…−3 dB, peak compression none/light/medium/strong, release, input gain; at the bottom —
+  how much the limiter cuts, or in red “ADC clips” when the ADC itself hits full scale (then lower the mixer).
+- UK: **обмежувач піків входу** (3.18) і **лист «Піки входу»** (3.24, третій лист вікна еквалайзера входу): обмежувач
+  увімк./вимк., стеля −0,5…−3 дБ, стискання піків немає/легке/середнє/сильне, відпускання, підсилення входу; унизу —
+  скільки обмежувач знижує або червоне «АЦП зрізає», коли в край шкали впирається сам АЦП (тоді тихіше на пульті).
+- EN: **fixed: quiet “digital” clicks in quiet passages from the mixer** (the owner: “frequent quiet clicks and
+  crackling in the background… as soon as the sound is very quiet”). The input noise reduction often missed its 2 ms
+  and an unprocessed frame went on air; it now gets two frames (its path is 10 ms instead of 8). The owner: “no clicks,
+  everything works great”.
+- UK: **виправлено: тихі «цифрові» клацання в тихих місцях із пульта** (власник: «частые тихие щелчки и потрескивание на
+  фоне… как только звук очень тихий»). Шумозаглушення входу часто не вкладалося у 2 мс, і в ефір ішов кадр без обробки;
+  тепер йому два кадри (шлях 10 мс замість 8). Власник: «щелчков нет, всё работает отлично».
+- EN: **the ADC clocks use the weakest outputs** (3.26): their harmonics fall into the 2.4 GHz band; the transmitter's
+  own radio noise with the mixer on air was 2–3 dB higher than with the test sound, now 0.5 dB.
+- UK: **такти АЦП — найслабшими виходами** (3.26): їхні гармоніки потрапляють у діапазон 2,4 ГГц; шум власного радіо
+  передавача з пультом в ефірі був на 2–3 дБ вищий, ніж із перевірочним звуком, тепер — на 0,5 дБ.
+- EN: **colour receiver display:** the analyser bars change colour with their height in smooth shades — green up to a
+  third, then into yellow, bright red at the top (3.23, 3.25); all text is white (3.23, 3.27; the owner: “on this
+  display, because of the poor black, colours like the current ones blend in”). Still 62–63 frames/s.
+- UK: **кольоровий екран приймача:** стовпчики аналізатора змінюють колір за висотою плавними відтінками — до третини
+  зелені, далі до жовтого, угорі яскраво-червоні (3.23, 3.25); усі написи білі (3.23, 3.27; власник: «на данном дисплее
+  из-за не качественного черного цвета подобные цвета как сейчас сливаются»). Як і раніше 62–63 кадри/с.
+- EN: serial: `e14…e17` (limiter), `e18` (ADC data format), `e19`/`e21`/`e22` + `e20` (recording raw ADC words or what
+  goes on air, download with `tools/adcdump.py`); `e14` also shows the ADC counters and lost I2S frames.
+- UK: порт: `e14…e17` (обмежувач), `e18` (формат даних АЦП), `e19`/`e21`/`e22` + `e20` (запис сирих слів АЦП або того,
+  що йде в ефір, вивантаження — `tools/adcdump.py`); `e14` показує й рахунок АЦП та втрачені кадри I2S.
+
+- EN: **a player for files from the memory card** (3.28–3.29; the owner: “when playing from the memory card a player
+  should open with a playback bar for fast seeking to the needed part of the track, shown like in Audacity — a ready
+  version is in the Slovo backing-track player”). Opens by itself after «В ефір» (On air) and from the “on air” strip
+  under the file list: the whole track as one waveform, played part in gold, a white head; touch or drag along the
+  waveform to play from there; buttons -10 s, Pause/Play, Stop, +10 s. The waveform is built in the background: WAV from
+  samples, MP3 from each frame's side information (no full decoding — the transmitter could not afford it), and the
+  place of every frame is remembered, so seeking by time is exact even for VBR. On the device: a 5.6 MB MP3 — waveform
+  in 19 s while playing, no audio dropouts; seeking and pause with a short fade, no clicks. Serial: `Fw`, `Fk<s>`, `Fz`.
+- UK: **плеєр для файлів із картки** (3.28–3.29; власник: «при воспроизведении из карты памяти, должен открываться плеер
+  с полосой воспроизведения для быстрой перемотки и перехода на нужную часть трека, отображение как в audacity (уже
+  готовый вариант есть в программе slovo для в плеере фонограмм)»). Відкривається сам після «В ефір» і зі смужки «в
+  ефірі» під списком: увесь трек однією хвилею, зігране — золотим, біла головка; торкніться або протягніть по хвилі —
+  грає звідти; кнопки -10 с, Пауза/Грати, Стоп, +10 с. Хвиля будується у фоні: WAV — з відліків, MP3 — зі службової
+  частини кадрів (повністю передавач його не розбирає — не під силу), і місце кожного кадру запам'ятовується — перехід
+  за часом точний і для змінного потоку. На приладі: MP3 5,6 МБ — хвиля за 19 с під час гри, без провалів звуку;
+  перехід і пауза — з коротким згасанням, без клацань. Порт: `Fw`, `Fk<с>`, `Fz`.
+- EN: **receiver with CS4344: pin 14 enables the headphone amplifier** (3.28; the owner: “use pin 14 to control the
+  amplifier module, no sound until the device has booted… like with the PCM module”): ground from the first line of
+  start-up, raised only when sound is flowing, ground while waiting, searching, asleep and through restarts.
+- UK: **приймач із CS4344: вивід 14 вмикає підсилювач навушників** (3.28; власник: «вывод 14 использовать для
+  управления модулем усилителя, пока устройство не загружено звука нет (работа как с модулем pcm…)»): «земля» з першого
+  рядка запуску, підйом — лише коли пішов звук, «земля» в очікуванні, пошуку, сні й крізь перезапуски.
+
 ## 3.16 — 2026-10-16 (includes 3.03–3.15, which were not released / містить 3.03–3.15, які не випускались)
 - EN: **optional colour display for the receiver — IPS 1.9″ 170×320 (ST7789, MSP1901 module), landscape 320×170.**
   Every screen, menu, icon, the splash, the effects and the transitions are redrawn for it, in colour; control is the

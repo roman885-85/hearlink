@@ -98,6 +98,22 @@ PCM1808 input is actually on air: with the test sound or a card file on air the 
 top of [“Serial commands”](commands.md)). The built-in ADC is only for checks without an external ADC: with it the
 transmitter's radio stalls for 0.2 s now and then (the built-in ADC and the radio share hardware in the chip).
 
+**PCM1808 module pins FMT, MD0, MD1.** MD0 and MD1 go to GND (the transmitter drives the ADC). FMT goes to GND by the
+diagram (I2S format), but FMT at 3.3 V (“left-justified”, data one clock earlier) works too: since 3.19 the transmitter
+recognises the format by itself, rebuilds the samples and puts left and right back in place (this is the owner's
+setup: “with it connected to minus there was no sound at all”). Before 3.19, with FMT at 3.3 V loud passages flipped
+their sign — crackling — and the level on the meter read twice too high (`e14`, `e18`).
+
+**Level at the ADC input.** The PCM1808 full scale is 3 V peak-to-peak (at a 5 V supply), i.e. ±1.5 V. A voltmeter shows
+an average, and music peaks are 3–4 times higher, so “0.7 V” on a voltmeter is already near full scale. The sign of
+overload is the red “ADC clips” on the “Input peaks” page or “at full scale” in `e14`: then lower the mixer output (or
+fit 22 kΩ instead of 10 kΩ for R1, R2 at the input — see the diagram). Bass loads the ADC heavily: if the lows are cut by
+the transmitter's equalizer anyway, better cut them on the mixer for this line.
+
+**Clocks on the weakest outputs** (since 3.26): the 8.192 MHz clock harmonics fall into the 2.4 GHz band and disturbed
+the transmitter's own radio (noise +2–3 dB with the mixer on air). Keep the clock wire to the module short and away
+from the antenna.
+
 ### Transmitter on a plain ESP32-S3 board (no display)
 
 Audio input — pin 4 (ADC), PCM1808 — 10 (SCK), 11 (BCK), 12 (LRC), 13 (OUT). Control — from the serial port only.
@@ -252,7 +268,15 @@ module ground → ground. The amplifier gain can be raised to 2 (a 470 Ω resist
 0.76 V × 2 = 1.5 V, below the ~2 V the MAX97220 gives into 32 Ω headphones at 5 V, so it will not clip (calculated,
 not measured).
 
-**No XSMT.** The CS4344 has no “sound on” pin — pin 14 is not needed. The chip protects itself from clicks (Popguard,
+**Pin 14 — “enable” of the headphone amplifier** (since 3.28; the owner: “with the CS4344, use pin 14 to control the
+amplifier module: no sound until the device has booted”). The CS4344 has no XSMT pin, so the receiver drives the
+amplifier itself with pin 14 — just like XSMT on the PCM5102: ground from the first line of start-up, raised only when
+the receiver is working and sound is flowing, ground while waiting, searching, asleep and during any restart. Wire pin
+14 to the amplifier's enable input (on the MAX97220 — SHDN: high — on, low — off; amplifier modules label it EN, SD,
+SHDN or MUTE). If the module has that input soldered to the supply, unsolder it and take it to pin 14; a click at the
+very moment power is applied is removed by a 10–47 kΩ resistor from that input to ground.
+
+**The CS4344 also protects itself from clicks** (Popguard,
 section 4.5): when the master clock appears, the output rises smoothly in 0.25 s (0.42 s if the module has 10 µF on VQ),
 and sound follows about 2000 samples (≈ 64 ms) later; when the receiver falls asleep and the clock stops, the output
 falls just as smoothly. So after power-on or wake-up the sound appears 0.3–0.5 s later than with the PCM5102.

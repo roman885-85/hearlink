@@ -2,6 +2,11 @@
 
 **English** · [Українська](README.uk.md)
 
+> **3.29 is the final version of the first modification** (transmitter, PCM1808 ADC, receivers). Next comes **4.x
+> “Next Edition”** with a Raspberry Pi Pico bridge between the mixer and the transmitter: a digital AES/EBU input straight
+> from the mixer, minimal latency. 4.x updates are only for a kit with the bridge (3.29 will not take them); the first
+> modification's code is in the [`first-edition`](../../tree/first-edition) branch.
+
 A transmitter takes the sound from a mixing desk and broadcasts it over encrypted digital radio to receivers with
 headphones. A hard-of-hearing person can sit anywhere in the hall, set their own volume and hear the sermon or the
 choir right in their ears — no room echo, no wires, no induction loop in the floor.

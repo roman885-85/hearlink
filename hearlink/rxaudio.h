@@ -419,9 +419,14 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
 //    (rxDacBeforeRestart), пока прошивка не запустится снова.
 // Чего прошивка сделать не может: от подачи питания до её запуска (доли секунды) вывод процессора ничем не управляется.
 // Если хлопок при ВКЛЮЧЕНИИ ПИТАНИЯ остаётся — резистор 10–47 кОм с XSMT на «землю» (см. описание, hardware).
-static volatile bool rxDacOpen;   // XSMT высокий: ЦАП открыт
+// С 3.28 так же — и с CS4344: у него XSMT нет, и вывод 14 ведёт модуль усилителя наушников (вход «включён»/SHDN).
+// Владелец 20.10: «в приемниках при работе с cs4344, вывод 14 использовать для управления модулем усилителя, пока
+// устройство не загружено звука нет (работа как с модулем pcm для предотвращения щелчков в наушниках при включении и
+// тишине)».
+static volatile bool rxDacOpen;   // XSMT (или «включён» усилителя) высокий: звук открыт
+static inline bool rxDacPinUsed() { return cfg.output == OUT_I2S || cfg.output == OUT_CS4344; }
 static void rxDacPinInit() {
-  if (cfg.isTx || cfg.output != OUT_I2S) {
+  if (cfg.isTx || !rxDacPinUsed()) {
     gpio_hold_dis((gpio_num_t)PIN_DAC_XSMT);   // плата сменила роль или выход — вывод больше не держим
     return;
   }
@@ -432,14 +437,14 @@ static void rxDacPinInit() {
   gpio_input_enable((gpio_num_t)PIN_DAC_XSMT);     // чтобы уровень вывода можно было прочесть проверкой n8=7
 }
 static void rxDacSet(bool on) {
-  if (cfg.output != OUT_I2S) return;
+  if (!rxDacPinUsed()) return;
   digitalWrite(PIN_DAC_XSMT, on ? HIGH : LOW);
   rxDacOpen = on;
 }
 // Перед перезапуском платы (обработчик выключения, см. setup): заглушить ЦАП, дать ему плавно убрать звук и удержать
 // «землю» на выводе до следующего запуска — иначе на время загрузки вывод остаётся «в воздухе».
 static void rxDacBeforeRestart() {
-  if (cfg.isTx || cfg.output != OUT_I2S) return;
+  if (cfg.isTx || !rxDacPinUsed()) return;
   digitalWrite(PIN_DAC_XSMT, LOW);
   rxDacOpen = false;
   esp_rom_delay_us(30000);

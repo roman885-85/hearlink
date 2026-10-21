@@ -402,6 +402,29 @@ int main() {
   { Box b = txeqBox(ID_TXEQ_PLUS + 2); tap(b.x + 20, b.y + 20); }                                                       // образец шума: запомнить
   printf("шум входа: поле %d, значение %d\n", out.eqBand, out.eqVal);
   save("03c-shum-vkhodu");
+  // шумовой порог входа (с 3.17): тишина в паузах, порог +12 дБ над шумом; шум входа −64 дБ, порог закрыт
+  view.gateFloorDb = -64;
+  view.gateThrDb = -52;
+  view.gateActive = true;
+  view.gateOpen = false;
+  { Box b = txeqBox(ID_TXEQ_PLUS + 3); for (int k = 0; k < 4; k++) tap(b.x + 20, b.y + 20); }                            // в паузах: тиша
+  { Box b = txeqBox(ID_TXEQ_PLUS + 4); tap(b.x + 20, b.y + 20); }                                                       // порог: +12 дБ
+  printf("шумовой порог: поле %d, значение %d\n", out.eqBand, out.eqVal);
+  frame(false, 0, 0);
+  save("03d-shumovyi-porih");
+  // третий лист (с 3.24): пики входа — ограничитель убавляет 3,5 дБ; потом сам АЦП упирается в край — красная подсказка
+  { Box b = txeqBox(ID_TXEQ_PAGE); tap(b.x + 20, b.y + 20); }
+  view.limRedDb = 3.5f;
+  view.adcClips = 0;
+  { Box b = txeqBox(ID_TXEQ_PLUS + 2); tap(b.x + 20, b.y + 20); }                                                       // стискання: середнє
+  { Box b = txeqBox(ID_TXEQ_PLUS + 4); tap(b.x + 20, b.y + 20); tap(b.x + 20, b.y + 20); }                               // підсилення: +6 дБ
+  printf("пики входа: поле %d значение %d; подсиление %d (setParam %d)\n", out.eqBand, out.eqVal, out.setValue, out.setParam);
+  frame(false, 0, 0);
+  save("03e-piky-vkhodu");
+  view.adcClips = 37;
+  frame(false, 0, 0);
+  save("03f-piky-vkhodu-zriz-atsp");
+  view.adcClips = 0;
   { Box b = txeqBox(ID_TXEQ_PAGE); tap(b.x + 20, b.y + 20); }
   printf("эквалайзер входа: запрошено полоса %d значение %d\n", out.eqBand, out.eqVal);
   { Box b = txeqBox(ID_TXEQ_OK); tap(b.x + 20, b.y + 20); }
@@ -813,8 +836,32 @@ int main() {
     save("fm-00-golovna");
     hit(ID_HOME_FILES); save("fm-01-spysok");
     hit(ID_FM_ROW + 3); save("fm-02-vikno-fayla");
-    hit(ID_FM_PLAY); save("fm-03-pishov-v-efir");
-    fakeMs += 5000; run(3); save("fm-04-fayl-v-efiri");
+    // плеер (с 3.28): пустили — сразу плеер; волна строится в фоне (здесь — придуманная)
+    cw = CardWave(); cw.gen = 1; cw.mp3 = true; cw.rate = 44100; cw.spf = 1152; cw.durMs = 0; cw.ready = 0; cw.pct = 0;
+    hit(ID_FM_PLAY); save("fm-03-pleyer-pochatok");
+    for (int c = 0; c < CW_N; c++) {   // тихое вступление, куплеты, громкий припев, перерыв, кода
+      float v = 148 + 9 * sinf(c / 7.0f) + 5 * sinf(c * 1.7f) + (c * 37 % 11) - 5;
+      if (c < 14) v = 118 + c;
+      if (c >= 96 && c < 140) v += 10;
+      if (c >= 141 && c < 147) v = 70;
+      if (c >= 200) v -= (c - 200) * 2.5f;
+      cw.lev[c] = (uint8_t)v;
+    }
+    cw.ref = 165; cw.ready = 84; cw.pct = 38; fm.playMs = 12000; fm.playS = 12;
+    run(3); save("fm-04a-pleyer-buduyu-khvylyu");
+    cw.ready = CW_N; cw.pct = 100; cw.done = true; cw.durMs = 3013000; fm.playMs = 1054000; fm.playS = 1054;
+    run(3); save("fm-04b-pleyer");
+    {   // протягивание по волне: палец на 300, ведут до 352
+      Box wb = PL_CARD;
+      for (int k = 0; k < 3; k++) { fakeMs += 20; frame(true, 300, wb.y + 80); }
+      for (int x = 300; x <= 352; x += 4) { fakeMs += 20; frame(true, x, wb.y + 80); }
+      save("fm-04c-pleyer-protyaguvannya");
+      fakeMs += 20; frame(false, 352, wb.y + 80);
+      run(3);
+    }
+    hit(ID_FM_PL_PAUSE); save("fm-04d-pleyer-pauza");
+    hit(ID_FM_PL_PAUSE);
+    hit(ID_FM_BACK); save("fm-04e-spysok-fayl-v-efiri");
     hit(ID_FM_NEXT); save("fm-05-druha-storinka");
     hit(ID_FM_ROW + 0); save("fm-06-vikno-tekstu");
     hit(ID_FM_VIEW); save("fm-07-tekst");

@@ -30,9 +30,12 @@ sensor (I2C), microSD card (SPI), CH340 USB bridge, a relay and a speaker amplif
 ### Audio path
 1. **Input.** The built-in ADC in continuous mode takes 64,000 samples per second; pairs are summed — the result is
    32,000 (this also gives a small gain in noise). The pace of the whole kit is set by the input. The external
-   PCM1808 is connected over I2S, stereo.
-2. **Gain** (−12…+24 dB), measurement of level, peak and overload (the edge of the ADC scale → the `FLAG_CLIP` flag
-   in the packet → the receiver shows «Гучно на вході!» (Input too loud!)).
+   PCM1808 is connected over I2S, stereo; the transmitter recognises the data format by itself (since 3.19, see
+   “What changed in 3.17–3.27”), the I2S queue is 8 frames of 2 ms.
+2. **Input processing** (mixer sound only): equalizer (low cut and five bands), **gain** (−12…+24 dB), **peak
+   limiter** (since 3.18), noise reduction (a separate task on the display core, since 3.23 with two frames of slack),
+   measurement of level, peak and overload (the edge of the ADC scale → the `FLAG_CLIP` flag in the packet → the
+   receiver shows «Гучно на вході!» (Input too loud!)), noise gate (since 3.17).
 3. **Source**: the input, a test sound from the `assets` partition (voice — uncompressed, tunes — MP3 decoded on the
    fly by a separate task with a one-second buffer in PSRAM) or a file from the card.
 4. **Frame**: 1, 2, 4 or 6 chunks depending on the quality. For 16 kHz — a half-band filter and decimation by two
@@ -456,6 +459,13 @@ the name is the type: 0 — uncompressed sound 32 kHz mono, 1 — MP3.
   loudest of the last 10 minutes — since 2.76); in the transmitter — input noise reduction on the display core. 2.75–2.76
   fix two bugs that made noise reduction almost inactive on the devices (garbage in the “sample remembered” flag after a
   restart; no pauses found for 10 minutes after a sound gap).
+- **Input noise gate (3.17, `txaudio.h`, `TxGate`)** — after noise reduction and level metering, before “silence on
+  air”; mixer sound only. Frame level (2 ms) — the mean square of the mid and the difference; the input noise — the
+  quietest (down in ~40 ms, up 0.25 dB/s, within −96…−36 dB); the threshold — noise + 3…15 dB or manual (`e12`); a 6 dB
+  soft knee; after sound it stays open 60 / 150 / 300 ms and closes evenly in decibels in 60 / 150 / 400 ms; it opens
+  within a frame; the gain changes sample by sample. Host check (noise −62 dB, “words” −20 dB and a quiet syllable
+  −34 dB): pauses −11.9 / −19.8 / −29.5 dB / zero, words and the syllable 0.00 dB, extra sample jump up to 3 units. With
+  the gate off it still measures the input noise — shown on the “Input noise” page and by `e10`.
 - **Rate steps (2.73–2.83, `txpeers.h`, `rateAutoTick`)** — two: the upper (5.5 Mbit/s in “auto” or the one chosen by
   hand) and 1 Mbit/s. Down: the smoothed signal of the weakest receiver is −75 dBm or weaker, or it loses sound, or a
   weak receiver has just vanished; up: all at −70 dBm or better for 30 s (if the weakest is −66 or better) or 120 s,
@@ -537,6 +547,46 @@ the name is the type: 0 — uncompressed sound 32 kHz mono, 1 — MP3.
 - **Display select jumper (3.13)** — pin 21 to GND; the "Screen type" item is removed.
 - **Diagnostics:** `Y22` (display bus interference), `Y23` (listen for pick-up), `Y17`/`Y18`, `Y19`–`Y21`; `Y15` — the most
   important values first (a long line is cut over the radio).
+
+## What changed in 3.17–3.27 (technical)
+
+The owner, 16.10: “with overloads at the input there is crackling at the output”; “on the test sound everything is
+perfect even at full overload on the level meter, but through the ADC the same level is just crackling”. The test sound
+bypasses I2S, the equalizer and the noise reduction, so “clean on the test sound” says nothing about the input — the
+causes were found from recordings made on the device (`e19`/`e21`/`e22`, `tools/adcdump.py`).
+
+- **Input noise gate (3.17)** — see above, in 2.64–3.02.
+- **Input peak limiter (3.18, `TxLim`)** — after the equalizer and the gain: a 48-sample delay (1.5 ms), the smallest
+  “must cut” over the window via a deque, release, the average over the window; the peak is the larger channel
+  (|mid| + |side|), so no sample passes the ceiling; below the ceiling — soft compression (±3 dB knee). Memory from the
+  heap, transmitter only. Serial `e14…e17`; on screen — the “Input peaks” page (3.24).
+- **PCM1808 data format (3.19–3.21).** With FMT at 3.3 V the module sends “left-justified” data — one clock earlier than
+  the ESP32's Philips I2S expects: the sample's MSB lands in bit 0 of the PREVIOUS word, the word holds D22…D0. The
+  sample read twice as loud, and everything above half of the ADC scale flipped its sign — crackling. Recognition per
+  frame: in an aligned word bit 8 is the LSB (noise) and bit 0 is zero; in a shifted one the other way round (4 frames in
+  a row). Shifted words are rebuilt: the sign from bit 0 of the previous word, D22…D0 from its own; the first sample of a
+  frame takes whichever of the two signs is closer to the next sample of the same channel (I2S can skip between
+  frames). In left-justified mode the left channel is at high LRCK, so with the shift the channels are swapped back.
+  Checked on device recordings: without the mixer the sign matches bit 0 of the previous word in 100 % of words; with the
+  mixer, 188 and 201 sign flips per 1.5 s → 0. Serial `e18`.
+- **Lost I2S frames (3.21–3.22) — the main crackle.** With the mixer the transmit task spent 1.76 ms of 2 per frame on
+  average (input processing 465 µs against 232 for the test sound), and I2S lost frames — 20–30 gaps of 2 ms per second.
+  The equalizer and gain (`txInEqGain`), the limiter (`TxLim::run`) and the gate (`TxGate::apply`) are built with -O2
+  and placed in IRAM (the methods moved out of the struct bodies: otherwise the linker reports “l32r: literal placed
+  after use”), `txReadI2s` with -O2; the I2S queue is 8 frames (was 4). Gaps — 0. The I2S loss counter
+  (`on_recv_q_ovf`) is in `e14`.
+- **Slack for the input noise reduction (3.23).** The task on the display core had one frame (2 ms), but its step (an FFT
+  of 256 samples) falls on every second frame and takes ~1.3 ms: it was late thousands of times, and an unprocessed frame
+  went on air — a quiet “digital” click in silence. Now two frames (the noise-reduction path is 10 ms instead of 8); if
+  it is late anyway — the unprocessed frame, attenuated by the current reduction. Late frames — 0.
+- **Weak I2S clock outputs (3.26).** MCLK (pin 43), BCK and LRCK use `GPIO_DRIVE_CAP_0`: the 8.192 MHz harmonics come
+  every 8.2 MHz and fall into any 2.4 GHz channel; the transmitter's radio noise with the mixer was 2–3 dB higher than
+  with the test sound, now 0.5 dB.
+- **Colour display.** Analyser bars — each row's shade by its height on the scale (`anRowColor`: green up to 1/3, then
+  to yellow, bright red at the top; 3.23 — the whole bar in one colour, 3.25 — by rows); only rows that moved are
+  redrawn, fewer pixels per frame than before. All text is white (3.23, 3.27).
+- **Diagnostics:** `e18` (ADC format), `e19`/`e21`/`e22` (recording raw ADC words and what goes on air), `e20` +
+  `tools/adcdump.py`; `e14` shows the ADC counters, lost I2S frames, corrected first-sample signs.
 
 ## Quirks and pitfalls
 

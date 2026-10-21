@@ -188,6 +188,14 @@ static void settingsLoad() {
   if (cfg.gainDb < -12 || cfg.gainDb > 24) cfg.gainDb = 0;
   if (cfg.brightness < 10 || cfg.brightness > 100) cfg.brightness = 80;
   if (cfg.dimIdx > 3) cfg.dimIdx = 0;
+  if (cfg.txGate > 4) cfg.txGate = 0;
+  if (cfg.txGateThr > 4) cfg.txGateThr = 2;
+  if (cfg.txGateRel > 2) cfg.txGateRel = 1;
+  if (cfg.txGateDb && (cfg.txGateDb < -80 || cfg.txGateDb > -30)) cfg.txGateDb = 0;
+  if (cfg.txLim > 1) cfg.txLim = 1;
+  if (cfg.txLimCeil > 3) cfg.txLimCeil = 1;
+  if (cfg.txLimComp > 3) cfg.txLimComp = 1;
+  if (cfg.txLimRel > 2) cfg.txLimRel = 1;
   if (cfg.quality >= Q_COUNT) cfg.quality = Q_HI;
   if (cfg.testTrack > 7) cfg.testTrack = 0;
   if (cfg.duckS < 10 || cfg.duckS > 240) cfg.duckS = 30;
@@ -350,6 +358,8 @@ static void help() {
                   st && txPcmSNow ? ", різниця каналів БЕЗ стиснення (16 біт, як середина; Qr0 — 4-бітна, як до 2.86)" :
                   st && q == Q_HI ? (txSideMode == 0 ? ", різниця каналів 4-бітна (задано Qr0; Qr1 — без стиснення)" : !txPcmSOk ? ", різниця каналів 4-бітна: не всі приймачі зі списку мають 2.87+" : ", різниця каналів 4-бітна") : "");
     txNsPrint();
+    txGatePrint();
+    txLimPrint();
   }
   else Serial.printf("ім'я: «%s»%s; вихід: %s, %s, запас %s, гучність %u з 20\n", rxName(), cfg.off ? " (ВИМКНЕНИЙ з передавача)" : "", cfg.output == OUT_CS4344 ? "CS4344 (I2S, 31 250 Гц, головний такт 8 МГц на виводі 10)" : cfg.output == OUT_I2S ? "PCM5102 (I2S)" : "PDM",
                      cfg.rxStereo ? "ДВА КАНАЛИ (навушники напряму або стерео)" : cfg.output != OUT_PDM ? "моно" : "ПРОТИФАЗА (підсилювач з різницевим входом)",
@@ -577,6 +587,88 @@ static void txNsPrint() {
   txNsUsMax = 0;
   Serial.printf("шумозаглушення входу: %s (e6=0…3), чутливість %u (e8=0…4); шум %s (e7=1 — запам'ятати зараз, e7=0 — сам); зараз прибирає %.1f дБ, кроків у паузах %u; час на кадр (на ядрі екрана) сер. %u, найдовше %u мкс; не встигло кадрів %u\n", LV[cfg.txNs > 3 ? 0 : cfg.txNs], cfg.txNsSens, txNsFrozen ? "запам'ятовано на прохання" : "запам'ятовується сам у паузах", cfg.txNs ? -txNsRedDb : 0.0f, (unsigned)txNsPauseHops, n ? (unsigned)(sum / n) : 0u, (unsigned)mx, (unsigned)txNsLate);
 }
+// Шумовой порог входа (с 3.17, txaudio.h): настройки, шум входа, порог и что он делает сейчас.
+static void txGatePrint() {
+  static const char *const DP[] = { "вимкнено", "у паузах тихіше на 12 дБ", "у паузах тихіше на 20 дБ", "у паузах тихіше на 30 дБ", "у паузах тиша" };
+  static const char *const RL[] = { "швидко", "середньо", "повільно" };
+  uint32_t fr = txGateFrames, cl = txGateClosed, sw = txGateCloses;
+  txGateFrames = 0;
+  txGateClosed = 0;
+  txGateCloses = 0;
+  char thr[96];
+  if (cfg.txGateDb) snprintf(thr, sizeof(thr), "вручну %d дБ (e12=0 — від шуму)", cfg.txGateDb);
+  else snprintf(thr, sizeof(thr), "шум +%d дБ (e11=0…4; e12=-80…-30 — вручну)", 3 + 3 * (cfg.txGateThr > 4 ? 2 : cfg.txGateThr));
+  Serial.printf("шумовий поріг входу: %s (e10=0…4); поріг %s; закриття %s (e13=0…2); шум входу %.1f дБ, поріг зараз %.1f дБ, звук %.1f дБ — %s; з минулого показу закрито %u%% часу, закривався %u разів\n",
+                DP[cfg.txGate > 4 ? 0 : cfg.txGate], thr, RL[cfg.txGateRel > 2 ? 1 : cfg.txGateRel], txGateFloorDb, txGateThrDb, txGateLevDb,
+                !txGateActive ? "не діє (перевірочний звук, файл або вимкнено)" : txGateOpen ? "відкрито" : "закрито", fr ? (unsigned)(cl * 100 / fr) : 0u, (unsigned)sw);
+}
+// Запись «сырых» слов АЦП (с 3.20, txaudio.h): вернуть проверочный звук после записи (e21) и выгрузка в порт.
+static void txRawCapTick() {
+  if (txRawCapTone == 0xFF) return;
+  if (txRawCapState == 3 || millis() - txRawCapT0 > 6000) {
+    cfg.tone = txRawCapTone;
+    txRawCapTone = 0xFF;
+    if (txRawCapState != 3) txRawCapState = 0;
+  }
+}
+static void txRawCapDump() {
+  static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  if (txRawCapState != 3 || !txRawCap) {
+    Serial.println("запис АЦП: немає готового запису (e19=<мс> або e21=<мс>)");
+    return;
+  }
+  uint32_t n = txRawCapN;
+  Serial.printf("@@ADC begin %u %s\n", (unsigned)n, txRawCapKind ? "efir" : "adc");
+  char line[300];
+  for (uint32_t i = 0; i < n; i += 48) {
+    uint32_t m = n - i < 48 ? n - i : 48;
+    const uint8_t *p = (const uint8_t *)(txRawCap + i);
+    uint32_t len = m * 4, o = snprintf(line, sizeof(line), "@@ADC %u ", (unsigned)i);
+    for (uint32_t k = 0; k < len; k += 3) {
+      uint32_t v = p[k] << 16 | (k + 1 < len ? p[k + 1] << 8 : 0) | (k + 2 < len ? p[k + 2] : 0);
+      line[o++] = B64[v >> 18 & 63];
+      line[o++] = B64[v >> 12 & 63];
+      line[o++] = k + 1 < len ? B64[v >> 6 & 63] : '=';
+      line[o++] = k + 2 < len ? B64[v & 63] : '=';
+    }
+    line[o] = 0;
+    Serial.println(line);
+    if ((i / 48) % 16 == 15) delay(1);
+  }
+  Serial.println("@@ADC end");
+}
+// Ограничитель пиков входа (с 3.18) и счёт самого АЦП: упирается ли он в край шкалы и нет ли «перескоков» отсчёта через
+// весь размах (так выглядела бы ошибка формата данных — сдвиг на бит, — а не перегрузка).
+static void txLimPrint() {
+  static const char *const CL[] = { "-0,5", "-1", "-2", "-3" };
+  static const char *const CP[] = { "немає (лише обмежувач)", "легке (від -6 дБ, 2:1)", "середнє (від -10 дБ, 3:1)", "сильне (від -14 дБ, 4:1)" };
+  static const char *const RL[] = { "швидко", "середньо", "повільно" };
+  float low = txLimLowG;
+  uint32_t busy = txLimBusy, fr = txAdcFrames;
+  txLimLowG = 1;
+  txLimBusy = 0;
+  Serial.printf("обмежувач піків входу: %s (e14=0/1); стеля %s дБ (e15=0…3); стискання %s (e16=0…3); відпускання %s (e17=0…2); підсилення входу %+d дБ; з минулого показу найбільше убавлено %.1f дБ, обмежувач працював %u мс\n",
+                cfg.txLim ? "увімкнено" : "вимкнено", CL[cfg.txLimCeil > 3 ? 1 : cfg.txLimCeil], CP[cfg.txLimComp > 3 ? 1 : cfg.txLimComp], RL[cfg.txLimRel > 2 ? 1 : cfg.txLimRel],
+                (int)cfg.gainDb, low < 1 ? -20.0f * log10f(low > 1e-6f ? low : 1e-6f) : 0.0f, (unsigned)(busy / 32));
+  Serial.printf("АЦП PCM1808 з минулого показу: кадрів %u; найбільше |Л| %u, |П| %u; на краю шкали Л %u, П %u відліків; перескоків через весь розмах Л %u, П %u; молодший байт слова 0x%02X\n",
+                (unsigned)fr, (unsigned)txAdcPeakL, (unsigned)txAdcPeakR, (unsigned)txAdcRailL, (unsigned)txAdcRailR, (unsigned)txAdcJumpL, (unsigned)txAdcJumpR, (unsigned)txAdcLowOr);
+  static const char *const FF[] = { "само", "як є (e18=1)", "зсув на біт (e18=2)" };
+  uint32_t w = txAdcWords, n0 = txAdcBit0, n8 = txAdcBit8;
+  Serial.printf("АЦП: втрачено кадрів I2S %u; знак першого відліку кадру виправлено %u разів\n", (unsigned)txI2sOvfN, (unsigned)txAdcEdgeFix);
+  txI2sOvfN = 0;
+  txAdcEdgeFix = 0;
+  Serial.printf("формат даних АЦП: %s, вибір %s (e18=0…2); слів з даними %u, з бітом 0 — %u, з бітом 8 — %u (%s); перемикань %u\n",
+                (txAdcFmtForce ? txAdcFmtForce == 2 : txAdcShift) ? "дані зсунуті на біт — збираю відліки наново" : "дані рівно, як є",
+                FF[txAdcFmtForce > 2 ? 0 : txAdcFmtForce], (unsigned)w, (unsigned)n0, (unsigned)n8,
+                !w ? "АЦП мовчить — вхід не в ефірі" : n8 && !n0 ? "так буває при рівних даних" : n0 && !n8 ? "так буває при зсуві на біт" : "ознаки змішані",
+                (unsigned)txAdcFlips);
+  txAdcWords = txAdcBit0 = txAdcBit8 = 0;
+  txAdcFrames = 0;
+  txAdcPeakL = txAdcPeakR = 0;
+  txAdcRailL = txAdcRailR = 0;
+  txAdcJumpL = txAdcJumpR = 0;
+  txAdcLowOr = 0;
+}
 static void rxFxPrint() {
   uint32_t n = rxNsCalls, sum = rxNsUsSum, mx = rxNsUsMax;
   float red = rxDynRedDb, gate = rxGateRedDb;
@@ -613,6 +705,22 @@ static void fmSerial(const String &arg) {
   if (bar >= 0) {
     q = p.substring(bar + 1);
     p = p.substring(0, bar);
+  }
+  if (c == 'w') {   // Fw — волна файла в эфире (плеер, с 3.28): сколько посчитано, кадров, длительность
+    Serial.printf("хвиля: %s, стовпців %u з %u (%u%%)%s, «повна висота» %u дБ; кадрів MP3 %u (місця кадрів — %s), тривалість %u мс; частота %u; звук у файлі %u…%u; пауза %s\n",
+                  cw.mp3 ? "MP3" : "WAV", (unsigned)cw.ready, (unsigned)CW_N, (unsigned)cw.pct, cw.done ? ", готово" : cw.failed ? ", НЕ ВДАЛОСЯ" : "", (unsigned)cw.ref,
+                  (unsigned)cw.frames, cw.cap ? "є" : "немає пам'яті", (unsigned)cw.durMs, (unsigned)cw.rate, (unsigned)cw.start, (unsigned)cw.end, cpPause ? "так" : "ні");
+    return;
+  }
+  if (c == 'k') {   // Fk<секунда> — перейти в файлі (як дотик по хвилі)
+    cardSeekMs((uint32_t)(p.toFloat() * 1000));
+    Serial.printf("перехід на %.1f с: %s\n", p.toFloat(), fm.playing && cw.rate ? "попрошено" : "не можна (файл не грає або ще не прочитано)");
+    return;
+  }
+  if (c == 'z') {   // Fz — пауза / далі
+    cardPause(!cpPause);
+    Serial.printf("пауза: %s\n", cpPause ? "так" : "ні");
+    return;
   }
   if (c == 'u') {   // Fu<путь>|<размер>|<скорость> — принять файл с компьютера (tools/sendfile.py)
     int b2 = q.indexOf('|');
@@ -1357,7 +1465,7 @@ static void command(String s) {
                 Serial.printf("вивід %d: одиниць %u %%, перепадів за 20 мс %u (≈%u Гц), опитувань %u\n", pin, (unsigned)(n ? ones * 100 / n : 0), (unsigned)edges,
                               (unsigned)(edges * 25), (unsigned)n);
               }
-              Serial.printf("вихід: %s, %s; XSMT (вивід %d): %d\n", cfg.output == OUT_CS4344 ? "CS4344 (I2S): MCLK 10 (8 МГц), SCLK 11, LRCK 12, SDIN 13; XSMT не потрібен" : cfg.output == OUT_I2S ? "PCM5102 (I2S): BCK 11, LRCK 12, DIN 13; вивід 10 — нуль для SCK" : "PDM: 17, 18",
+              Serial.printf("вихід: %s, %s; XSMT (вивід %d): %d\n", cfg.output == OUT_CS4344 ? "CS4344 (I2S): MCLK 10 (8 МГц), SCLK 11, LRCK 12, SDIN 13; вивід 14 — «увімкнено» підсилювача (з 3.28)" : cfg.output == OUT_I2S ? "PCM5102 (I2S): BCK 11, LRCK 12, DIN 13; вивід 10 — нуль для SCK" : "PDM: 17, 18",
                             rxOutLive() ? "живий" : "СТОЇТЬ", PIN_DAC_XSMT, gpio_get_level((gpio_num_t)PIN_DAC_XSMT));
               if (cfg.output == OUT_CS4344) {   // делитель главного такта: целый ли (дробный даёт неровные периоды)
                 uint32_t n = I2S0.tx_clkm_conf.tx_clkm_div_num, z = I2S0.tx_clkm_div_conf.tx_clkm_div_z, y = I2S0.tx_clkm_div_conf.tx_clkm_div_y;
@@ -1440,6 +1548,73 @@ rxFxPrint();
       if (cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b == 9) {   // e9=1 — проба: эквалайзер и на тоне 1 кГц
         txEqOnTone = val != 0;
         Serial.printf("еквалайзер входу на перевірочному тоні: %u\n", (unsigned)txEqOnTone);
+        return;
+      }
+      if (cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b >= 10 && b <= 13) {
+        // шумовой порог входа (с 3.17): e10=<0…4> — выключен / в паузах −12 / −20 / −30 дБ / тишина; e11=<0…4> — порог на
+        // 3…15 дБ над шумом входа; e12=<−80…−30> — ручной порог в дБ (0 — снова от шума); e13=<0…2> — закрытие
+        if (b == 10) cfg.txGate = (uint8_t)constrain(val, 0, 4);
+        else if (b == 11) cfg.txGateThr = (uint8_t)constrain(val, 0, 4);
+        else if (b == 12) cfg.txGateDb = val ? (int8_t)constrain(val, -80, -30) : 0;
+        else cfg.txGateRel = (uint8_t)constrain(val, 0, 2);
+        txGatePrint();
+        break;
+      }
+      if (cfg.isTx && arg == "10") {   // e10 без «=» — только показать
+        txGatePrint();
+        return;
+      }
+      if (cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b >= 14 && b <= 17) {
+        // ограничитель пиков входа (с 3.18): e14=<0/1> — выключен / включён; e15=<0…3> — потолок −0,5 / −1 / −2 / −3 дБ;
+        // e16=<0…3> — сжатие пиков: нет / лёгкое / среднее / сильное; e17=<0…2> — отпускание
+        if (b == 14) cfg.txLim = val ? 1 : 0;
+        else if (b == 15) cfg.txLimCeil = (uint8_t)constrain(val, 0, 3);
+        else if (b == 16) cfg.txLimComp = (uint8_t)constrain(val, 0, 3);
+        else cfg.txLimRel = (uint8_t)constrain(val, 0, 2);
+        txLimPrint();
+        break;
+      }
+      if (cfg.isTx && arg == "14") {   // e14 без «=» — показать (и счёт АЦП)
+        txLimPrint();
+        return;
+      }
+      if (cfg.isTx && (arg == "19" || arg == "20" || (sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && (b == 19 || b == 21 || b == 22)))) {
+        // e19=<мс> — записать «сырые» слова АЦП, когда вход оживёт; e21=<мс> — включить вход самому на время записи;
+        // e22=<мс> — так же, но записать то, что уходит в эфир после всей обработки (с 3.21); e19 — что с записью;
+        // e20 — выгрузить (с 3.20). При e21/e22 запись начинается через 1,5 с живого входа.
+        if (arg == "20") {
+          txRawCapDump();
+          return;
+        }
+        if (arg != "19") {
+          uint32_t ms = (uint32_t)constrain(val, 50, 1500);
+          if (!txRawCap) txRawCap = (int32_t *)heap_caps_malloc(SRATE * 2 * sizeof(int32_t) * 3 / 2, MALLOC_CAP_SPIRAM);
+          if (!txRawCap) {
+            Serial.println("запис АЦП: немає пам'яті");
+            return;
+          }
+          txRawCapState = 0;
+          txRawCapN = 0;
+          txRawCapKind = b == 22 ? 1 : 0;
+          txRawCapWant = (b == 22 ? SRATE : SRATE * 2) * ms / 1000;
+          txRawCapDelay = b == 19 ? 0 : 1500;
+          txRawCapLive = 0;
+          txRawCapT0 = millis();
+          if (b != 19 && cfg.tone) {   // вход — в эфир на время записи; звук вернёт txRawCapTick (без записи во флеш)
+            txRawCapTone = cfg.tone;
+            cfg.tone = 0;
+          }
+          txRawCapState = 1;
+        }
+        Serial.printf("запис АЦП: %s, слів %u з %u%s\n",
+                      txRawCapState == 0 ? "немає" : txRawCapState == 1 ? "чекаю живого входу" : txRawCapState == 2 ? "пишу" : "готово (e20 — вивантажити)",
+                      (unsigned)txRawCapN, (unsigned)txRawCapWant, txRawCapTone != 0xFF ? "; вхід увімкнено на час запису — порт замовкне" : "");
+        return;
+      }
+      if (cfg.isTx && (arg == "18" || (sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b == 18))) {
+        // e18=<0…2> — формат данных PCM1808 (с 3.19): само / как есть / сдвиг на бит; не сохраняется (проба на слух)
+        if (arg != "18") txAdcFmtForce = (uint8_t)constrain(val, 0, 2);
+        txLimPrint();
         return;
       }
       if (cfg.isTx && sscanf(arg.c_str(), "%d=%d", &b, &val) == 2 && b == 8) {   // e8=<0…4> — чувствительность шумозаглушения входа
@@ -2060,6 +2235,7 @@ void loop() {
   }
   if (!cfg.isTx) dbgPumpRx();
   otaAutoTick();            // передатчик: приёмник со старой прошивкой на связи — обновить его самому
+  if (cfg.isTx) txRawCapTick();
   if (cfg.isTx && cfg.board == BOARD_4848) {   // драйвер экрана сбился с очереди буферов (panel4848.h): отметить, когда
     static uint32_t seenFlips;
     uint32_t f = lcdBbFlips;
