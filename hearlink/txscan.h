@@ -185,6 +185,22 @@ static void monSet(bool on) {
 // Если замера нет или все каналы «в опале» — прежний способ, с замером и двумя секундами тишины.
 static volatile bool scanAuto;               // идущий поиск начат самим передатчиком из-за затора
 static volatile uint8_t hopFrom, hopTo;      // последний такой случай: с какого канала и на какой
+// Канал сменил оператор (экран, порт) — с 4.00 тоже переходом без паузы, с объявлением: играющие приёмники идут следом
+// сразу, спящие — по объявлению, пойманному в окне прослушивания (rxHopCh, rxaudio.h), или своим поиском. До 4.00 радио
+// переставлялось сразу: у играющих приёмников звук пропадал секунды на 2,5, пока они искали канал, а спящий выключенный
+// приёмник находил передатчик только своим обходом каналов.
+static volatile bool hopManual;
+static void txChannelSet(uint8_t ch) {
+  if (ch < 1 || ch > 13 || ch == cfg.channel) return;
+  if (txPause || txHold || txHopCh) {   // эфир стоит (выключение, раздача прошивки) или уже идёт переход — сразу, как раньше
+    cfg.channel = ch;
+    rApply = true;
+    return;
+  }
+  hopFrom = cfg.channel;
+  hopManual = true;
+  txHopCh = ch;
+}
 static volatile uint8_t hopResult;           // 0 — ещё не было, 1 — перешёл, 2 — свободнее не нашлось, остался, 3 — ищу
 static volatile uint16_t hopWaitMs;          // причина: сколько пакеты ждали эфира (наибольшее за плохие секунды)
 static volatile uint8_t hopSecs;             //          и сколько секунд из последних восьми были плохими
@@ -411,12 +427,17 @@ static void hopTick(uint32_t airMaxUs, uint32_t thinned, uint32_t skipped, uint3
   }
   if (txHopDone) {   // переход без паузы сделан задачей передачи: записать канал, сказать в порт и на экран
     txHopDone = false;
-    hopTo = cfg.channel;
-    hopResult = 1;
-    hopAtMs = now;
-    hopSeq = hopSeq + 1;
+    bool manual = hopManual;
+    hopManual = false;
     settingsSave();
-    Serial.printf("канал змінено без паузи: %u → %u (за виміром зайнятість була %u %%, там %u %%)\n", hopFrom, hopTo, scanBusy[hopFrom - 1], scanBusy[hopTo - 1]);
+    if (manual) Serial.printf("канал змінено вручну, без паузи (з оголошенням приймачам): %u → %u\n", hopFrom, (unsigned)cfg.channel);
+    else {   // «сам змінив канал» на экране «Ефір» — только про свои уходы с затора
+      hopTo = cfg.channel;
+      hopResult = 1;
+      hopAtMs = now;
+      hopSeq = hopSeq + 1;
+      Serial.printf("канал змінено без паузи: %u → %u (за виміром зайнятість була %u %%, там %u %%)\n", hopFrom, hopTo, scanBusy[hopFrom - 1], scanBusy[hopTo - 1]);
+    }
   }
   // Радио встало (драйвер молчит, отправки отклоняются) — это не затор: его оживляет radioSend, а уходить с канала
   // незачем и некуда. 09.10 передатчик со вставшим радио девять минут «скакал по каналам» (7 → 11 → 3), объявляя

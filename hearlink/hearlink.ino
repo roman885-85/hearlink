@@ -901,6 +901,11 @@ static void command(String s) {
       break;
     case 'c':
       if (v < 0 || v > 13 || (v == 0 && cfg.isTx)) return;
+      if (cfg.isTx) {   // передатчик (с 4.00): переход с объявлением приёмникам; канал запишется, когда переход сделан
+        txChannelSet((uint8_t)v);
+        Serial.printf("канал: %u → %u%s\n", cfg.channel, (unsigned)v, txHopCh ? " (оголошую приймачам, перехід за ~0,2 с)" : "");
+        return;
+      }
       cfg.autoChannel = v == 0;
       if (v) cfg.channel = v;
       rApply = true;

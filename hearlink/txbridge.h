@@ -7,8 +7,9 @@
 #include "bridge_proto.h"
 
 // Звуковая задача (txReadI2s) кладёт сюда байт обратного канала на каждый кадр I2S: старший полубайт — биты 7…4 левого
-// слова, младший — правого. Разбирает главный цикл (txBridgeTick); 4096 байт — 128 мс запаса, если он задержится.
-#define BR_RING 4096
+// слова, младший — правого. Разбирает главный цикл (txBridgeTick); 16 КБ — полсекунды запаса: главный цикл стоит, пока
+// в порт уходит длинный ответ (P — 2 КБ, это 180 мс на 115 200), и при 4 КБ (128 мс) кольцо переполнялось.
+#define BR_RING 16384
 static uint8_t brRing[BR_RING];
 static volatile uint32_t brPut, brGot, brLost;
 static inline void IRAM_ATTR txBridgeFeed(const int32_t *raw, int frames) {

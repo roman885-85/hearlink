@@ -830,7 +830,7 @@ static void task(void *) {
     if (o.setParam >= 0) {
       int val = o.setValue;
       switch (o.setParam) {
-        case ui::P_CHANNEL: cfg.channel = val; rApply = true; break;
+        case ui::P_CHANNEL: txChannelSet((uint8_t)val); break;   // с 4.00 — с объявлением приёмникам (txscan.h)
         case ui::P_KIT: cfg.kit = val; break;
         case ui::P_RATE:
           cfg.rateAuto = val == 0;
