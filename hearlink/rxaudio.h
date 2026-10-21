@@ -142,12 +142,30 @@ enum { WHY_NOSIGNAL = 0, WHY_OFF = 1, WHY_KEY = 2 };   // почему ушли 
 static volatile bool rxUiBusy;             // на экране открыто меню — в ожидание не уходить
 // Переход на другой канал вместе с передатчиком, без паузы: передатчик заранее объявляет «с пакета номер N я на канале
 // C» (команда CMD_HOP), приёмник переходит, как только принял пакет N−1 (или чуть позже срока, если тот потерялся).
-// Сам переход делает задача звука — она просыпается каждую миллисекунду.
+// Играющий приёмник переходит задачей звука — она просыпается каждую миллисекунду. Задача звука стоит, когда звука нет
+// (сон, выключен с передатчика, нет сигнала), — тогда переход делает круг сна и главный цикл (rxHopTick, с 3.30 / 4.00). До
+// 3.30 / 4.00 — только задача звука: спящий приёмник, поймавший объявление в окне прослушивания, оставался с ним навсегда, а с
+// висящим переходом приёмник о себе молчит (rxLinkTick) — передатчик его больше не слышал, включить было нельзя,
+// помогал лишь перезапуск питания (21.10, «Зал, 2 ряд», выключенный с передатчика: тот сам ушёл с канала 5 на 4).
 static volatile uint8_t rxHopCh;           // на какой канал перейти (0 — перехода не ждём)
 static volatile uint32_t rxHopSeq;         // с какого пакета передатчик будет там
 static volatile uint32_t rxHopDeadline;    // крайний срок перехода, мс
 static volatile bool rxHopNow;             // пора (принят последний пакет на прежнем канале)
 static volatile uint32_t rxHops;           // сколько таких переходов сделано (для отчёта)
+static volatile uint32_t rxHopsLate;       // из них — не задачей звука (сон, ожидание; для отчёта)
+// Сам переход: канал — в настройки и в радио. Зовут задача звука (вовремя) и rxHopTick (если та стоит).
+static void rxHopDo(bool mine, bool late) {
+  uint8_t ch = rxHopCh;
+  rxHopCh = 0;
+  rxHopNow = false;
+  if (ch < 1 || ch > 13) return;
+  cfg.channel = ch;
+  rLastChanMs = millis();
+  esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+  bbMark(BB_HOP, ch, (mine ? 1 : 0) | (late ? 2 : 0));
+  rxHops = rxHops + 1;
+  if (late) rxHopsLate = rxHopsLate + 1;
+}
 static volatile bool rxLangDirty;          // язык сменился вслед за передатчиком — записать в память
 static volatile bool rxUiAwake;            // в ожидании тронули ручку: экран показывает подсказку — пока не засыпать
 static volatile uint8_t rxPower = PW_SEARCH;
@@ -1037,14 +1055,7 @@ static void rxTask(void *) {
       if (mine && !hold) hold = millis() | 1;
       if (!mine || millis() - hold >= 12) {
         hold = 0;
-        uint8_t ch = rxHopCh;
-        rxHopCh = 0;
-        rxHopNow = false;
-        cfg.channel = ch;
-        rLastChanMs = millis();
-        esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-        bbMark(BB_HOP, ch, mine ? 1 : 0);
-        rxHops = rxHops + 1;
+        rxHopDo(mine, false);
       }
     }
     uint32_t pc1 = esp_cpu_get_cycle_count();

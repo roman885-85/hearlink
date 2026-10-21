@@ -1664,10 +1664,13 @@ rxFxPrint();
           if (p == 6) {   // i6=<0…3> — блокировка ручки: 0 нет, 1 меню, 2 громкость, 3 всё (приёмники с 2.46)
             peerCommand(peers[i].id, CMD_SET, (uint8_t)((RXP_X_LOCK << 5) | (val & 3)));
           } else
-          if (p >= 20 && p <= 25) {   // i20…i24=<−12…12 дБ> — полосы эквалайзера, i25=<0/1> — срез низов
+          if ((p >= 30 && p <= 35) || (p >= 23 && p <= 25)) {   // i30…i34=<−12…12 дБ> — полосы эквалайзера, i35=<0/1> — срез низов
+            // (до 3.30 / 4.00 — i20…i25, но i20…i22 с 2.72 заняты обработкой звука выше: 125 Гц, 400 Гц и 1 кГц с порта не
+            // ставились; i23…i25 оставлены как были)
             if (!peers[i].hasEq) continue;
-            int v = p == 25 ? (val ? 1 : 0) : constrain(val / 2 + 6, 0, 12);
-            peerCommand(peers[i].id, CMD_EQ, (uint8_t)(((p - 20) << 4) | v));
+            int band = p >= 30 ? p - 30 : p - 20;
+            int v = band == 5 ? (val ? 1 : 0) : constrain(val / 2 + 6, 0, 12);
+            peerCommand(peers[i].id, CMD_EQ, (uint8_t)((band << 4) | v));
           } else
           if (p == 9) peerCommand(peers[i].id, CMD_EARTEST, val ? 1 : 0);
           else if (p >= 0 && p < RXP_COUNT) peerCommand(peers[i].id, CMD_SET, (uint8_t)((p << 5) | ((val + (p == RXP_BALANCE ? 5 : 0)) & 31)));
@@ -1900,6 +1903,14 @@ static void logEmit() {
 }
 
 static void reportTx() {
+  {   // настройка, которую приёмник так и не принял (сверка, txpeers.h) — сказать один раз
+    static uint32_t lostShown;
+    if (pendLost != lostShown) {
+      lostShown = pendLost;
+      Serial.printf("приймач %02X%02X%02X НЕ ПРИЙНЯВ налаштування (команда %u, номер %u) після 20 спроб — на екрані те, що в нього насправді\n",
+                    pendLastLost[0], pendLastLost[1], pendLastLost[2], pendLastLost[3], pendLastLost[4]);
+    }
+  }
   uint32_t frames = txFrames, refused = rRefused, air = rAirFail, raw = txRawSamples, clips = txClips;
   uint32_t mn = txRawMin, mx = txRawMax;
   int pk = txPeak;
@@ -2040,6 +2051,9 @@ static void reportRx() {
     Serial.printf("стан: %s%s, %u с; виходів з очікування %u; кіл сну %u\n", PWN[rxPower],
                   rxPower == PW_STANDBY || rxPower == PW_GOING ? (rxPowerWhy == WHY_OFF ? " (вимкнено з передавача)" : " (немає сигналу)") : "",
                   (unsigned)((millis() - rxPowerAt) / 1000), (unsigned)rxWakes, (unsigned)rxSleeps);
+  if (rxPower != PW_RUN || rxHopCh)   // строка раз в секунду — только вне работы или пока ждём перехода
+    Serial.printf("переходів на інший канал разом з передавачем %u (з них уві сні чи в очікуванні %u)%s\n", (unsigned)rxHops,
+                  (unsigned)rxHopsLate, rxHopCh ? "; оголошено перехід — чекаю" : "");
   if (cfg.output == OUT_PDM && (rxPower != PW_RUN || !rxOutLive()))
     Serial.printf("виводи виходу: %u і %u %% одиниць (%s)\n", rxOutDuty[0], rxOutDuty[1], rxOutLive() ? "сигнал іде" : "стоять");
   if (lcdEmiDone) {   // проверка Y22 кончилась

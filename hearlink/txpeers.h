@@ -61,8 +61,132 @@ struct CmdSlot {
   uint8_t left;      // сколько раз ещё послать
   bool wide;
 };
-static CmdSlot cmdQ[4];       // команды лежат открытыми; шифруются при отправке, в задаче передачи
+// Команды лежат открытыми; шифруются при отправке, в задаче передачи. С 3.30 / 4.00 — 16 мест, по порядку номеров, с
+// заменой ещё не ушедшей той же настройки того же приёмника. До них было 4 места и уходило первое занятое по месту,
+// а не по номеру: на «найвищій» со стерео место в эфире для служебных пакетов редкое (пакет звука до эфира 2,75 мс из
+// 4), команды копились, новая вставала в освободившееся место впереди старой — и приёмник старую отбрасывал (берёт
+// только номер больше прежнего: «старих (повторів)» 24 → 32), а при занятых четырёх новая молча пропадала. Владелец
+// 21.10: «я выставляю нули, а настройки не применяются и не сохраняются» (из 16 нажатий эквалайзера дошло 11).
+#define CMDQ_N 16
+static CmdSlot cmdQ[CMDQ_N];
 static uint32_t cmdCtr;
+static volatile uint8_t cmdPending;                 // сколько мест занято (задаче передачи: команды ждут эфира)
+static volatile uint32_t cmdSent, cmdMerged, cmdDropped;   // копий ушло / заменено новой той же настройки / вытеснено из полной
+
+// ---- сверка настроек (с 3.30 / 4.00): что задано с передатчика — и что приёмник сообщил о себе
+// Каждая заданная настройка (эквалайзер, «для слуха и удобства», обработка, громкость, выход) ждёт подтверждения: пока
+// приёмник не сообщил заданное значение, на экране — заданное, а на каждое его сообщение (раз в 2 с), если с прошлой
+// отправки прошло 1,5 с, команда уходит снова — до 20 раз. Не дошло и так — экран показывает то, что у приёмника на
+// деле, в порт — «не прийняв». Включение и выключение приёмника идёт своим путём (wantOff, ниже) — тоже до подчинения.
+struct PendSet {
+  uint8_t id[3];
+  uint8_t cmd;       // CMD_EQ / CMD_SET / CMD_SET2 / CMD_VOLUME / CMD_STEREO; 0 — место свободно
+  uint8_t key;       // полоса / номер настройки (громкость, выход — 0)
+  uint8_t arg;       // что задано — как в команде
+  uint8_t tries;     // сколько раз послано
+  uint32_t sentMs;   // когда послано последний раз
+};
+#define PEND_N 24
+static PendSet pendSet[PEND_N];
+static volatile uint32_t pendOk, pendResent, pendLost;   // подтверждено / послано повторно / так и не принято
+// ключ настройки: какая полоса или какой номер; 0xFF — команда-действие (не сливается и не сверяется)
+static uint8_t cmdKey(uint8_t cmd, uint8_t arg) {
+  switch (cmd) {
+    case CMD_EQ: return arg >> 4;
+    case CMD_SET:
+    case CMD_SET2: return arg >> 5;
+    case CMD_VOLUME:
+    case CMD_STEREO:
+    case CMD_ENABLE:
+    case CMD_MUTE:
+    case CMD_NAME:
+    case CMD_EARTEST: return 0;
+    default: return 0xFF;
+  }
+}
+static bool pendTracked(uint8_t cmd, uint8_t arg) {
+  switch (cmd) {
+    case CMD_EQ: return (arg >> 4) <= 5;
+    case CMD_SET: return (arg >> 5) < RXP_COUNT || (arg >> 5) == RXP_X_LOCK || (arg >> 5) == RXP_X_BOOST;
+    case CMD_SET2: return (arg >> 5) <= 5;   // 6 — «запомнить шум сейчас»: действие, а не значение
+    case CMD_VOLUME:
+    case CMD_STEREO: return true;
+    default: return false;
+  }
+}
+// под peerMux
+static PendSet *pendFind(const uint8_t *id, uint8_t cmd, uint8_t key) {
+  for (auto &e : pendSet)
+    if (e.cmd == cmd && e.key == key && !memcmp(e.id, id, 3)) return &e;
+  return nullptr;
+}
+static void pendTrack(const uint8_t *id, uint8_t cmd, uint8_t arg) {
+  uint8_t key = cmdKey(cmd, arg);
+  PendSet *e = pendFind(id, cmd, key);
+  if (!e)
+    for (auto &x : pendSet)
+      if (!x.cmd) {
+        e = &x;
+        break;
+      }
+  if (!e) {   // список полон — вытеснить самую давнюю
+    e = &pendSet[0];
+    for (auto &x : pendSet)
+      if ((int32_t)(x.sentMs - e->sentMs) < 0) e = &x;
+  }
+  memcpy(e->id, id, 3);
+  e->cmd = cmd;
+  e->key = key;
+  e->arg = arg;
+  e->tries = 1;
+  e->sentMs = millis() | 1;
+}
+static void pendDrop(const uint8_t *id) {   // приёмник удалён из набора
+  for (auto &e : pendSet)
+    if (e.cmd && !memcmp(e.id, id, 3)) e.cmd = 0;
+}
+struct PendAgain {
+  uint8_t id[3], cmd, arg;
+};
+#define PEND_AGAIN 12
+static volatile uint8_t pendLastLost[5];   // кто и что не принял последним: номер приёмника, команда, ключ (печатает reportTx)
+// Под peerMux: приёмник k сообщил значение rep настройки (cmd, key). Если она ждёт подтверждения: сошлось — подтверждена;
+// не сошлось и с прошлой отправки прошло 1,5 с — послать снова (в again, уйдёт после замка); 20 раз не дошло — сдаться.
+// true — на экране оставить заданное (ещё ждёт), false — взять то, что сообщил приёмник.
+static bool pendSeen(int k, uint8_t cmd, uint8_t key, uint8_t rep, PendAgain *again, int &na) {
+  PendSet *e = pendFind(peers[k].id, cmd, key);
+  if (!e) return false;
+  uint8_t want = cmd == CMD_EQ ? (key < 5 ? (e->arg & 15) : (e->arg & 1))
+               : cmd == CMD_SET ? (key == RXP_X_LOCK ? (e->arg & 3) : (e->arg & 31))
+               : cmd == CMD_SET2 ? (e->arg & 31)
+               : cmd == CMD_VOLUME ? (e->arg > 20 ? 20 : e->arg)
+               : (e->arg ? 1 : 0);
+  if (rep == want) {
+    e->cmd = 0;
+    pendOk = pendOk + 1;
+    return false;
+  }
+  uint32_t now = millis();
+  if (now - e->sentMs < 1500) return true;   // ещё в пути
+  if (e->tries >= 20) {
+    memcpy((void *)pendLastLost, e->id, 3);
+    pendLastLost[3] = cmd;
+    pendLastLost[4] = key;
+    e->cmd = 0;
+    pendLost = pendLost + 1;
+    return false;
+  }
+  e->tries++;
+  e->sentMs = now | 1;
+  pendResent = pendResent + 1;
+  if (na < PEND_AGAIN) {
+    memcpy(again[na].id, e->id, 3);
+    again[na].cmd = cmd;
+    again[na].arg = e->arg;
+    na++;
+  }
+  return true;
+}
 static volatile uint32_t txSeenSent;   // сколько объявлений «кого слышу» ушло (для отчёта)
 
 // ---- подключение приёмников (см. sec.h). Просьбы слушаем, только пока открыто окно добавления.
@@ -104,7 +228,8 @@ static bool peerOnline(const Peer &p) {
   return p.seenMs && msSince(p.seenMs) < 7000;
 }
 
-static void peerCommand(const uint8_t *id, uint8_t cmd, uint8_t arg, const char *name = nullptr) {
+// Положить команду в очередь (без сверки — её ведёт peerCommand).
+static void peerQueue(const uint8_t *id, uint8_t cmd, uint8_t arg, const char *name = nullptr) {
   TxCommand2 c = {};
   c.magic = MAGIC_COMMAND;
   c.ver = PROTO_VER;
@@ -120,13 +245,36 @@ static void peerCommand(const uint8_t *id, uint8_t cmd, uint8_t arg, const char 
   if (name) utf8Copy(c.name, name, wide ? NAME_LONG : NAME_LEN);
   portENTER_CRITICAL(&peerMux);
   c.ctr = ++cmdCtr;
-  for (auto &q : cmdQ)
-    if (!q.left) {
-      q.c = c;
-      q.wide = wide;
-      q.left = 4;
-      break;
+  uint8_t key = cmdKey(cmd, arg);
+  CmdSlot *slot = nullptr, *oldest = nullptr;
+  for (auto &q : cmdQ) {
+    if (q.left && key != 0xFF && q.c.cmd == cmd && !memcmp(q.c.id, id, 3) && cmdKey(q.c.cmd, q.c.arg) == key) {
+      q.left = 0;   // та же настройка того же приёмника ещё не ушла — новая её заменяет
+      cmdMerged = cmdMerged + 1;
     }
+    if (!q.left) {
+      if (!slot) slot = &q;
+    } else if (!oldest || (int32_t)(q.c.ctr - oldest->c.ctr) < 0) oldest = &q;
+  }
+  if (!slot) {   // все места заняты — вытесняется самая старая (раньше пропадала новая)
+    slot = oldest;
+    cmdDropped = cmdDropped + 1;
+  }
+  slot->c = c;
+  slot->wide = wide;
+  slot->left = 4;
+  uint8_t n = 0;
+  for (auto &q : cmdQ) n += q.left ? 1 : 0;
+  cmdPending = n;
+  txAuxWant = true;
+  portEXIT_CRITICAL(&peerMux);
+}
+
+static void peerCommand(const uint8_t *id, uint8_t cmd, uint8_t arg, const char *name = nullptr) {
+  peerQueue(id, cmd, arg, name);
+  if (!pendTracked(cmd, arg)) return;
+  portENTER_CRITICAL(&peerMux);
+  pendTrack(id, cmd, arg);
   portEXIT_CRITICAL(&peerMux);
 }
 
@@ -157,7 +305,7 @@ static void hopAnnounce(uint8_t ch, uint32_t atSeq) {
 // вызывается задачей передачи после каждого пакета звука: не чаще одной команды на 10 мс
 static void peersPump() {
   static uint8_t skip;
-  if (++skip < 5) return;
+  if (!cmdPending && !pairOut.left && ++skip < 5) return;   // команды ждут — без паузы (с 3.30 / 4.00)
   skip = 0;
   {   // «кого слышу» — раз в две секунды (proto.h, TxSeen). Не во время объявленного перехода на другой канал:
       // в эти 0,2 с эфир нужен объявлению о переходе.
@@ -193,16 +341,30 @@ static void peersPump() {
       }
     }
   }
-  for (auto &q : cmdQ)
-    if (q.left) {
-      TxCommand2 s = q.c;   // копия: повтор той же команды шифруется так же
-      size_t bl = q.wide ? CMD2_BODY : CMD_BODY;   // прежний вид — это начало длинного, только имя короче
-      uint8_t *b = (uint8_t *)&s;
-      secSeal(SEC_COMMAND, s.epoch, s.ctr, s.id, b, CMD_CLEAR, b + CMD_CLEAR, bl, b + CMD_CLEAR + bl);
-      radioSend(b, CMD_CLEAR + bl + SEC_TAG);
-      q.left--;
-      return;
-    }
+  CmdSlot *q = nullptr;   // по порядку номеров: приёмник берёт только номер больше прежнего
+  portENTER_CRITICAL(&peerMux);
+  for (auto &x : cmdQ)
+    if (x.left && (!q || (int32_t)(x.c.ctr - q->c.ctr) < 0)) q = &x;
+  TxCommand2 s;
+  bool wideQ = false;
+  if (q) {
+    s = q->c;   // копия: повтор той же команды шифруется так же
+    wideQ = q->wide;
+    q->left--;
+    uint8_t n = 0;
+    for (auto &x : cmdQ) n += x.left ? 1 : 0;
+    cmdPending = n;
+    if (!n && !pairOut.left) txAuxWant = false;
+  }
+  portEXIT_CRITICAL(&peerMux);
+  if (q) {
+    size_t bl = wideQ ? CMD2_BODY : CMD_BODY;   // прежний вид — это начало длинного, только имя короче
+    uint8_t *b = (uint8_t *)&s;
+    secSeal(SEC_COMMAND, s.epoch, s.ctr, s.id, b, CMD_CLEAR, b + CMD_CLEAR, bl, b + CMD_CLEAR + bl);
+    radioSend(b, CMD_CLEAR + bl + SEC_TAG);
+    cmdSent = cmdSent + 1;
+    return;
+  }
   if (pairOut.left) {
     radioSend(pairOut.data, sizeof(PairRsp));
     pairOut.left = pairOut.left - 1;
@@ -233,6 +395,7 @@ static void peersPump() {
     memset(&k, 0, sizeof(k));
     return;
   }
+  if (!cmdPending && !pairOut.left) txAuxWant = false;   // служебное ушло всё — свободный кадр снова ждёт драйвер
 }
 
 // из задачи Wi-Fi: приёмник набора слышит передатчик, но ключ у него старый (был выключен, когда ключ меняли)
@@ -259,6 +422,7 @@ static void peerOnKeyReq(const KeyReq *q) {
   }
   p.keyPushMs = now ? now : 1;
   p.keyPush = 3;
+  txAuxWant = true;
 }
 
 // из задачи Wi-Fi: приёмник без ключа просит доступ
@@ -270,6 +434,7 @@ static void pairOnReq(const PairReq *r) {
     // другой — так второй приёмник 07.10 остался без ключа). Он только что подал голос — значит, слушает нас сейчас:
     // повторить тот же ответ.
     if (!pairOut.left) pairOut.left = 4;
+    txAuxWant = true;
     return;
   }
   int slot = -1;
@@ -326,6 +491,7 @@ static void pairTick() {
       if (p.used) {
         if (p.hasDev) {
           p.keyPush = 6;
+          txAuxWant = true;
           left++;
         } else noDev++;
       }
@@ -386,6 +552,7 @@ static void pairTick() {
   }
   memcpy(pairOut.data, &rsp, sizeof(rsp));
   pairOut.left = 10;       // десять раз подряд, раз в 10 мс
+  txAuxWant = true;
   memcpy(pairLastId, a.id, 3);
   pairLastMs = now ? now : 1;
   pairAsk[k].used = false;
@@ -416,14 +583,19 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
       secReplay = secReplay + 1;
       return;
     }
+    PendAgain again[PEND_AGAIN];
+    int na = 0;
     portENTER_CRITICAL(&peerMux);
     int k = peerFind(ri->id);
     if (k >= 0) {
-      if (!peers[k].parSetMs || msSince(peers[k].parSetMs) > 2500)
-        for (int j = 0; j < 7; j++) peers[k].fx[j] = body[j] > (j < 3 ? 3 : 4) ? 0 : body[j];   // fx[3] и spare[0…3] идут подряд
+      for (int j = 0; j < 7; j++) {   // fx[3] и spare[0…3] идут подряд; неподтверждённое заданное — не затирать (сверка)
+        uint8_t v = body[j] > (j < 3 ? 3 : 4) ? 0 : body[j];
+        if (!pendSeen(k, CMD_SET2, j, v, again, na)) peers[k].fx[j] = v;
+      }
       peers[k].hasFx = true;
     }
     portEXIT_CRITICAL(&peerMux);
+    for (int j = 0; j < na; j++) peerQueue(again[j].id, again[j].cmd, again[j].arg);
     return;
   }
   if (len == (int)sizeof(RxInfo)) {   // настройки приёмника (2.32+): подпись и свежесть проверяются так же, как у сведений
@@ -437,13 +609,16 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
       secReplay = secReplay + 1;
       return;
     }
+    PendAgain again[PEND_AGAIN];
+    int na = 0;
     portENTER_CRITICAL(&peerMux);
     int k = peerFind(ri->id);
     if (k >= 0) {
-      // Только что сменили настройку отсюда — приёмник ещё может прислать прежнее значение (сообщение ушло раньше
-      // команды): две с половиной секунды верим себе, иначе число на экране дёрнулось бы назад и снова вперёд.
+      // Заданное отсюда и ещё не подтверждённое приёмником на экране не затирается (сверка, pendSeen; до 3.30 / 4.00 — просто
+      // 2,5 с верили себе, а потом экран показывал прежнее, если команда не дошла). Проверка наушников — по-прежнему.
+      for (int j = 0; j < RXP_COUNT; j++)
+        if (!pendSeen(k, CMD_SET, j, body[j], again, na)) peers[k].par[j] = body[j];
       if (!peers[k].parSetMs || msSince(peers[k].parSetMs) > 2500) {
-        memcpy(peers[k].par, body, RXP_COUNT);
         peers[k].earTest = body[RXP_COUNT];
         peers[k].parSetMs = 0;
       }
@@ -452,16 +627,20 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
       peers[k].fwMaj = fj;
       peers[k].fwMin = fn;
       peers[k].hasEq = body[RXP_COUNT + 5] & 0x80;
-      if (!peers[k].parSetMs || msSince(peers[k].parSetMs) > 2500) {
+      {
         const uint8_t *e = body + RXP_COUNT + 3;
-        peers[k].eq[0] = e[0] & 15; peers[k].eq[1] = e[0] >> 4; peers[k].eq[2] = e[1] & 15; peers[k].eq[3] = e[1] >> 4;
-        peers[k].eq[4] = e[2] & 15; peers[k].lowCut = (e[2] >> 4) & 1;
-        peers[k].lock = (e[2] >> 5) & 3;
-        peers[k].boost = body[RXP_COUNT + 1] >> 4;
+        uint8_t eq[5] = { (uint8_t)(e[0] & 15), (uint8_t)(e[0] >> 4), (uint8_t)(e[1] & 15), (uint8_t)(e[1] >> 4), (uint8_t)(e[2] & 15) };
+        uint8_t low = (e[2] >> 4) & 1, lock = (e[2] >> 5) & 3, boost = body[RXP_COUNT + 1] >> 4;
+        for (int j = 0; j < 5; j++)
+          if (!pendSeen(k, CMD_EQ, j, eq[j], again, na)) peers[k].eq[j] = eq[j];
+        if (!pendSeen(k, CMD_EQ, 5, low, again, na)) peers[k].lowCut = low;
+        if (!pendSeen(k, CMD_SET, RXP_X_LOCK, lock, again, na)) peers[k].lock = lock;
+        if (!pendSeen(k, CMD_SET, RXP_X_BOOST, boost, again, na)) peers[k].boost = boost;
       }
       peers[k].hasInfo = true;
     }
     portEXIT_CRITICAL(&peerMux);
+    for (int j = 0; j < na; j++) peerQueue(again[j].id, again[j].cmd, again[j].arg);
     return;
   }
   static RxStatus2 plain;
@@ -482,6 +661,8 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
     return;
   }
   if (removedMs && msSince(removedMs) < 5000 && !memcmp(removedId, st->id, 3)) return;   // только что удалён — в список не возвращать
+  PendAgain again[PEND_AGAIN];   // неподтверждённые настройки, которые пора послать снова (уйдут после замка)
+  int na = 0;
   portENTER_CRITICAL(&peerMux);
   int i = peerFind(st->id);
   if (i < 0)
@@ -503,8 +684,12 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
       utf8Copy(p.name, st->name, NAME_LONG);
       peersDirty = true;
     }
-    p.volume = st->volume;
-    p.flags = st->flags;
+    if (!pendSeen(i, CMD_VOLUME, 0, st->volume, again, na)) p.volume = st->volume;
+    {   // выход (два канала / протифаза): заданное и не подтверждённое — не затирать
+      uint8_t fl = st->flags;
+      if (pendSeen(i, CMD_STEREO, 0, (fl & ST_STEREO) ? 1 : 0, again, na)) fl = (uint8_t)((fl & ~ST_STEREO) | (p.flags & ST_STEREO));
+      p.flags = fl;
+    }
     p.depthMs = st->depthMs;
     p.lossPm = st->lossPm;
     p.lostFrames = st->lostFrames;
@@ -564,6 +749,7 @@ static void peerOnStatus(const uint8_t *data, int len, int8_t rssiHere) {
   }
   portEXIT_CRITICAL(&peerMux);
   if (resend) peerCommand(id, CMD_ENABLE, off ? 0 : 1);
+  for (int j = 0; j < na; j++) peerQueue(again[j].id, again[j].cmd, again[j].arg);
 }
 
 // Скорость радио «сама» (переписано в 2.73 после замера 12.10). До этого — лестница 5,5 → 2 → 1 → 0,5 Мбит/с, по
@@ -841,6 +1027,7 @@ static void peerRemove(int i) {
 static void peerForget(int i) {
   portENTER_CRITICAL(&peerMux);
   peers[i].used = false;
+  pendDrop(peers[i].id);
   portEXIT_CRITICAL(&peerMux);
   peersDirty = true;
 }
@@ -890,4 +1077,14 @@ static void peersPrint() {
     if (p.aN) Serial.printf("    звук від команди P0: повідомлень %u, втрати в середньому %.1f %%; пропало звуку %u мс (у %u повідомленнях), провалів %u мс%s; сигнал згладжено %.0f дБм\n", (unsigned)p.aN, p.aLossSum / 10.0f / p.aN, (unsigned)p.aLost, (unsigned)p.aBad, (unsigned)p.aUnder, p.aCap ? "; лік упирався в межу — насправді більше" : "", p.rssiSm);
   }
   if (!n) Serial.println("  приймачів у списку немає");
+  {   // команды приёмникам и сверка настроек (с 3.30 / 4.00)
+    int pend = 0;
+    portENTER_CRITICAL(&peerMux);
+    for (auto &e : pendSet) pend += e.cmd ? 1 : 0;
+    portEXIT_CRITICAL(&peerMux);
+    Serial.printf("  команди приймачам: у черзі %u, копій надіслано %u, замінено новішою %u, витіснено з повної черги %u; "
+                  "налаштувань чекає підтвердження %d, підтверджено %u, надіслано повторно %u, не прийнято %u\n",
+                  (unsigned)cmdPending, (unsigned)cmdSent, (unsigned)cmdMerged, (unsigned)cmdDropped, pend, (unsigned)pendOk,
+                  (unsigned)pendResent, (unsigned)pendLost);
+  }
 }

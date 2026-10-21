@@ -516,6 +516,7 @@ static bool rxSleepCycle() {
   esp_wifi_start();
   esp_wifi_set_ps(WIFI_PS_NONE);
   radioStartEspNow();
+  if (rxHopCh) rxHopDo(false, true);   // объявление перехода поймано в прошлом окне — передатчик уже там (см. rxHopCh)
   uint32_t c0 = rAudioCount, t0 = millis();
   while (millis() - t0 < 70 && rAudioCount - c0 < 2) delay(5);
   if (rAudioCount - c0 < 2 && cfg.autoChannel && (++round & 3) == 0) {   // на своём канале тихо — заглянуть на остальные
@@ -638,9 +639,17 @@ static void rxPowerTick() {
   }
 }
 
+// Переход, объявленный передатчиком, а задача звука стоит (нет звука: ожидание, выключен с передатчика, поиск) — сделать
+// здесь, с запасом 150 мс после срока (задача звука, если идёт, успевает раньше). Иначе висящий переход навсегда
+// заглушает сообщения о себе (ниже) — см. rxHopCh в rxaudio.h.
+static void rxHopTick() {
+  if (rxHopCh && (int32_t)(millis() - rxHopDeadline) >= 150) rxHopDo(false, true);
+}
+
 static void rxLinkTick() {
   static uint32_t nextMs = 1500;
   uint32_t now = millis();
+  rxHopTick();
   {   // настройку сменили с передатчика — записать, но в паузе звука (см. rxQuietToSave)
     static uint32_t saveDue;
     if (rxSaveAsked) {
