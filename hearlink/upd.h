@@ -21,12 +21,16 @@
 #include <sys/stat.h>
 
 #define UPD_DIR "/sd/UPDATE"
-#define FW_TAG_KEY "HEARLINK-FW:"
+// Метка образа (с 4.00 — «Next Edition», набор с мостом на Pi Pico): «HEARLINK-NE:4.00». У первой модификации (до 3.29
+// включительно) метка «HEARLINK-FW:…» — эти передатчики берут с карты только её, и образ 4.x им не подходит (в образе 4.x
+// той метки нет вовсе: даже ключ для её узнавания собирается при работе — updIsFirstEd). Владелец 21.10: «прошлая уже
+// является финальной и не совместимой с новыми обновлениями… брать новые обновления старое устройство не должно».
+#define FW_TAG_KEY "HEARLINK-NE:"
 enum { UPD_NONE = 0, UPD_NOCARD, UPD_SCAN, UPD_NOFILE, UPD_SAME, UPD_READY, UPD_BAD, UPD_OLDER };
 // UPD_OLDER — в файле прошивка старше той, что работает: само не предлагается (на экране об этом сказано); поставить
 // её всё же можно с порта командой M5 — на случай, когда надо вернуться на прежнюю версию.
 // почему файл не годится
-enum { UB_OK = 0, UB_NOTFW, UB_BROKEN, UB_SIZE, UB_FOREIGN, UB_MEM };
+enum { UB_OK = 0, UB_NOTFW, UB_BROKEN, UB_SIZE, UB_FOREIGN, UB_MEM, UB_FIRSTED };   // UB_FIRSTED — прошивка первой модификации (3.x)
 struct Upd {
   volatile uint8_t state = UPD_NONE;
   volatile bool scanAsk = false;
@@ -57,6 +61,16 @@ static bool updFindVersion(const uint8_t *b, uint32_t len, char *out, size_t cap
   }
   return false;
 }
+// Образ первой модификации (метка «HEARLINK-FW:»)? Ключ собирается при работе из байтов, сдвинутых на единицу, — иначе
+// он лёг бы в образ 4.x готовой строкой, и передатчик 3.29 принял бы такой образ за свой.
+static bool updIsFirstEd(const uint8_t *b, uint32_t len) {
+  static const uint8_t K1[] = { 'H' + 1, 'E' + 1, 'A' + 1, 'R' + 1, 'L' + 1, 'I' + 1, 'N' + 1, 'K' + 1, '-' + 1, 'F' + 1, 'W' + 1, ':' + 1 };
+  char k[sizeof(K1)];
+  for (size_t i = 0; i < sizeof(K1); i++) k[i] = (char)(*(volatile const uint8_t *)&K1[i] - 1);
+  for (uint32_t i = 0; i + sizeof(k) < len; i++)
+    if (b[i] == 'H' && !memcmp(b + i, k, sizeof(k))) return true;
+  return false;
+}
 static float updVerNum(const char *v) {
   int a = 0, b = 0;
   sscanf(v, "%d.%d", &a, &b);
@@ -74,7 +88,7 @@ static uint8_t updCheck(const uint8_t *b, uint32_t size, uint32_t *len, char *ve
   uint8_t sha[32];
   otaSha(b, l - 32, sha, true);
   if (memcmp(sha, b + l - 32, 32)) return UB_BROKEN;
-  if (!updFindVersion(b, l, ver, verCap)) return UB_FOREIGN;
+  if (!updFindVersion(b, l, ver, verCap)) return updIsFirstEd(b, l) ? UB_FIRSTED : UB_FOREIGN;
   *len = l;
   return UB_OK;
 }

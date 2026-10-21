@@ -402,6 +402,7 @@ static const char *const LANG_EN[][2] = {
   { "На картці та сама прошивка, що вже працює (%s).", "The card has the firmware already running (%s)." },
   { "У теці UPDATE на картці прошивки немає.", "No firmware in the UPDATE folder on the card." },
   { "Файл %s не годиться.", "File %s is not usable." },
+  { "%s — прошивка першої модифікації (3.x), не для цього набору.", "%s is first-edition firmware (3.x), not for this kit." },
   { "На картці старіша прошивка (%s) — не пропоную.", "The card has older firmware (%s) — not offered." },
   { "Картки пам'яті немає.", "No memory card." },
   { "Дивлюсь, що на картці…", "Checking the card…" },

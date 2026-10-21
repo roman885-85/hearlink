@@ -1680,7 +1680,11 @@ static void drawOtaModal() {
       case 5: snprintf(t, sizeof(t), tr("На картці є прошивка %s."), o.cardVer); cink = C_OK; break;
       case 4: snprintf(t, sizeof(t), tr("На картці та сама прошивка, що вже працює (%s)."), o.cardVer); break;
       case 3: snprintf(t, sizeof(t), "%s", tr("У теці UPDATE на картці прошивки немає.")); break;
-      case 6: snprintf(t, sizeof(t), tr("Файл %s не годиться."), o.cardFile); cink = C_WARN; break;
+      case 6:
+        if (o.cardWhy == UB_FIRSTED) snprintf(t, sizeof(t), tr("%s — прошивка першої модифікації (3.x), не для цього набору."), o.cardFile);
+        else snprintf(t, sizeof(t), tr("Файл %s не годиться."), o.cardFile);
+        cink = C_WARN;
+        break;
       case 7: snprintf(t, sizeof(t), tr("На картці старіша прошивка (%s) — не пропоную."), o.cardVer); break;
       case 1: snprintf(t, sizeof(t), "%s", tr("Картки пам'яті немає.")); break;
       default: snprintf(t, sizeof(t), "%s", tr("Дивлюсь, що на картці…")); break;
