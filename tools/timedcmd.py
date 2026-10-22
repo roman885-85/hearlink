@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """Команди платі в задані моменти й увесь її друк у файл (з мітками часу).
    python3 tools/timedcmd.py <порт> <секунд> <файл> [t:команда …]   (t — секунди від відкриття порту)
-Наприклад: timedcmd.py /dev/cu.usbserial-1460 60 log.txt 0:P 2:h2 20:P 45:"E1 4C3B10" 60:P"""
+Наприклад: timedcmd.py /dev/cu.usbserial-1460 60 log.txt 0:P 2:h2 20:P 45:"E1 4C3B10" 60:P
+Міст (Pico, USB): HL_DTR=1 — DTR тримати піднятим, бо без нього stdio_usb вважає, що термінала немає, і мовчить.
+Команди моста — по одній букві без кінця рядка: HL_NOLF=1."""
 import fcntl, os, select, struct, sys, termios, time
 
 port, secs, out = sys.argv[1], float(sys.argv[2]), sys.argv[3]
@@ -13,14 +15,18 @@ a[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
 a[4] = a[5] = termios.B115200
 a[6][termios.VMIN] = 0; a[6][termios.VTIME] = 0
 termios.tcsetattr(fd, termios.TCSANOW, a)
-fcntl.ioctl(fd, 0x8004746b, struct.pack('I', 0x002 | 0x004))   # DTR і RTS відпустити (автоскидання ESP32)
+if os.environ.get('HL_DTR'):
+    fcntl.ioctl(fd, 0x8004746c, struct.pack('I', 0x002 | 0x004))   # DTR і RTS підняти (TIOCMBIS): Pico чекає термінал
+else:
+    fcntl.ioctl(fd, 0x8004746b, struct.pack('I', 0x002 | 0x004))   # DTR і RTS відпустити (автоскидання ESP32)
+eol = '' if os.environ.get('HL_NOLF') else '\n'
 log = open(out, 'w', encoding='utf-8')
 t0, buf = time.time(), b''
 while time.time() - t0 < secs:
     now = time.time() - t0
     while plan and now >= plan[0][0]:
         c = plan.pop(0)[1]
-        os.write(fd, (c + '\n').encode())
+        os.write(fd, (c + eol).encode())
         log.write('%6.1f  >>> %s\n' % (now, c))
     if select.select([fd], [], [], 0.1)[0]:
         try:
