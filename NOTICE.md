@@ -8,6 +8,8 @@
 | Arduino-ESP32 core 3.3.x / ESP-IDF 5.5 (not included) | build | Apache 2.0, LGPL 2.1 |
 | Helix MP3 decoder shipped with the Arduino-ESP32 core (not included) | `hearlink/txmp3.h` uses it | RPSL / RCSL |
 | esptool by Espressif — included only in the release flashing kit | `kit/tools/esptool` | GPL-2.0-or-later |
+| pico_spdif_rx by Elehobica — S/PDIF/AES receiver for RP2040, copy with small changes (see its `README.hearlink.md`) | `bridge/lib/pico_spdif_rx` | BSD 2-Clause |
+| Raspberry Pi Pico SDK (not included, installed by `bridge/setup-rp2040.sh`) | bridge build | BSD 3-Clause |
 | Test music and voice announcements — AI-generated, part of this project | `assets-src/`, release file `assets.bin` | MIT (this project) |
 
 Photos in `docs/photos/` show third-party modules and belong to their manufacturers and sellers; they are not covered
