@@ -487,6 +487,17 @@ int main() {
   modal = M_NONE;
   needFull = true;
   frame(false, 0, 0);
+  // с 22.10: третий вариант — мост с симметричным аналоговым входом (cfg.pcmDiff)
+  view.val[P_INPUT] = 2;
+  needFull = true;
+  frame(false, 0, 0);
+  save("05d-zvuk-symetrychnyi");
+  tap(360, 245);
+  save("05e-zvuk-dzherelo-symetrychnyi");
+  modal = M_NONE;
+  view.val[P_INPUT] = 0;
+  needFull = true;
+  frame(false, 0, 0);
   OPT_TRACK[1] = "Morning in the Conservatory";
   OPT_TRACK[2] = "Ранкова прогулянка";
   OPT_TRACK[3] = nullptr;
@@ -831,6 +842,14 @@ int main() {
       for (int k = 0; k < 3; k++) frame(false, 0, 0);
       save(EN[pg]);
     }
+    page = PG_SOUND;   // окно «Вхід передавача» с третьим вариантом (симметричный аналоговый вход) — помещается ли
+    view.val[P_INPUT] = 2;
+    needFull = true;
+    frame(false, 0, 0);
+    tap(360, 245);
+    save("en-3b-input-balanced");
+    modal = M_NONE;
+    view.val[P_INPUT] = 0;
     page = PG_HELP;
     article = 3;
     articlePage = 0;

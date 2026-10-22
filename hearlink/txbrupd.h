@@ -302,7 +302,7 @@ static void txBridgeTick() {
     txBr.kick = false;
     lastSet = now;
     uint8_t src = cfg.bridgeSrc == BP_SRC_AES || cfg.bridgeSrc == BP_SRC_USB ? cfg.bridgeSrc : BP_SRC_PCM;
-    uint8_t d[4] = { src, BP_FMT_LJ, txBr.gen, ++txBr.seq };
+    uint8_t d[4] = { src, (uint8_t)(BP_FMT_LJ | (cfg.pcmDiff ? BP_PCM_DIFF : 0)), txBr.gen, ++txBr.seq };
     txBridgeSend(BP_SET, d, sizeof(d));
   }
 }
@@ -330,7 +330,8 @@ static void txBridgePrint() {
   static const char *const AES[] = { "немає сигналу", "ловлю", "є", "частота, якої міст не бере" };
   uint32_t now = millis();
   Serial.printf("міст: обрано %s; перевірочний сигнал: %s; кадрів стану %u, зіпсованих %u, байтів зворотного каналу втрачено %u, команд надіслано %u\n",
-                cfg.bridgeSrc == BP_SRC_AES ? "цифровий вхід" : cfg.bridgeSrc == BP_SRC_USB ? "вхід USB" : "аналоговий вхід",
+                cfg.bridgeSrc == BP_SRC_AES ? "цифровий вхід" : cfg.bridgeSrc == BP_SRC_USB ? "вхід USB"
+                : cfg.pcmDiff ? "аналоговий вхід, СИМЕТРИЧНИЙ (різниця каналів, моно; C10 — стерео)" : "аналоговий вхід (стерео; C11 — симетричний)",
                 GEN[txBr.gen <= BP_GEN_SWEEP ? txBr.gen : 0], (unsigned)txBr.frames,
                 (unsigned)txBr.bad, (unsigned)brLost, (unsigned)txBr.sent);
   {

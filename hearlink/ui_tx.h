@@ -451,7 +451,7 @@ static void task(void *) {
     v.gateThrDb = txGateThrDb;
     v.gateOpen = txGateOpen;
     v.gateActive = txGateActive;
-    v.val[ui::P_INPUT] = cfg.input;
+    v.val[ui::P_INPUT] = cfg.input == IN_I2S ? (cfg.pcmDiff ? 2 : 1) : 0;   // 2 — мост, аналоговый вход симметричный
     v.val[ui::P_TONE] = cfg.tone;
     v.lastTone = cfg.lastTone;
     v.muted = txMute;
@@ -917,14 +917,20 @@ static void task(void *) {
         case ui::P_VOICE_DB: cfg.voiceDb = val; break;
         case ui::P_BRIGHT: cfg.brightness = val; break;
         case ui::P_DIM: cfg.dimIdx = val; break;
-        case ui::P_INPUT:
-          if (cfg.input != val) {   // вход запускается при старте — нужен перезапуск
-            cfg.input = val;
+        case ui::P_INPUT: {   // 0 — встроенный, 1 — мост, 2 — мост с симметричным аналоговым входом (cfg.pcmDiff)
+          uint8_t in = val ? IN_I2S : IN_ADC, diff = val == 2 ? 1 : 0;
+          if (cfg.pcmDiff != diff) {   // это мосту — сейчас же, без перезапуска
+            cfg.pcmDiff = diff;
+            txBr.kick = true;
+          }
+          if (cfg.input != in) {   // вход запускается при старте — нужен перезапуск
+            cfg.input = in;
             settingsSave();
             vTaskDelay(pdMS_TO_TICKS(200));
             ESP.restart();
           }
           break;
+        }
       }
       o.setParam = -1;
       saveAt = now + 600;   // запись почти сразу: выключили питание через секунду после изменения — оно не должно пропасть

@@ -345,6 +345,9 @@ static inline void __not_in_flash_func(outPoll)(void) {
 // слів), рішення — лише за явних ознак, щоб тиша чи постійний зсув нуля його не перемикали.
 static uint32_t pcmN, pcmB7, pcmB31;
 static volatile uint8_t pcmShift = 1;   // так виміряно з FMT на 3,3 В; перевіряється на ходу
+// Симетричний аналоговий вхід (BP_PCM_DIFF, bridge_proto.h): у перерахунок іде (Л − П) / 2 в обидва канали. Ставить
+// передавач (BP_SET) або буква d у порту USB (на столі, до перезапуску).
+static volatile bool pcmDiffTx, pcmDiffLocal;
 
 // 32-бітне слово зі звуком у старших 24 бітах → 24 біти зі знаком, без округлень: перерахунок частоти бере всі 24
 // (asrc.c). До 22.10 тут ставало 16 біт: спершу відкиданням молодших (крихітний сигнал пульта біля нуля ставав
@@ -371,6 +374,10 @@ static uint32_t __not_in_flash_func(pcmPull)(bool feed) {
           if (w & 0x80000000u) pcmB31++;
         }
         tmp[2 * n + k] = to24(pcmShift ? w << 1 : w);
+      }
+      if (pcmDiffTx || pcmDiffLocal) {   // симетричний вхід: різниця — сигнал, однакове в обох проводах (гул) — геть
+        int32_t m = (tmp[2 * n] - tmp[2 * n + 1]) >> 1;
+        tmp[2 * n] = tmp[2 * n + 1] = m;
       }
       pcmIdx = (pcmIdx + 2) & (PCM_WORDS - 1);
       n++;
@@ -717,7 +724,8 @@ static void usbHelp(void) {
   printf("міст %d.%02d: a — AES, p — PCM1808, w — USB (комп'ютер), u — авто, m — тиша (вхід з порту тримається хвилину), "
          "t — перевірочний сигнал по колу, "
          "l — у завантажувач, b — у режим запису USB (без диска; писати picotool), g — що на вході AES, "
-         "k — чи живі виводи (такти й дані PCM1808, такти передавача, AES), j — журнал моста\n", BRIDGE_VER_MAJOR, BRIDGE_VER_MINOR);
+         "k — чи живі виводи (такти й дані PCM1808, такти передавача, AES), j — журнал моста, "
+         "d — аналоговий вхід симетричний (різниця каналів, моно) / стерео\n", BRIDGE_VER_MAJOR, BRIDGE_VER_MINOR);
 }
 
 static void handleCmd(const bp_rx_t *rx) {
@@ -730,7 +738,9 @@ static void handleCmd(const bp_rx_t *rx) {
     case BP_SET:
       if (n >= 4) {
         uint8_t src = d[0] <= BP_SRC_USB ? d[0] : BP_SRC_AUTO;
-        // d[1] — формат PCM1808: лише «лівовирівняний» (FMT на 3,3 В), інший прибрано (див. bridge.pio)
+        // d[1] — формат PCM1808: лише «лівовирівняний» (FMT на 3,3 В), інший прибрано (див. bridge.pio); біт 1 —
+        // симетричний аналоговий вхід (BP_PCM_DIFF)
+        pcmDiffTx = (d[1] & BP_PCM_DIFF) != 0;
         uint8_t gen = d[2] <= BP_GEN_SWEEP ? d[2] : BP_GEN_TONE;   // 0 — немає, 1 — тон, 2 — рожевий шум, 3 — розгортка
         if (localSrcHeld()) src = reqSrc;   // хвилину після вибору з порту USB — його
         if (src != reqSrc || gen != reqTone) blog(BL_SET, src, gen, true);
@@ -1137,6 +1147,11 @@ int main(void) {
         if (reqTone) genKind = reqTone;
       }
       else if (ch == 'l') enterLoader(2);
+      else if (ch == 'd') {   // симетричний аналоговий вхід (різниця каналів) — увімкнути / вимкнути, до перезапуску
+        pcmDiffLocal = !pcmDiffLocal;
+        printf("аналоговий вхід: %s\n", pcmDiffLocal ? "СИМЕТРИЧНИЙ — (Л − П) / 2 в обидва канали (з порту)"
+                                                       : pcmDiffTx ? "симетричний (так велить передавач)" : "стерео, як є");
+      }
       else if (ch == 'b') {   // режим запису без «диска» RPI-RP2 (див. CMakeLists.txt)
         blog(BL_LOADER, 2, 1, false);
         reset_usb_boot(0, 1);
