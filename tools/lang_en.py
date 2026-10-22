@@ -347,6 +347,8 @@ PAIRS = [
     (r"Коли в моста (Raspberry Pi Pico) інша версія програми, ніж вбудована в прошивку передавача, передавач сам ставить йому свою: звук зі входу зупиняється секунд на десять, хід видно на головній. Вимкнено — міст лишається як є.", r"When the bridge (Raspberry Pi Pico) runs a program version other than the one built into the transmitter firmware, the transmitter installs its own: the input sound stops for about ten seconds, progress is shown on the home page. Off — the bridge stays as it is."),
     (r"Оновлюю міст: %u %% — вхід тимчасово вимкнено", r"Updating the bridge: %u %% — input paused"),
     (r"Міст оновлено: версія %u.%02u", r"Bridge updated: version %u.%02u"),
+    (r"Кнопка на мосту: цифровий вхід", r"Bridge button: digital input"),
+    (r"Кнопка на мосту: аналоговий вхід", r"Bridge button: analog input"),
     (r"Міст не оновився — спробую ще раз", r"Bridge update failed — will retry"),
     (r"%.1f %% пакетів · %u мс", r"%.1f %% packets · %u ms"), (r"Втрати · запас", r"Loss · buffer"),
     (r"еквалайзер", r"equalizer"), (r"зріз", r"low cut"), (r"чіткість легка", r"clarity light"),

@@ -14,6 +14,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 
 #define BP_SYNC0 0xA7
 #define BP_SYNC1 0x5B
@@ -24,6 +25,7 @@ enum {
   BP_PING = 0x01,          // DATA: seq(1)
   BP_SET = 0x02,           // DATA: src(1) fmt(1) tone(1) seq(1) — див. BP_SRC_*, BP_FMT_*
   BP_ENTER_LOADER = 0x03,  // DATA: 'L' 'O' 'A' 'D' — перезапуститися в завантажувач і чекати
+  BP_LOG = 0x04,           // (з 22.10) DATA: from(4) [count(2)] — записи журналу моста від номера from (кадри BP_ST_LOG)
   // завантажувач:
   BP_HELLO = 0x10,         // → BP_R_HELLO
   BP_WRITE = 0x11,         // DATA: off(4, кратне 256) байти(кратно 256, ≤ 4096) → BP_R_ACK
@@ -46,6 +48,7 @@ enum { BP_ACT_NONE = 0, BP_ACT_AES = 1, BP_ACT_PCM = 2, BP_ACT_MUTE = 3, BP_ACT_
 enum { BP_AES_NONE = 0, BP_AES_WAIT = 1, BP_AES_OK = 2, BP_AES_RATE = 3 /* частота, якої міст не бере */ };
 
 #define BP_ST_STATUS 1   // тип кадру стану
+#define BP_ST_LOG 2      // (з 22.10) тип кадру журналу: bp_log_hdr_t і до BP_LOG_PER записів bp_log_rec_t
 
 typedef struct __attribute__((packed)) {
   uint8_t type;          // BP_ST_STATUS
@@ -64,7 +67,79 @@ typedef struct __attribute__((packed)) {
   uint16_t resync;       // скільки разів вихід ловив такт передавача наново
   uint16_t cpu1;         // зайнятість звукового ядра, ‰
   uint32_t uptime;       // секунд від запуску моста
+  // з 22.10 (кадр попередніх збірок коротший — без цих полів, BP_STATUS_V1 байт; передавач бере обидва):
+  uint32_t appCrc;       // CRC-32 програми моста (з відомостей завантажувача): поки 4.x доробляється, номер версії не
+                         // міняється (владелець 22.10), і нову збірку передатчик упізнає за ним (BRIDGE_FW_CRC32)
+  uint32_t logHead;      // скільки записів зроблено в журнал моста за весь час (номер наступного)
+  uint16_t boot;         // номер запуску моста від увімкнення живлення (1 — перший)
+  uint8_t btnSeq;        // натискань кнопки USR моста (лічильник: передавач дивиться на зміну)
+  uint8_t btnSrc;        // вхід, який попросила кнопка: BP_SRC_AES чи BP_SRC_PCM
 } bp_status_t;
+#define BP_STATUS_V1 offsetof(bp_status_t, appCrc)
+
+// Журнал моста (з 22.10): події, які міст пам'ятає між своїми перезапусками (але не між вимкненнями живлення).
+typedef struct __attribute__((packed)) {
+  uint32_t ms;     // від запуску моста
+  uint16_t boot;   // номер запуску (як у стані)
+  uint8_t kind;    // BL_*
+  uint8_t a;
+  uint32_t b;
+} bp_log_rec_t;
+typedef struct __attribute__((packed)) {
+  uint8_t type;    // BP_ST_LOG
+  uint8_t n;       // записів у кадрі
+  uint32_t first;  // номер першого з них
+  uint32_t head;   // скільки всього записано (як logHead у стані)
+} bp_log_hdr_t;
+#define BP_LOG_PER 8     // записів у кадрі: 10 + 96 + CRC 2 = 108 байт, після COBS з нулем — 110
+#define BP_LOG_KEEP 512  // скільки останніх записів міст тримає в пам'яті
+enum {
+  BL_BOOT = 1,     // запуск: a — чому (BL_WHY_*), b — версія (старший байт — головна)
+  BL_FAULT = 2,    // минулий запуск упав: a — 0 panic, 1 апаратна помилка (+0x80 — на ядрі 1); b — адреса
+  BL_AES = 3,      // прийом AES: a — стан BP_AES_*, b — частота, Гц
+  BL_ACT = 4,      // що звучить: a — BP_ACT_*
+  BL_SET = 5,      // передавач змінив запит: a — вхід BP_SRC_*, b — перевірочний сигнал BP_GEN_*
+  BL_CLK = 6,      // такти передавача: a — 1 з'явились, 0 зникли (вимкнули, перезапустився, обрив), 2 — після запуску немає
+  BL_RESYNC = 7,   // вихід ловив такт передавача наново: b — разів усього
+  BL_UNDER = 8,    // провали перерахунку (входу забракло): b — усього
+  BL_OVER = 9,     // переповнення перерахунку: b — усього
+  BL_LOADER = 10,  // у завантажувач: a — 0 команда передавача, 1 «розрив» лінії, 2 з USB; b = 1 — у режим запису USB
+  BL_BTN = 11,     // кнопка USR: a — вхід, який попросила (BP_SRC_*)
+  BL_CLIP = 12,    // перевантаження: b — скільки проміжків по 50 мс за хвилину пік був у межах 0,5 дБ від повної шкали
+  BL_DROP = 13,    // пропущено записів (надто часті події — не більше 30 на хвилину): b — скільки
+};
+enum { BL_WHY_POWER = 0, BL_WHY_WATCHDOG = 1, BL_WHY_ASKED = 2 /* оновлення, команда, USB */, BL_WHY_PIN = 3 /* кнопка RST */ };
+
+// Запис журналу словами — однаково для порту USB моста і для передавача (його порт і журнал на карті). Повертає довжину.
+static inline int bp_log_text(const bp_log_rec_t *r, char *o, size_t cap) {
+  static const char *const WHY[] = { "увімкнули живлення", "сторож (міст зависав)", "на прохання (оновлення, команда)", "кнопка RST" };
+  static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "перевірочний сигнал", "перемикання" };
+  static const char *const AES[] = { "немає сигналу", "ловлю", "є", "частота, якої міст не бере" };
+  static const char *const SRC[] = { "авто", "цифровий вхід", "аналоговий вхід", "тиша" };
+  static const char *const GEN[] = { "", ", перевірочний тон", ", рожевий шум", ", розгортка" };
+  static const char *const LDR[] = { "команда передавача", "«розрив» лінії команд", "з USB" };
+  unsigned long b = (unsigned long)r->b;
+  switch (r->kind) {
+    case BL_BOOT: return snprintf(o, cap, "запуск, версія %lu.%02lu: %s", b >> 8, b & 0xFF, WHY[r->a & 3]);
+    case BL_FAULT: return snprintf(o, cap, "минулий запуск УПАВ: %s на ядрі %u, адреса 0x%08lx", (r->a & 0x7F) ? "апаратна помилка" : "panic", (unsigned)(r->a >> 7), b);
+    case BL_AES:
+      if (r->a == BP_AES_OK || r->a == BP_AES_RATE) return snprintf(o, cap, "AES: %s, %lu Гц", AES[r->a], b);
+      return snprintf(o, cap, "AES: %s", AES[r->a & 3]);
+    case BL_ACT: return snprintf(o, cap, "звучить: %s", ACT[r->a <= BP_ACT_SWITCH ? r->a : 0]);
+    case BL_SET: return snprintf(o, cap, "передавач обрав: %s%s", SRC[r->a & 3], GEN[b & 3]);
+    case BL_CLK: return snprintf(o, cap, r->a == 1 ? "такти передавача є" : r->a == 2 ? "тактів передавача немає" : "такти передавача ЗНИКЛИ");
+    case BL_RESYNC: return snprintf(o, cap, "вихід ловив такт передавача наново (усього %lu)", b);
+    case BL_UNDER: return snprintf(o, cap, "провал перерахунку — входу забракло (усього %lu)", b);
+    case BL_OVER: return snprintf(o, cap, "переповнення перерахунку (усього %lu)", b);
+    case BL_LOADER:
+      if (b) return snprintf(o, cap, "у режим запису USB (з порту USB)");
+      return snprintf(o, cap, "у завантажувач: %s", LDR[r->a <= 2 ? r->a : 0]);
+    case BL_BTN: return snprintf(o, cap, "кнопка USR: попросила %s", SRC[r->a & 3]);
+    case BL_CLIP: return snprintf(o, cap, "перевантаження: %lu разів за хвилину (пік до 0,5 дБ від повної шкали)", b);
+    case BL_DROP: return snprintf(o, cap, "пропущено %lu записів (надто часті події)", b);
+  }
+  return snprintf(o, cap, "запис невідомого виду %u (%u, %lu)", (unsigned)r->kind, (unsigned)r->a, b);
+}
 
 // CRC-16/CCITT-FALSE (поліном 0x1021, початок 0xFFFF)
 static inline uint16_t bp_crc16(const uint8_t *p, size_t n, uint16_t c) {

@@ -20,14 +20,62 @@ static inline void IRAM_ATTR txBridgeFeed(const int32_t *raw, int frames) {
 }
 
 struct TxBridge {
-  bp_status_t st;                 // последний стан моста
+  bp_status_t st;                 // последний стан моста (от сборок до 22.10 — без новых полей: там нули)
   volatile uint8_t gen;           // проверочный сигнал моста вместо входа (BP_GEN_*; не запоминается — с порта C3…C6)
   volatile uint32_t lastMs;       // когда он пришёл (0 — ни разу)
   uint32_t frames, bad, sent;     // кадров стану принято / испорчено; команд послано
   uint8_t seq;                    // номер последней команды (мост повторяет его в стане)
   volatile bool kick;             // вход сменили — послать команду сейчас, не дожидаясь секунды
+  bool newer;                     // мост сборки 22.10+: в стане есть CRC программы, журнал и кнопка
+  // журнал моста: записи с номера logNext ещё не забраны (в журнал на карту); C8 — печать в порт до prnTo
+  uint32_t logNext, prnNext, prnTo, logAskMs, logGot;
+  bool logKnown;
+  // кнопка USR моста: её счётчик из стана; btnWant — какой вход она попросила (выполняет экран, как свою кнопку входа)
+  uint8_t btnSeq;
+  bool btnKnown;
+  volatile uint8_t btnWant;
 };
 static TxBridge txBr;
+
+// Записи журнала моста для журнала на карте (hearlink.ino, logEmit): очередь главного цикла (он же их и забирает).
+#define BRLOG_Q 32
+static bp_log_rec_t brLogQ[BRLOG_Q];
+static uint32_t brLogQn[BRLOG_Q];   // номера записей
+static uint32_t brLogPut, brLogGot, brLogDrop;
+
+// Запись журнала моста строкой: «міст #N [запуск B, ЧЧ:ММ:СС.мс] текст»
+static int txBridgeLogLine(uint32_t num, const bp_log_rec_t &r, char *o, int cap) {
+  char t[120];
+  bp_log_text(&r, t, sizeof(t));
+  unsigned long sec = r.ms / 1000u;
+  return snprintf(o, cap, "міст #%lu [запуск %u, %02lu:%02lu:%02lu.%03lu] %s", (unsigned long)num, (unsigned)r.boot, sec / 3600, sec / 60 % 60,
+                  sec % 60, (unsigned long)(r.ms % 1000u), t);
+}
+
+static void txBridgeLogRec(uint32_t num, const bp_log_rec_t &r) {
+  txBr.logGot++;
+  if (txBr.prnTo && num >= txBr.prnNext) {   // C8: в порт (num > prnNext — старые мост уже переписал новыми)
+    char line[180];
+    txBridgeLogLine(num, r, line, sizeof(line));
+    Serial.println(line);
+    txBr.prnNext = num + 1;
+    if (txBr.prnNext >= txBr.prnTo) {
+      Serial.printf("міст: кінець журналу (%u записів)\n", (unsigned)(txBr.prnTo > BP_LOG_KEEP ? BP_LOG_KEEP : txBr.prnTo));
+      txBr.prnTo = 0;
+    }
+    txBr.logAskMs = 0;   // следующую порцию — сразу
+  }
+  if (num >= txBr.logNext) {   // новое — в журнал на карту
+    if (brLogPut - brLogGot >= BRLOG_Q) {
+      brLogGot++;
+      brLogDrop++;
+    }
+    brLogQ[brLogPut % BRLOG_Q] = r;
+    brLogQn[brLogPut % BRLOG_Q] = num;
+    brLogPut++;
+    txBr.logNext = num + 1;
+  }
+}
 // мост на связи: годный стан был за последние полторы секунды
 static bool txBridgeOk() {
   uint32_t t = txBr.lastMs;
@@ -41,17 +89,58 @@ static void txBridgeSend(uint8_t cmd, const uint8_t *d, size_t n) {
   txBr.sent++;
 }
 
+// Кадр обратного канала: стан (50 мс; у сборок до 22.10 — короче, без новых полей) или записи журнала.
 static void txBridgeFrame(const uint8_t *enc, int n) {
-  uint8_t raw[64];
+  uint8_t raw[160];
   size_t m = n <= (int)sizeof(raw) ? bp_cobs_dec(enc, n, raw) : 0;
-  if (m != sizeof(bp_status_t) + 2 || raw[0] != BP_ST_STATUS || bp_crc16(raw, sizeof(bp_status_t), 0xFFFF) != (uint16_t)(raw[m - 2] | (raw[m - 1] << 8))) {
+  if (m < 3 || bp_crc16(raw, m - 2, 0xFFFF) != (uint16_t)(raw[m - 2] | (raw[m - 1] << 8))) {
     txBr.bad++;
     return;
   }
-  memcpy(&txBr.st, raw, sizeof(bp_status_t));
-  uint32_t t = millis();
-  txBr.lastMs = t ? t : 1;   // не «| 1»: метка на 1 мс впереди часов при беззнаковом вычитании — «давно» (см. txBridgeOk)
-  txBr.frames++;
+  m -= 2;
+  if (raw[0] == BP_ST_STATUS && m >= BP_STATUS_V1 && m <= sizeof(bp_status_t)) {
+    bp_status_t s;
+    memset(&s, 0, sizeof(s));
+    memcpy(&s, raw, m);
+    bool newer = m == sizeof(bp_status_t);
+    if (newer) {
+      // кнопка USR: после запуска моста (и первого знакомства) счётчик только запомнить
+      if (!txBr.btnKnown || !txBr.newer || s.boot != txBr.st.boot) {
+        txBr.btnSeq = s.btnSeq;
+        txBr.btnKnown = true;
+      } else if (s.btnSeq != txBr.btnSeq) {
+        txBr.btnSeq = s.btnSeq;
+        if (s.btnSrc == BP_SRC_AES || s.btnSrc == BP_SRC_PCM) txBr.btnWant = s.btnSrc;
+      }
+      // журнал: при первом знакомстве — последние 16 записей (что было с мостом перед запуском передатчика);
+      // журнал моста начался заново (у него пропадало питание) — с начала
+      if (!txBr.logKnown || s.logHead < txBr.logNext) {
+        txBr.logNext = txBr.logKnown ? 0 : (s.logHead > 16 ? s.logHead - 16 : 0);
+        txBr.logKnown = true;
+      }
+    }
+    txBr.newer = newer;
+    txBr.st = s;
+    uint32_t t = millis();
+    txBr.lastMs = t ? t : 1;   // не «| 1»: метка на 1 мс впереди часов при беззнаковом вычитании — «давно» (см. txBridgeOk)
+    txBr.frames++;
+    return;
+  }
+  if (raw[0] == BP_ST_LOG && m >= sizeof(bp_log_hdr_t)) {
+    bp_log_hdr_t h;
+    memcpy(&h, raw, sizeof(h));
+    if (h.n > BP_LOG_PER || m != sizeof(h) + h.n * sizeof(bp_log_rec_t)) {
+      txBr.bad++;
+      return;
+    }
+    for (int i = 0; i < h.n; i++) {
+      bp_log_rec_t r;
+      memcpy(&r, raw + sizeof(h) + i * sizeof(r), sizeof(r));
+      txBridgeLogRec(h.first + i, r);
+    }
+    return;
+  }
+  txBr.bad++;
 }
 
 // Идёт обновление моста (txbrupd.h): на выводе 40 ответы его загрузчика, а не звук — звуковая задача глушит вход.

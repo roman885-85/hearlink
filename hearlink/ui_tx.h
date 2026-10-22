@@ -560,6 +560,12 @@ static void task(void *) {
     v.card = recCard;
     strlcpy(v.cardFs, recCardFs, sizeof(v.cardFs));
     v.rec = recOn;
+    if (txBr.btnWant) {   // кнопка USR на мосту — то же, что кнопка входа на экране: вход, остановка файла, снятие проверки
+      uint8_t w = txBr.btnWant;
+      txBr.btnWant = 0;
+      ui::activate(w == BP_SRC_AES ? ui::ID_SRC_DIG : ui::ID_SRC_LIVE);
+      ui::toast(w == BP_SRC_AES ? tr("Кнопка на мосту: цифровий вхід") : tr("Кнопка на мосту: аналоговий вхід"));
+    }
     v.brSrc = cfg.bridgeSrc == BP_SRC_AES ? 1 : 2;   // мост (4.00, txbridge.h)
     v.brOk = txBridgeOk();
     v.brAes = txBr.st.aes;
@@ -840,6 +846,7 @@ static void task(void *) {
     if (o.bridgeSrc) {   // вход моста (4.00): аналоговый или цифровой — команда мосту сейчас же
       cfg.bridgeSrc = (uint8_t)(o.bridgeSrc == 1 ? BP_SRC_AES : BP_SRC_PCM);
       o.bridgeSrc = 0;
+      txBr.gen = BP_GEN_OFF;   // выбрали вход — он и в эфире (проверочный сигнал моста — выключить)
       txBr.kick = true;
       saveAt = now + 600;
     }

@@ -4,8 +4,10 @@
 //   • перерахунок частоти в 32 кГц тактом передавача (asrc.c) і вихід I2S до передавача: такти від нього
 //     (GP6 ← вивід 1, GP7 ← вивід 2), дані GP4 → вивід 40;
 //   • команди — UART з виводу 43 передавача (GP5); стан — у молодших 8 бітах слів I2S (hearlink/bridge_proto.h).
-// Ядро 0: команди, стан, вибір джерела, сторож, світлодіод. Ядро 1: увесь звук — і переривання прийому AES
-// (бібліотека береже свої дані лише від переривань свого ядра, тож читати її чергу з іншого ядра не можна).
+//   • з 22.10: журнал подій (переживає перезапуски моста; передавач забирає його у свій журнал на карті), кнопка USR
+//     (GP24) — перемкнути вхід, кольоровий світлодіод (WS2812, GP23) — що звучить і рівень (плата YD-RP2040).
+// Ядро 0: команди, стан, вибір джерела, журнал, сторож, світлодіоди, кнопка. Ядро 1: увесь звук — і переривання
+// прийому AES (бібліотека береже свої дані лише від переривань свого ядра, тож читати її чергу з іншого ядра не можна).
 #include <math.h>
 #include <stdarg.h>
 #include <string.h>
@@ -37,6 +39,8 @@
 #define PIN_LINK_BCK 6  // LRCK — наступний (GP7)
 #define PIN_LINK_LRCK 7
 #define PIN_AES 15
+#define PIN_RGB 23   // кольоровий світлодіод WS2812 (YD-RP2040; у Raspberry Pi Pico тут перемикач живлення — не шкодить)
+#define PIN_USR 24   // кнопка USR до землі (YD-RP2040; у Raspberry Pi Pico — датчик живлення USB, див. panelTick)
 #define PIN_LED 25
 
 #define FS_OUT 32000
@@ -82,6 +86,76 @@ void __attribute__((naked)) isr_hardfault(void) {
                  "bx r1\n");
 }
 
+// ---------------------------------------------------------------- журнал подій (з 22.10)
+// Записи — у пам'яті, яку запуск не чистить: журнал переживає перезапуск сторожем, падіння, завантажувач і оновлення
+// з передавача (але не вимкнення живлення — тоді починається наново). Місце — фіксоване, вгорі ОЗУ: звичайне
+// __uninitialized_ram лягло б одразу за таблицею переривань, а там дані завантажувача, який працює при кожному запуску
+// (його ОЗУ — до ~0x20002000, програми — до ~0x2001F500; купа — лише пул будильників SDK, сотні байтів).
+// Передавач забирає записи командою BP_LOG у свій журнал на карті; на столі — буква «j» у порту USB.
+#define BLOG_N BP_LOG_KEEP
+#define BLOG_MAGIC 0x4A4F5552u
+typedef struct {
+  uint32_t magic, magic2;   // magic2 = ~magic: після вимкнення живлення тут сміття — журнал починається наново
+  uint32_t head;            // записів зроблено за весь час (номер наступного)
+  uint16_t boot, pad;       // номер поточного запуску
+  bp_log_rec_t r[BLOG_N];
+} blog_t;
+#define BLOG_ADDR 0x2003E000u
+#define BLOG ((blog_t *)BLOG_ADDR)
+_Static_assert(BLOG_ADDR + sizeof(blog_t) <= 0x20040000u, "журнал моста не вміщається під кінцем ОЗУ");
+
+static void blogPut(uint8_t kind, uint8_t a, uint32_t b) {
+  blog_t *L = BLOG;
+  bp_log_rec_t *r = &L->r[L->head % BLOG_N];
+  r->ms = (uint32_t)(time_us_64() / 1000u);
+  r->boot = L->boot;
+  r->kind = kind;
+  r->a = a;
+  r->b = b;
+  __dmb();
+  L->head = L->head + 1;
+}
+
+// Часті події (AES, такти, перескоки, провали, що звучить) — не більше 30 на хвилину, щоб погана лінія не витерла
+// журнал за хвилини; пропущені лічаться (BL_DROP). Рідкісні (запуск, падіння, кнопка, завантажувач) — завжди.
+static uint32_t blogWinT, blogDropped, blogWinN;
+static void blog(uint8_t kind, uint8_t a, uint32_t b, bool limited) {
+  if (limited) {
+    if (blogWinN >= 30) {
+      blogDropped++;
+      return;
+    }
+    blogWinN++;
+  }
+  blogPut(kind, a, b);
+}
+static void blogTick(uint32_t now) {
+  if (now - blogWinT < 60000000u) return;
+  blogWinT = now;
+  blogWinN = 0;
+  if (blogDropped) blogPut(BL_DROP, 0, blogDropped);
+  blogDropped = 0;
+}
+
+// Запуск: чи журнал живий (живлення не зникало), новий номер запуску і причина (BL_WHY_*).
+static uint8_t blogStart(void) {
+  blog_t *L = BLOG;
+  bool alive = L->magic == BLOG_MAGIC && L->magic2 == ~BLOG_MAGIC;
+  if (!alive) {
+    memset(L, 0, sizeof *L);
+    L->magic = BLOG_MAGIC;
+    L->magic2 = ~BLOG_MAGIC;
+  }
+  L->boot = (uint16_t)(L->boot + 1);
+  if (!L->boot) L->boot = 1;
+  // Причина — від сторожа (завантажувач перед програмою чип не перезапускає — вона та сама). Справжнє зависання — лише
+  // коли спрацював сторож, якого вмикала ця програма (watchdog_enable лишає мітку в scratch[4]): ПЗУ (picotool, режим
+  // запису USB) перезапускає тим самим сторожем, але без мітки (22.10 запис picotool записався як «зависав»).
+  // Нуль — апаратний запуск: живлення (журнал тоді порожній) чи кнопка RST (журнал живий).
+  return watchdog_enable_caused_reboot() ? BL_WHY_WATCHDOG : watchdog_hw->reason ? BL_WHY_ASKED
+         : alive ? BL_WHY_PIN : BL_WHY_POWER;
+}
+
 // ---------------------------------------------------------------- спільне для ядер
 // Ядро 0 → ядро 1: що грати. Ядро 1 бере новий запит, коли wantGen ≠ тому, що вже виконано.
 static volatile uint32_t wantGen;
@@ -125,7 +199,7 @@ static inline uint8_t __not_in_flash_func(bqPop)(void) {
 // ---------------------------------------------------------------- звук (ядро 1)
 static const PIO pio = pio1;
 static uint smPcm, smLink, offPcm, offLink;
-static volatile uint32_t stResync, stResyncAt;   // скільки разів вихід ловив такт передавача наново, і коли (мкс)
+static volatile uint32_t stResync;   // скільки разів вихід ловив такт передавача наново
 
 #define OUT_WORDS 512   // 256 кадрів = 8 мс
 static uint32_t outRing[OUT_WORDS] __attribute__((aligned(OUT_WORDS * 4)));
@@ -399,7 +473,6 @@ static void __not_in_flash_func(linkRecover)(void) {
   pio_interrupt_clear(pio, 0);
   pio_sm_set_enabled(pio, smLink, true);
   stResync = stResync + 1;
-  stResyncAt = time_us_32();
 }
 
 // Увесь «гарячий» шлях ядра 1 — з ОЗП (__not_in_flash_func): з флешу через спільний з ядром 0 і USB кеш на 16 КБ
@@ -538,6 +611,7 @@ static void __not_in_flash_func(core1Main)(void) {
 
 // ---------------------------------------------------------------- команди і стан (ядро 0)
 static uint8_t reqSrc = BP_SRC_AUTO, reqFmt = BP_FMT_LJ, reqTone, lastSeq;
+static uint32_t logSend, logSendEnd;   // записи журналу для передавача: від logSend до logSendEnd (ставить BP_LOG)
 // Розбір команд: буфер на 4 КБ — НЕ на стеку (стек ядра 0 — 2 КБ: перша версія мосту падала саме від цього — буфер
 // вилазив за стек і псував пам'ять ядра 1, сторож перезапускав Pico, а після трьох падінь завантажувач чекав команд).
 static bp_rx_t rx;
@@ -545,7 +619,8 @@ static bp_rx_t rx;
 static uint8_t aesPin = 0;      // підтяжка виводу 15: 0 — немає, 1 — угору, 2 — униз (так після запуску RP2040)
 static bool aesSchmitt = true;
 
-static void enterLoader(void) {
+static void enterLoader(uint8_t why) {   // why — для журналу: 0 команда передавача, 1 «розрив» лінії, 2 USB
+  blog(BL_LOADER, why, 0, false);
   watchdog_hw->scratch[0] = STAY_MAGIC;
   watchdog_reboot(0, 0, 10);
   for (;;) tight_loop_contents();
@@ -557,9 +632,9 @@ static const char *const actName[] = {"нічого", "AES", "PCM1808", "тиш�
 static const char *const aesName[] = {"немає", "ловлю", "є", "частота не та"};
 
 static void usbHelp(void) {
-  printf("міст %d.%02d: a — AES, p — PCM1808, u — авто, m — тиша, t — тон, "
+  printf("міст %d.%02d: a — AES, p — PCM1808, u — авто, m — тиша, t — перевірочний сигнал по колу, "
          "l — у завантажувач, b — у режим запису USB (без диска; писати picotool), g — що на вході AES, "
-         "k — чи живі виводи (такти й дані PCM1808, такти передавача, AES)\n", BRIDGE_VER_MAJOR, BRIDGE_VER_MINOR);
+         "k — чи живі виводи (такти й дані PCM1808, такти передавача, AES), j — журнал моста\n", BRIDGE_VER_MAJOR, BRIDGE_VER_MINOR);
 }
 
 static void handleCmd(const bp_rx_t *rx) {
@@ -571,15 +646,28 @@ static void handleCmd(const bp_rx_t *rx) {
       break;
     case BP_SET:
       if (n >= 4) {
-        reqSrc = d[0] <= BP_SRC_MUTE ? d[0] : BP_SRC_AUTO;
+        uint8_t src = d[0] <= BP_SRC_MUTE ? d[0] : BP_SRC_AUTO;
         // d[1] — формат PCM1808: лише «лівовирівняний» (FMT на 3,3 В), інший прибрано (див. bridge.pio)
-        reqTone = d[2] <= BP_GEN_SWEEP ? d[2] : BP_GEN_TONE;   // 0 — немає, 1 — тон, 2 — рожевий шум, 3 — розгортка
+        uint8_t gen = d[2] <= BP_GEN_SWEEP ? d[2] : BP_GEN_TONE;   // 0 — немає, 1 — тон, 2 — рожевий шум, 3 — розгортка
+        if (src != reqSrc || gen != reqTone) blog(BL_SET, src, gen, true);
+        reqSrc = src;
+        reqTone = gen;
         if (reqTone) genKind = reqTone;
         lastSeq = d[3];
       }
       break;
     case BP_ENTER_LOADER:
-      if (n >= 4 && d[0] == 'L' && d[1] == 'O' && d[2] == 'A' && d[3] == 'D') enterLoader();
+      if (n >= 4 && d[0] == 'L' && d[1] == 'O' && d[2] == 'A' && d[3] == 'D') enterLoader(0);
+      break;
+    case BP_LOG:   // записи журналу від номера from (до count штук) — кадрами BP_ST_LOG, скільки влізе (головний цикл)
+      if (n >= 4) {
+        uint32_t from = (uint32_t)d[0] | ((uint32_t)d[1] << 8) | ((uint32_t)d[2] << 16) | ((uint32_t)d[3] << 24);
+        uint32_t head = BLOG->head, count = n >= 6 ? (uint32_t)(d[4] | (d[5] << 8)) : BLOG_N;
+        if (from > head) from = head;
+        if (head - from > BLOG_N) from = head - BLOG_N;
+        logSend = from;
+        logSendEnd = from + count;
+      }
       break;
   }
 }
@@ -590,6 +678,121 @@ static uint8_t peakDb2(int32_t p) {   // 24-бітний пік → −дБ ×2 
   return db < 0 ? 0 : db > 254 ? 254 : (uint8_t)db;
 }
 
+// ---------------------------------------------------------------- панель на платі (з 22.10; YD-RP2040: GP23, GP24)
+// Кнопка USR — перемкнути вхід (цифровий ↔ аналоговий). Міст сам не перемикається: просить передавача (btnSeq/btnSrc
+// у стані), а той робить те саме, що кнопка входу на його екрані, — і на екрані це видно. Клацання — на відпусканні,
+// натиск 30 мс – 1,5 с, і лише після того, як кнопку бачили відпущеною секунду: у Raspberry Pi Pico на GP24 датчик
+// живлення USB, і відключення USB (вивід надовго в «0») за кнопку так не сприймається.
+// Кольоровий світлодіод: колір — що звучить, яскравість — рівень:
+//   зелений — цифровий вхід (AES); синій — аналоговий (PCM1808); жовтий — перевірочний сигнал; тьмяний білий — тиша;
+//   помаранчевий блимає — обрано цифровий вхід, а сигналу AES немає; червоний блимає — немає тактів передавача
+//   (вимкнений, перезапускається, обрив); червоний спалах — перевантаження (пік у межах 0,5 дБ від повної шкали);
+//   білий спалах — натиснули USR; три червоні спалахи — передавач за 2 с вхід не змінив (не та версія, не той вхід).
+static uint8_t btnSeq, btnSrc;
+static uint8_t panelLvl = 255;     // пік останнього стану, −дБ ×2 (255 — тиша)
+static uint32_t panelClipT;        // коли був останній перевантажений проміжок (мкс; 0 — давно)
+static uint32_t clipMin;           // перевантажених проміжків за поточну хвилину (для журналу)
+
+// WS2812: біт 1,25 мкс, «1» — ~0,7 мкс високого рівня, «0» — ~0,35 мкс; кольори в порядку G, R, B, старшим бітом
+// уперед. Кадр (24 біти, 30 мкс) — з ОЗУ і з вимкненими перериваннями ядра 0. PIO для цього немає: PIO0 бібліотека AES
+// чистить повністю при кожному новому захопленні сигналу, у PIO1 вільна одна команда. Ядро 1 (звук) не зупиняється.
+static void __no_inline_not_in_flash_func(rgbPut)(uint8_t r, uint8_t g, uint8_t b) {
+  const uint32_t mhz = SYS_CLK_HZ / 1000000u, T0 = mhz * 35 / 100, T1 = mhz * 70 / 100, TB = mhz * 125 / 100;
+  uint32_t v = ((uint32_t)g << 16) | ((uint32_t)r << 8) | b;
+  uint32_t save = save_and_disable_interrupts();
+  for (int i = 23; i >= 0; i--) {
+    uint32_t h = (v >> i) & 1u ? T1 : T0;
+    sio_hw->gpio_set = 1u << PIN_RGB;
+    busy_wait_at_least_cycles(h);   // вбудовується (цикл з трьох тактів) — уся функція лишається в ОЗУ
+    sio_hw->gpio_clr = 1u << PIN_RGB;
+    busy_wait_at_least_cycles(TB - h);
+  }
+  restore_interrupts(save);
+}
+
+static void panelInit(void) {
+  gpio_init(PIN_USR);
+  gpio_set_dir(PIN_USR, GPIO_IN);
+  gpio_pull_up(PIN_USR);
+  gpio_init(PIN_RGB);
+  gpio_put(PIN_RGB, 0);
+  gpio_set_dir(PIN_RGB, GPIO_OUT);
+  rgbPut(0, 0, 0);
+}
+
+static void panelTick(uint32_t now, bool linkOk, uint8_t aes) {
+  static uint32_t sampT, rawT, downT, flashT, waitT, rgbT, errT;
+  static bool raw = true, down, armed, waiting;
+  static uint8_t errN, lastR = 255, lastG = 255, lastB = 255;
+  static float lvl;
+  // кнопка — раз на 5 мс; стан приймається, коли вивід 30 мс не змінювався
+  if (now - sampT >= 5000) {
+    sampT = now;
+    bool v = gpio_get(PIN_USR);   // 1 — відпущена
+    if (v != raw) {
+      raw = v;
+      rawT = now;
+    }
+    if (now - rawT >= 30000 && down == raw) {
+      down = !raw;
+      if (down) downT = now;
+      else if (armed && now - downT <= 1500000u) {   // клацання: попросити передавача інший вхід
+        bool onAes = reqSrc == BP_SRC_AES || (reqSrc == BP_SRC_AUTO && actNow == BP_ACT_AES);
+        btnSrc = onAes ? BP_SRC_PCM : BP_SRC_AES;
+        btnSeq++;
+        blog(BL_BTN, btnSrc, 0, false);
+        flashT = now | 1;
+        waitT = now;
+        waiting = true;
+      }
+    }
+    if (!down && raw && now - rawT >= 1000000u) armed = true;
+  }
+  if (waiting && reqSrc == btnSrc) waiting = false;
+  if (waiting && now - waitT > 2000000u) {   // передавач вхід не змінив
+    waiting = false;
+    errN = 6;
+    errT = now;
+  }
+  // світлодіод — раз на 20 мс (і лише коли колір змінився)
+  if (now - rgbT < 20000) return;
+  rgbT = now;
+  float want = panelLvl >= 120 ? 0.0f : 1.0f - panelLvl / 120.0f;   // 0 дБ → 1, −60 дБ і тихіше → 0
+  if (want > lvl) lvl = want;
+  else lvl = lvl > 0.02f ? lvl - 0.02f : 0.0f;   // спад — секунду, як у стрілочного індикатора
+  float k = 0.15f + 0.85f * lvl;
+  uint32_t ms = now / 1000u;
+  uint8_t act = actNow, r = 0, g = 0, b = 0;
+  if (flashT && now - flashT >= 150000u) flashT = 0;
+  if (panelClipT && now - panelClipT >= 250000u) panelClipT = 0;
+  if (flashT) r = g = b = 28;
+  else if (errN) {
+    if (now - errT >= 150000u) {
+      errT = now;
+      errN--;
+    }
+    r = errN & 1 ? 40 : 0;
+  } else if (!linkOk) r = (ms / 250) & 1 ? 40 : 0;
+  else if (panelClipT) r = 48;
+  else if (act == BP_ACT_TONE) {
+    r = (uint8_t)(36 * k);
+    g = (uint8_t)(24 * k);
+  } else if (reqSrc == BP_SRC_AES && aes != BP_AES_OK) {
+    if ((ms / 500) & 1) {
+      r = 40;
+      g = 12;
+    }
+  } else if (act == BP_ACT_AES) g = (uint8_t)(40 * k);
+  else if (act == BP_ACT_PCM) b = (uint8_t)(44 * k);
+  else r = g = b = 4;
+  if (r != lastR || g != lastG || b != lastB) {
+    lastR = r;
+    lastG = g;
+    lastB = b;
+    rgbPut(r, g, b);
+  }
+}
+
 int main(void) {
   uint32_t s3 = watchdog_hw->scratch[3];
   if ((s3 & 0xFFFFFF00u) == FAULT_PANIC || (s3 & 0xFFFFFF00u) == FAULT_HARD) {
@@ -598,8 +801,12 @@ int main(void) {
   }
   watchdog_hw->scratch[2] = 0;
   watchdog_hw->scratch[3] = 0;
+  blog(BL_BOOT, blogStart(), (BRIDGE_VER_MAJOR << 8) | BRIDGE_VER_MINOR, false);
+  if (lastFault)
+    blog(BL_FAULT, (uint8_t)(((lastFault & 0xFFFFFF00u) == FAULT_HARD ? 1u : 0u) | ((lastFault & 1u) << 7)), lastFaultWhat, false);
   gpio_init(PIN_LED);
   gpio_set_dir(PIN_LED, GPIO_OUT);
+  panelInit();
   uart_init(uart1, 115200);
   gpio_set_function(PIN_CMD_RX, GPIO_FUNC_UART);
   gpio_pull_up(PIN_CMD_RX);   // передавач вимкнено — лінія не «висить» у нулі
@@ -612,9 +819,17 @@ int main(void) {
   watchdog_enable(1000, true);
 
   uint32_t lastHb = 0, hbT = time_us_32(), statT = 0, lowSince = 0, aesOkSince = 0, ledT = 0;
-  uint32_t resync = 0, resyncAt = 0, uptime0 = time_us_32(), lastOutRd = 0, outRdT = 0, usbT = 0;
+  uint32_t resync = 0, resyncAt = 0, uptime0 = time_us_32(), lastOutRd = 0, outRdT = uptime0 - 1000000u, usbT = 0;
+  uint32_t aesSeenT = 0, clipT = uptime0;
+  uint16_t underSeen = 0, overSeen = 0;
   uint8_t pkSecL = 255, pkSecR = 255;   // найбільший пік виходу за секунду рядка стану (−дБ ×2; 255 — тиша)
+  uint8_t aesSeen = 0xFF, aesLogged = 0xFF, actLogged = 0xFF;   // що вже записано в журнал (0xFF — ще нічого)
+  int8_t clkLogged = -1;
   bool lineWasHigh = false, crashCleared = false;
+  logSend = logSendEnd = BLOG->head;
+  // CRC-32 своєї програми — з відомостей, які записав завантажувач (або перша запис з комп'ютера, bridge-full.uf2)
+  const app_info_t *info = (const app_info_t *)(FLASH_BASE_ADDR + INFO_OFF);
+  uint32_t myCrc = info->magic == INFO_MAGIC && info->magic2 == ~INFO_MAGIC ? info->crc32 : 0;
   for (;;) {
     uint32_t now = time_us_32();
     // пропрацювали 10 с — лічильник «падінь поспіль» для завантажувача скинути (див. loader/main.c)
@@ -640,11 +855,14 @@ int main(void) {
       lowSince = 0;
     } else if (lineWasHigh) {
       if (!lowSince) lowSince = now | 1;
-      else if (now - lowSince > 80000) enterLoader();
+      else if (now - lowSince > 80000) enterLoader(1);
     }
     // перескоки синхронізації виходу (PIO IRQ 0)
-    resync = stResync;
-    if (resync) resyncAt = (stResyncAt - uptime0) / 1000000u;
+    if (stResync != resync) {
+      resync = stResync;
+      resyncAt = (uint32_t)(time_us_64() / 1000000u);
+      blog(BL_RESYNC, 0, resync, true);
+    }
     // AES і вибір джерела
     spdif_rx_state_t s = spdif_rx_get_state();
     uint32_t rate = s == SPDIF_RX_STATE_STABLE ? (uint32_t)spdif_rx_get_samp_freq() : 0;
@@ -669,6 +887,47 @@ int main(void) {
       __dmb();
       wantGen = wantGen + 1;
     }
+    // такти передавача: слова з виходу забираються (лічильник ядра 1 росте)
+    if (stOutRd != lastOutRd) {
+      lastOutRd = stOutRd;
+      outRdT = now;
+    }
+    bool linkOk = now - outRdT < 200000;
+    // журнал. AES: втрата і поява — одразу, решта змін — коли стан тримається секунду (без сигналу бібліотека
+    // перебирає «немає» ↔ «ловлю»). Далі — що звучить, такти передавача, провали перерахунку, перевантаження.
+    if (aes != aesSeen) {
+      aesSeen = aes;
+      aesSeenT = now;
+    }
+    if (aes != aesLogged && ((aes == BP_AES_OK) != (aesLogged == BP_AES_OK) || now - aesSeenT > 1000000u)) {
+      blog(BL_AES, aes, aes == BP_AES_OK ? rate : aes == BP_AES_RATE ? (uint32_t)spdif_rx_get_samp_freq() : 0, true);
+      aesLogged = aes;
+    }
+    uint8_t actN = actNow;
+    if (actN != BP_ACT_SWITCH && actN != actLogged) {
+      blog(BL_ACT, actN, 0, true);
+      actLogged = actN;
+    }
+    if ((int8_t)linkOk != clkLogged && now - uptime0 > 500000u) {   // перші 0,5 с — такти ще не встигли з'явитися
+      blog(BL_CLK, linkOk ? 1 : clkLogged < 0 ? 2 : 0, 0, true);
+      clkLogged = (int8_t)linkOk;
+    }
+    uint16_t un = stUnder, ov = stOver;   // лічильники перерахунку; з новим входом починаються з нуля
+    if (un != underSeen) {
+      if (un > underSeen) blog(BL_UNDER, 0, un, true);
+      underSeen = un;
+    }
+    if (ov != overSeen) {
+      if (ov > overSeen) blog(BL_OVER, 0, ov, true);
+      overSeen = ov;
+    }
+    if (now - clipT >= 60000000u) {
+      clipT = now;
+      if (clipMin) blog(BL_CLIP, 0, clipMin, false);
+      clipMin = 0;
+    }
+    blogTick(now);
+    panelTick(now, linkOk, aes);
     // стан — 20 разів на секунду
     if (now - statT >= 50000) {
       statT = now;
@@ -688,6 +947,11 @@ int main(void) {
       peakR = 0;
       st.peakL = peakDb2(pl);
       st.peakR = peakDb2(pr);
+      panelLvl = st.peakL < st.peakR ? st.peakL : st.peakR;
+      if (panelLvl <= 1 && (actNow == BP_ACT_AES || actNow == BP_ACT_PCM)) {   // вхід у межах 0,5 дБ від повної шкали
+        panelClipT = now | 1;
+        clipMin++;
+      }
       if (st.peakL < pkSecL) pkSecL = st.peakL;
       if (st.peakR < pkSecR) pkSecR = st.peakR;
       st.loaderVer = LOADER_VERSION;
@@ -699,7 +963,12 @@ int main(void) {
       st.over = stOver;
       st.resync = (uint16_t)resync;
       st.cpu1 = cpu1;
-      st.uptime = (now - uptime0) / 1000000u;
+      st.uptime = (uint32_t)(time_us_64() / 1000000u);   // не (now − початок): 32-бітні мікросекунди — лише 71 хвилина
+      st.appCrc = myCrc;
+      st.logHead = BLOG->head;
+      st.boot = BLOG->boot;
+      st.btnSeq = btnSeq;
+      st.btnSrc = btnSrc;
       uint8_t raw[sizeof st + 2], enc[sizeof st + 8];
       memcpy(raw, &st, sizeof st);
       uint16_t c = bp_crc16(raw, sizeof st, 0xFFFF);
@@ -708,6 +977,25 @@ int main(void) {
       size_t m = bp_cobs_enc(raw, sizeof raw, enc);
       enc[m++] = 0;
       bqPush(enc, (uint32_t)m);
+    }
+    // записи журналу, які попросив передавач (BP_LOG), — скільки влізе в чергу зворотного каналу, лишаючи місце стану
+    while (logSend != logSendEnd && logSend != BLOG->head && BQ - (bqHead - bqTail) >= 256) {
+      uint32_t head = BLOG->head;
+      if (head - logSend > BLOG_N) logSend = head - BLOG_N;   // найстаріші вже переписані новими
+      uint32_t n = head - logSend < BP_LOG_PER ? head - logSend : BP_LOG_PER;
+      if (n > logSendEnd - logSend) n = logSendEnd - logSend;
+      uint8_t raw[sizeof(bp_log_hdr_t) + BP_LOG_PER * sizeof(bp_log_rec_t) + 2], enc[sizeof raw + 4];
+      bp_log_hdr_t h = { BP_ST_LOG, (uint8_t)n, logSend, head };
+      memcpy(raw, &h, sizeof h);
+      for (uint32_t i = 0; i < n; i++) memcpy(raw + sizeof h + i * sizeof(bp_log_rec_t), &BLOG->r[(logSend + i) % BLOG_N], sizeof(bp_log_rec_t));
+      size_t len = sizeof h + n * sizeof(bp_log_rec_t);
+      uint16_t c = bp_crc16(raw, len, 0xFFFF);
+      raw[len] = (uint8_t)c;
+      raw[len + 1] = (uint8_t)(c >> 8);
+      size_t m = bp_cobs_enc(raw, len + 2, enc);
+      enc[m++] = 0;
+      if (!bqPush(enc, (uint32_t)m)) break;
+      logSend += n;
     }
     // USB: команди однією буквою і рядок стану раз на секунду
     if (stdio_usb_connected()) {
@@ -720,8 +1008,28 @@ int main(void) {
         reqTone = (uint8_t)((reqTone + 1) % 4);
         if (reqTone) genKind = reqTone;
       }
-      else if (ch == 'l') enterLoader();
-      else if (ch == 'b') reset_usb_boot(0, 1);   // режим запису без «диска» RPI-RP2 (див. CMakeLists.txt)
+      else if (ch == 'l') enterLoader(2);
+      else if (ch == 'b') {   // режим запису без «диска» RPI-RP2 (див. CMakeLists.txt)
+        blog(BL_LOADER, 2, 1, false);
+        reset_usb_boot(0, 1);
+      } else if (ch == 'j') {   // журнал моста: усе, що є в пам'яті
+        blog_t *L = BLOG;
+        uint32_t head = L->head, i = head > BLOG_N ? head - BLOG_N : 0, t0 = time_us_32();
+        printf("журнал моста: записів за весь час %lu (у пам'яті — останні %lu), зараз запуск №%u\n", (unsigned long)head,
+               (unsigned long)(head - i), L->boot);
+        for (; i < head && time_us_32() - t0 < 3000000u; i++) {
+          bp_log_rec_t r = L->r[i % BLOG_N];
+          char t[120];
+          bp_log_text(&r, t, sizeof t);
+          unsigned long sec = r.ms / 1000u;
+          printf("  #%lu [запуск %u, %02lu:%02lu:%02lu.%03lu] %s\n", (unsigned long)i, r.boot, sec / 3600, sec / 60 % 60, sec % 60,
+                 (unsigned long)(r.ms % 1000u), t);
+          if (hb1 != lastHb) {   // друк довгий: сторожа годувати й тут (поки ядро 1 живе)
+            lastHb = hb1;
+            watchdog_update();
+          }
+        }
+      }
       else if (ch == '?' || ch == 'h') usbHelp();
       else if (ch == 'x') {   // підтяжка виводу 15: вимк. → угору → униз → вимк. (за замовчуванням у RP2040 — униз)
         aesPin = (uint8_t)((aesPin + 1) % 3);
@@ -789,7 +1097,7 @@ int main(void) {
         pkSecL = pkSecR = 255;
         printf("[%lu с] звучить: %s, пік %s; AES: %s %lu Гц, помилок парності %lu; передавач: %s; запас %d, поправка %+.1f ppm, "
                "провали %u/%u; перескоки %lu (останній на %lu с); ядро 1 зайняте %u‰ (на кадр: вихід %u нс, вхід %u нс)%s\n",
-               (unsigned long)((now - uptime0) / 1000000u), actName[a], pk, aesName[aes > 3 ? 0 : aes],
+               (unsigned long)(time_us_64() / 1000000u), actName[a], pk, aesName[aes > 3 ? 0 : aes],
                (unsigned long)rate, (unsigned long)spdif_rx_get_parity_err_count(),
                now - outRdT < 200000 ? "такти є" : "НЕМАЄ тактів", stLevel, stPpm10 / 10.0, stUnder, stOver,
                (unsigned long)resync, (unsigned long)resyncAt, cpu1, nsProd, nsIn,
@@ -797,14 +1105,9 @@ int main(void) {
       }
     }
     // світлодіод: спалах раз на секунду — працює; два — грає AES; часто — немає тактів передавача
-    if (stOutRd != lastOutRd) {
-      lastOutRd = stOutRd;
-      outRdT = now;
-    }
     if (now - ledT >= 50000) {
       ledT = now;
       uint32_t ph = (now / 50000) % 20;
-      bool linkOk = now - outRdT < 200000;
       bool on = actNow == BP_ACT_AES ? (ph == 0 || ph == 3) : ph == 0;
       if (!linkOk) on = ph & 1;
       gpio_put(PIN_LED, on);

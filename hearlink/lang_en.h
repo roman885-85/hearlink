@@ -423,6 +423,8 @@ static const char *const LANG_EN[][2] = {
   { "Коли в моста (Raspberry Pi Pico) інша версія програми, ніж вбудована в прошивку передавача, передавач сам ставить йому свою: звук зі входу зупиняється секунд на десять, хід видно на головній. Вимкнено — міст лишається як є.", "When the bridge (Raspberry Pi Pico) runs a program version other than the one built into the transmitter firmware, the transmitter installs its own: the input sound stops for about ten seconds, progress is shown on the home page. Off — the bridge stays as it is." },
   { "Оновлюю міст: %u %% — вхід тимчасово вимкнено", "Updating the bridge: %u %% — input paused" },
   { "Міст оновлено: версія %u.%02u", "Bridge updated: version %u.%02u" },
+  { "Кнопка на мосту: цифровий вхід", "Bridge button: digital input" },
+  { "Кнопка на мосту: аналоговий вхід", "Bridge button: analog input" },
   { "Міст не оновився — спробую ще раз", "Bridge update failed — will retry" },
   { "%.1f %% пакетів · %u мс", "%.1f %% packets · %u ms" },
   { "Втрати · запас", "Loss · buffer" },

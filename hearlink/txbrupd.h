@@ -27,7 +27,12 @@ struct BrUpd {
 };
 static BrUpd brUpd;
 static bool brUpdBusy() { return brUpd.st >= BU_ENTER && brUpd.st <= BU_APP; }
-static bool brUpdVerOther() { return txBr.st.verMajor != BRIDGE_FW_VER_MAJOR || txBr.st.verMinor != BRIDGE_FW_VER_MINOR; }
+// Мост не тот, что встроен: другой номер версии; или номер тот же, а сборка другая (CRC программы в стане: пока 4.x
+// дорабатывается, номера версий не меняются — владелец 22.10); или кадр стана старой сборки, без CRC, — обновить.
+static bool brUpdVerOther() {
+  if (txBr.st.verMajor != BRIDGE_FW_VER_MAJOR || txBr.st.verMinor != BRIDGE_FW_VER_MINOR) return true;
+  return !txBr.newer || txBr.st.appCrc != BRIDGE_FW_CRC32;
+}
 static uint32_t brRd32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
 
 static void brUpdUartOff() {
@@ -232,7 +237,7 @@ static void brUpdTick() {
 
 // Главный цикл: разобрать обратный канал и раз в секунду (или сразу после смены входа) напомнить мосту, какой вход играть.
 static void txBridgeTick() {
-  static uint8_t enc[64];
+  static uint8_t enc[160];   // кадр журнала моста — 110 байт
   static int en = -1;   // −1 — ждём нуля-разделителя (начало потока или потеря)
   uint32_t put = brPut, got = brGot;
   if (put - got > BR_RING) {   // главный цикл отстал больше чем на 128 мс — пропущенное не разобрать
@@ -254,6 +259,31 @@ static void txBridgeTick() {
   if (brUpdBusy()) return;   // идёт обновление: мосту — только его кадры
   static uint32_t lastSet;
   uint32_t now = millis();
+  if (txBr.btnWant && cfg.board != BOARD_4848) {   // кнопка моста без экрана передатчика — выбрать вход отсюда
+    cfg.bridgeSrc = txBr.btnWant;
+    txBr.btnWant = 0;
+    txBr.gen = BP_GEN_OFF;
+    cfg.tone = 0;
+    txBr.kick = true;
+    settingsSave();
+  }
+  // журнал моста: новые записи — в журнал на карту (по 64, пока отстаём, раз в 2 с); C8 — весь в порт (по 16 сразу
+  // одна порция за другой: строка в порт идёт ~9 мс, и 16 строк главный цикл печатает за время, которое держит кольцо)
+  if (txBr.newer && txBridgeOk() && now - txBr.logAskMs >= (txBr.prnTo ? 300u : 2000u)) {
+    uint32_t from = 0, cnt = 0;
+    if (txBr.prnTo) {
+      from = txBr.prnNext;
+      cnt = 16;
+    } else if (txBr.st.logHead != txBr.logNext) {
+      from = txBr.logNext;
+      cnt = 64;
+    }
+    if (cnt) {
+      txBr.logAskMs = now;
+      uint8_t d[6] = { (uint8_t)from, (uint8_t)(from >> 8), (uint8_t)(from >> 16), (uint8_t)(from >> 24), (uint8_t)cnt, 0 };
+      txBridgeSend(BP_LOG, d, sizeof(d));
+    }
+  }
   if (txBr.kick || now - lastSet >= 1000) {
     txBr.kick = false;
     lastSet = now;
@@ -262,8 +292,21 @@ static void txBridgeTick() {
   }
 }
 
-// Порт: C — стан моста; C1 — цифровой вход, C2 — аналоговый; C9 — обновить мост сейчас; проверочный сигнал моста вместо
-// входа (с моста 1.02): C3 — выключить, C4 — тон 1 кГц, C5 — розовый шум, C6 — развёртка 20 Гц → 16 кГц.
+// C8 — журнал моста в порт: всё, что он держит в памяти (до 512 записей), порциями по 16.
+static void txBridgeLogAsk() {
+  if (!txBr.newer) {
+    Serial.println("міст: журналу немає — у мосту стара збірка (передатчик оновить його сам)");
+    return;
+  }
+  uint32_t head = txBr.st.logHead;
+  txBr.prnNext = head > BP_LOG_KEEP ? head - BP_LOG_KEEP : 0;
+  txBr.prnTo = head;
+  txBr.logAskMs = 0;
+  Serial.printf("міст: журнал — записів за весь час %u, у пам'яті моста останні %u\n", (unsigned)head, (unsigned)(head - txBr.prnNext));
+}
+
+// Порт: C — стан моста; C1 — цифровой вход, C2 — аналоговый; C8 — журнал моста; C9 — обновить мост сейчас; проверочный
+// сигнал моста вместо входа (с моста 1.02): C3 — выключить, C4 — тон 1 кГц, C5 — розовый шум, C6 — развёртка 20 Гц → 16 кГц.
 static void txBridgePrint() {
   static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "перевірочний сигнал моста", "перемикання" };
   static const char *const GEN[] = { "немає", "тон 1 кГц", "рожевий шум", "розгортка 20 Гц – 16 кГц" };
@@ -289,5 +332,10 @@ static void txBridgePrint() {
   Serial.printf("  пік Л −%.1f П −%.1f дБ; запас %d, поправка %+.1f ppm, провали %u/%u; перескоки такту %u; ядро звуку %u‰; "
                 "остання команда №%u (надіслано №%u); стан %u мс тому\n",
                 s.peakL / 2.0, s.peakR / 2.0, s.level, s.ppm10 / 10.0, s.under, s.over, s.resync, s.cpu1, s.seq, txBr.seq,
-                (unsigned)(now - txBr.lastMs));
+                (unsigned)msSince(txBr.lastMs, now));
+  if (txBr.newer)
+    Serial.printf("  збірка моста CRC-32 %08x (%s); запуск №%u; журнал: записів %u, забрано %u, у черзі на карту %u, втрачено з черги %u; "
+                  "кнопка USR: натискань %u\n", (unsigned)s.appCrc, s.appCrc == BRIDGE_FW_CRC32 ? "як вбудована" : "НЕ як вбудована",
+                  s.boot, (unsigned)s.logHead, (unsigned)txBr.logGot, (unsigned)(brLogPut - brLogGot), (unsigned)brLogDrop, s.btnSeq);
+  else Serial.println("  збірка моста стара (до 22.10): без журналу й кнопки — передатчик оновить її сам");
 }

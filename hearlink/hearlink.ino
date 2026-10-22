@@ -43,6 +43,8 @@
 //   L<0|1>       — язык надписей: 0 — українська, 1 — English (ставится на передатчике, приёмники берут его сами)
 //   S<имя>       — передатчик: назвать источник звука (надпись на кнопке вместо «З пульта»); S без имени — вернуть
 //   D            — передатчик: что с картой памяти (отвечает ли, объём, разметка)
+//   C…           — передатчик 4.x, мост: C — его стан; C1 — цифровой вход, C2 — аналоговый; C3…C6 — проверочный сигнал
+//                  моста (нет, тон, розовый шум, развёртка); C8 — журнал моста; C9 — обновить мост сейчас
 //   B            — самопроверка шифра и замер его времени на плате
 //   M / M1 / M0  — передатчик: обновление прошивки приёмников по радио (ota.h) — состояние / начать / отменить
 //   Q            — передатчик: «чёрный ящик» радио (bbox.h) — счётчики, последний слепок, события этой минуты;
@@ -1255,9 +1257,13 @@ static void command(String s) {
         } else recWantStop = true;
       }
       return;
-    case 'C':   // передатчик 4.x: мост — C стан; C1 — цифровий вхід (AES), C2 — аналоговий (PCM1808); C9 — оновити міст зараз
+    case 'C':   // передатчик 4.x: мост — C стан; C1 — цифровий вхід (AES), C2 — аналоговий (PCM1808); C8 — журнал моста; C9 — оновити міст зараз
       if (cfg.isTx) {
         if (arg.length() && v == 9) brUpd.ask = true;
+        if (arg.length() && v == 8) {
+          txBridgeLogAsk();
+          return;
+        }
         if (arg.length() && v >= 3 && v <= 6) {   // проверочный сигнал моста: C3 нет, C4 тон, C5 розовый шум, C6 развёртка
           txBr.gen = (uint8_t)(v - 3);
           if (cfg.tone) cfg.tone = 0;   // сигнал идёт входом — вход и должен быть в эфире
@@ -1266,6 +1272,7 @@ static void command(String s) {
         if (arg.length() && (v == BP_SRC_AES || v == BP_SRC_PCM)) {
           cfg.bridgeSrc = (uint8_t)v;
           if (cfg.tone) cfg.tone = 0;   // выбор входа — это и «в ефір вхід» (как кнопка на экране)
+          txBr.gen = BP_GEN_OFF;
           txBr.kick = true;
           settingsSave();
           if (cfg.board == BOARD_4848) ui::needFull = true;
@@ -1907,7 +1914,8 @@ static void logEmit() {
     head = true;
     o += snprintf(t + o, cap - o, "# hearlink %s; запуск: %s; рядки раз на 10 с: час с, канал, швидкість, якість, пакетів, відмов, не пішло, перезапусків радіо, "
                   "до ефіру сер./макс. мс, черга, проріджено, пропущено, рівень дБ, джерело, запис, шум радіо дБм | приймач: зв'язок, сон, сигнал там/тут дБм, запас мс, втрати %%, "
-                  "пропусків, провалів мс, повідомлень про себе отримано/не дійшло\n", FW_VERSION, resetReason());
+                  "пропусків, провалів мс, повідомлень про себе отримано/не дійшло | міст (4.x): версія, запуск, що грає, AES Гц, перескоки, "
+                  "провали; рядки «міст #…» — записи журналу моста\n", FW_VERSION, resetReason());
   }
   const LogAcc &a = logAcc;
   o += snprintf(t + o, cap - o, "t=%u к=%u шв=%s як=%u пак=%u відм=%u неп=%u рест=%u еф=%.1f/%.1f черга=%d прор=%u проп=%u рів=%.0f дж=%s зап=%u шум=%.0f", (unsigned)(millis() / 1000),
@@ -1921,8 +1929,23 @@ static void logEmit() {
                   p.flags & ST_SLEEP ? 1u : p.flags & ST_OFF ? 2u : 0u, p.rssi, p.rssiHere, p.depthMs, p.lossPm / 10.0f, p.lostFrames, p.underMs, (unsigned)p.stGot10, (unsigned)p.stMiss10);
     p.stGot10 = p.stMiss10 = 0;
   }
+  if (cfg.input == IN_I2S && o < cap - 120) {   // мост (4.x): его стан
+    if (txBridgeOk()) {
+      const bp_status_t &b = txBr.st;
+      static const char *const A[] = { "-", "AES", "PCM", "тиша", "тест", "перем" };
+      o += snprintf(t + o, cap - o, " | міст %u.%02u зап=%u грає=%s aes=%u пер=%u пров=%u/%u ядро=%u", b.verMajor, b.verMinor, (unsigned)b.boot,
+                    A[b.act <= BP_ACT_SWITCH ? b.act : 0], (unsigned)b.aesRate, b.resync, b.under, b.over, b.cpu1);
+    } else o += snprintf(t + o, cap - o, " | міст НЕ НА ЗВ'ЯЗКУ");
+  }
   if (o > cap - 2) o = cap - 2;
   t[o++] = '\n';
+  for (int k = 0; k < 8 && brLogGot != brLogPut && o < cap - 200; k++) {   // новые записи журнала моста — своими строками
+    uint32_t i = brLogGot % BRLOG_Q;
+    int n = txBridgeLogLine(brLogQn[i], brLogQ[i], t + o, cap - o - 2);
+    o += n < cap - o - 2 ? n : cap - o - 2;
+    t[o++] = '\n';
+    brLogGot++;
+  }
   t[o] = 0;
   logSeq = logSeq + 1;
 }
