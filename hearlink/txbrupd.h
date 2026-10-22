@@ -270,7 +270,10 @@ static void txBridgeTick() {
   // журнал моста: новые записи — в журнал на карту (по 64, пока отстаём, раз в 2 с); C8 — весь в порт (по 16 сразу
   // одна порция за другой: строка в порт идёт ~9 мс, и 16 строк главный цикл печатает за время, которое держит кольцо)
   if (txBr.newer && txBridgeOk() && now - txBr.logAskMs >= (txBr.prnTo ? 300u : 2000u)) {
-    uint32_t from = 0, cnt = 0;
+    // старше этого мост уже переписал новыми — дальше ждать их бессмысленно
+    uint32_t oldest = txBr.st.logHead > BP_LOG_KEEP ? txBr.st.logHead - BP_LOG_KEEP : 0, from = 0, cnt = 0;
+    if (txBr.logNext < oldest) txBr.logNext = oldest;
+    if (txBr.prnTo && txBr.prnNext < oldest) txBr.prnNext = oldest;
     if (txBr.prnTo) {
       from = txBr.prnNext;
       cnt = 16;

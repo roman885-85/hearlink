@@ -52,9 +52,17 @@ static int txBridgeLogLine(uint32_t num, const bp_log_rec_t &r, char *o, int cap
                   sec % 60, (unsigned long)(r.ms % 1000u), t);
 }
 
+// Записи берутся строго по порядку номеров. Мост шлёт их потоком (после BP_LOG — и новые, по мере появления), и
+// пропавший кадр (испорченный или не вместившийся в кольцо) иначе оставлял дыру: 22.10 в журнале карты не было записи
+// #23 (в C8 она была). Номер дальше ожидаемого — разрыв: такие кадры пропустить и вскоре спросить заново с нужного.
+static void txBridgeLogGap() {
+  uint32_t now = millis();
+  if (now - txBr.logAskMs > 300) txBr.logAskMs = now - 1700;   // повтор через 0,3 с (кадры «из старого потока» ещё идут)
+}
 static void txBridgeLogRec(uint32_t num, const bp_log_rec_t &r) {
   txBr.logGot++;
-  if (txBr.prnTo && num >= txBr.prnNext) {   // C8: в порт (num > prnNext — старые мост уже переписал новыми)
+  if (txBr.prnTo && num > txBr.prnNext) txBridgeLogGap();
+  if (txBr.prnTo && num == txBr.prnNext) {   // C8: в порт
     char line[180];
     txBridgeLogLine(num, r, line, sizeof(line));
     Serial.println(line);
@@ -65,7 +73,8 @@ static void txBridgeLogRec(uint32_t num, const bp_log_rec_t &r) {
     }
     txBr.logAskMs = 0;   // следующую порцию — сразу
   }
-  if (num >= txBr.logNext) {   // новое — в журнал на карту
+  if (num > txBr.logNext) txBridgeLogGap();
+  if (num == txBr.logNext) {   // новое — в журнал на карту
     if (brLogPut - brLogGot >= BRLOG_Q) {
       brLogGot++;
       brLogDrop++;
