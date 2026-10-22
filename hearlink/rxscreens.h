@@ -1055,6 +1055,15 @@ static void menuIcon(u8g2_t *g, int id, int x, int y, float ph = -1) {
       u8g2_DrawPixel(g, x + 6, y + 3);
       u8g2_DrawHLine(g, x + 2, y + 8, 5);
       break;
+    case 24: {  // эквалайзер (с 4.00): три движка, ручки ходят
+      static const uint8_t Y0[3] = { 2, 5, 3 };
+      for (int k = 0; k < 3; k++) {
+        int cx = x + 1 + k * 3, cy = y + Y0[k] + (mv ? ((f + k * 3) & 7) / 4 : 0);
+        u8g2_DrawVLine(g, cx, y, 9);
+        u8g2_DrawBox(g, cx - 1, cy, 3, 2);
+      }
+      break;
+    }
     case 23:  // яркость: солнце — лучи поворачиваются
       u8g2_DrawDisc(g, x + 4, y + 4, 1, U8G2_DRAW_ALL);
       if (!mv || s1 == 0) {

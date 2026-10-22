@@ -71,7 +71,7 @@ enum Page { PG_HOME, PG_RX, PG_SOUND, PG_AIR, PG_SETUP, PG_HELP, PG_N };
 const int TABW = W / PG_N;   // ширина вкладки
 const int RX_MAX = 16, RX_ROWS = 5, RX_NAME = 66;   // имя приёмника — до 32 букв (NAME_LONG в proto.h)
 enum Param { P_CHANNEL, P_KIT, P_RATE, P_POWER, P_GAIN, P_INPUT, P_TONE, P_BRIGHT, P_DIM, P_QUALITY,
-             P_TRACK, P_DUCK_S, P_DUCK_DB, P_VOICE_GAP, P_MUSIC_DB, P_VOICE_DB, P_STEREO, P_HOP, P_LANG, P_DEBUG, P_WEAK, P_COUNT };
+             P_TRACK, P_DUCK_S, P_DUCK_DB, P_VOICE_GAP, P_MUSIC_DB, P_VOICE_DB, P_STEREO, P_HOP, P_LANG, P_DEBUG, P_WEAK, P_BRUPD, P_COUNT };
 
 // Что показывать. Заполняет устройство перед каждым кадром.
 struct View {
@@ -107,6 +107,7 @@ struct View {
   bool brOk = false;                   // мост на связи (стан за последние 1,5 с)
   uint8_t brAes = 0;                   // стан AES: 0 — немає, 1 — ловить, 2 — є, 3 — частота, якої міст не бере
   uint32_t brRate = 0;                 // частота AES, Гц
+  uint8_t brUpdSt = 0, brUpdPct = 0;   // обновление моста отсюда: стан (BU_*, txbridge.h) и ход, %
   uint8_t card = 0;                    // почему карты нет: 0 — не отвечает, 2 — не та разметка, 3 — отвечает, но не запускается
   char cardFs[12] = "";                // какая на ней разметка, если не та
   uint32_t recS = 0, sdFreeMb = 0;
@@ -261,6 +262,7 @@ static const ParamDef PARAM[P_COUNT] = {
   { "Мова / Language", "Мова написів на передавачі й на приймачах та голос оголошення в перевірочному звуці. Language of the transmitter and receivers and the voice of the test announcement.", K_LIST, 0, 1, 1, "", OPT_LANG },
   { "Налагодження ефіром", "Рядки порту всіх пристроїв набору видно в порту того, що підключений до комп'ютера; команди іншим пристроям — теж ефіром. Для налагодження без дротів до приймачів.", K_TOGGLE, 0, 1, 1, "", nullptr },
   { "Слабкий сигнал", "Коли якийсь приймач чує передавач слабо (-75 дБм і слабше) або в нього пропадає звук, передавач сам переходить на 1 Мбіт/с — так чути далі — і повертає обрану швидкість, коли сигнал знову добрий. Якість звуку на цей час — «стандартна». «Не знижувати» — швидкість і якість завжди такі, як обрано, але далекий приймач може втрачати звук.", K_LIST, 0, 1, 1, "", OPT_WEAK },
+  { "Оновлювати міст сам", "Коли в моста (Raspberry Pi Pico) інша версія програми, ніж вбудована в прошивку передавача, передавач сам ставить йому свою: звук зі входу зупиняється секунд на десять, хід видно на головній. Вимкнено — міст лишається як є.", K_TOGGLE, 0, 1, 1, "", nullptr },
 };
 
 static const char *rateNowText = "";   // на какой скорости передатчик работает сейчас (заполняет устройство)
@@ -830,6 +832,7 @@ static Box itemBox(int id) {
     case ID_ROW + P_BRIGHT: return rowBox(0, 76, 46, 6);
     case ID_ROW + P_DIM: return rowBox(1, 76, 46, 6);
     case ID_SRCNAME: return rowBox(2, 76, 46, 6);
+    case ID_ROW + P_BRUPD: return rowBox(2, 76, 46, 6);   // с 4.00 на месте «Назва джерела звуку» (входов теперь два, имена у кнопок свои)
     case ID_ABOUT: return Box{ 16, 284, 218, 46 };              // пятая строка настроек поделена: слева «Про пристрій»,
     case ID_ROW + P_DEBUG: return Box{ 246, 284, 218, 46 };     // справа — отладка по радио
     case ID_RESTART: return Box{ 16, 336, 218, 46 };
@@ -1265,6 +1268,11 @@ static void drawContent() {
         const char *t = view.fileOn ? tr("Рівень звуку з файлу") : view.val[P_TONE] ? tr("Рівень перевірочного звуку") : nullptr;
         char tt[80];
         uint16_t ink = C_MUTED_FG;
+        if (!t && view.brUpdSt >= 1 && view.brUpdSt <= 6) {   // идёт обновление моста (txbridge.h, BU_ENTER…BU_APP)
+          snprintf(tt, sizeof(tt), tr("Оновлюю міст: %u %% — вхід тимчасово вимкнено"), view.brUpdPct);
+          t = tt;
+          ink = C_WARN;
+        }
         if (!t) {
           if (!view.brOk) {
             t = tr("Міст не відповідає — входу немає");
@@ -1354,7 +1362,7 @@ static void drawContent() {
     case PG_SETUP:
       item(ID_ROW + P_BRIGHT);
       item(ID_ROW + P_DIM);
-      item(ID_SRCNAME);
+      item(ID_ROW + P_BRUPD);
       item(ID_ABOUT);
       item(ID_ROW + P_DEBUG);
       item(ID_RESTART);
@@ -3704,7 +3712,7 @@ static void frameBody(bool down, int tx, int ty) {
     }
     {   // мост (4.00): пропал или вернулся, появился или пропал сигнал AES — на главной это в подписи уровня
       static int brShown = -1;
-      int br = (view.brOk ? 1 : 0) | (view.brAes << 1) | (int)(((view.brRate + 500) / 1000) << 4);
+      int br = (view.brOk ? 1 : 0) | (view.brAes << 1) | (int)(((view.brRate + 500) / 1000) << 4) | (view.brUpdSt << 12) | (view.brUpdPct << 16);
       if (br != brShown) {
         if (page == PG_HOME) needFull = true;
         brShown = br;

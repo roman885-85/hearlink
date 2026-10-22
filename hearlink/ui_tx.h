@@ -564,6 +564,21 @@ static void task(void *) {
     v.brOk = txBridgeOk();
     v.brAes = txBr.st.aes;
     v.brRate = txBr.st.aesRate;
+    v.brUpdSt = brUpd.st;
+    v.brUpdPct = brUpd.pct;
+    v.val[ui::P_BRUPD] = cfg.brAutoUpd;
+    {   // обновление моста кончилось — сказать на экране
+      static uint8_t stWas;
+      uint8_t st = brUpd.st;
+      if (st != stWas) {
+        if (st == BU_DONE) {
+          char t[64];
+          snprintf(t, sizeof(t), tr("Міст оновлено: версія %u.%02u"), BRIDGE_FW_VER_MAJOR, BRIDGE_FW_VER_MINOR);
+          ui::toast(t);
+        } else if (st == BU_FAIL) ui::toast(tr("Міст не оновився — спробую ще раз"));
+        stWas = st;
+      }
+    }
     v.recS = recSamples / SRATE;
     v.sdFreeMb = recFreeMb;
     v.scanning = scanRunning;
@@ -879,6 +894,7 @@ static void task(void *) {
         case ui::P_STEREO: cfg.stereo = val ? 1 : 0; break;
         case ui::P_HOP: cfg.autoHop = val ? 1 : 0; break;
         case ui::P_DEBUG: cfg.dbgAir = val ? 1 : 0; break;
+        case ui::P_BRUPD: cfg.brAutoUpd = val ? 1 : 0; break;   // мост: обновлять сам (txbridge.h)
         case ui::P_LANG:
           cfg.lang = val ? 1 : 0;
           uiLang = cfg.lang;

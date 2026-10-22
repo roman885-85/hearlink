@@ -75,6 +75,7 @@ void settingsFactory();
 #include "txbridge.h"  // 4.x: мост на Pi Pico — входы аналоговый и цифровой (до txaudio.h: звуковая задача кладёт ему байты)
 #include "txaudio.h"
 #include "txpeers.h"
+#include "txbrupd.h"   // 4.x: обновление моста отсюда, команды мосту, его стан в порт (после txaudio.h)
 #include "rxaudio.h"
 #include "rxlink.h"
 #include "ota.h"      // обновление прошивки приёмников по радио
@@ -1254,8 +1255,9 @@ static void command(String s) {
         } else recWantStop = true;
       }
       return;
-    case 'C':   // передатчик 4.x: мост — C стан; C1 — цифровий вхід (AES), C2 — аналоговий (PCM1808)
+    case 'C':   // передатчик 4.x: мост — C стан; C1 — цифровий вхід (AES), C2 — аналоговий (PCM1808); C9 — оновити міст зараз
       if (cfg.isTx) {
+        if (arg.length() && v == 9) brUpd.ask = true;
         if (arg.length() && (v == BP_SRC_AES || v == BP_SRC_PCM)) {
           cfg.bridgeSrc = (uint8_t)v;
           if (cfg.tone) cfg.tone = 0;   // выбор входа — это и «в ефір вхід» (как кнопка на экране)

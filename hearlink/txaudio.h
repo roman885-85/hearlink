@@ -343,6 +343,10 @@ static NSX_HOT bool txReadI2s(int16_t *pcm, int16_t *sd) {
     txAdcRailUi = txAdcRailUi + rl + rr;
   }
   txRawSamples = txRawSamples + FRAME;
+  if (txBrMute) {   // идёт обновление моста: на выводе 40 ответы его загрузчика, а не звук (txbridge.h)
+    memset(pcm, 0, FRAME * sizeof(int16_t));
+    memset(sd, 0, FRAME * sizeof(int16_t));
+  }
   return true;
 }
 

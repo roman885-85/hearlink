@@ -226,6 +226,19 @@ int main() {
     scroll += (first * 16 - scroll) * 0.3f;
     rxs::menuList(&g, t, rows, 10, sel, scroll, item == 3);
   }, { 300, 1300, 1800, 2800, 3800 });
+  scene("15б меню: еквалайзер (4.00)", 3600, [](uint32_t t) {
+    static const char *const N[] = { "Чіткість", "Екв. 125 Гц", "Екв. 400 Гц", "Екв. 1 кГц", "Екв. 2,5 кГц", "Екв. 6 кГц", "Зріз низів", "Баланс" };
+    static const char *const V[] = { "вимк.", "+4 дБ", "0 дБ", "0 дБ", "-2 дБ", "+2 дБ", "вимк.", "рівно" };
+    static const uint8_t IC[] = { 12, 24, 24, 24, 24, 24, 24, 13 };
+    rxs::MenuRow rows[8];
+    for (int i = 0; i < 8; i++) rows[i] = rxs::MenuRow{ N[i], V[i], IC[i] };
+    int item = 1 + (int)(t / 600) % 6;
+    static float sel, scroll;
+    int first = item < 2 ? 0 : item > 5 ? 4 : item - 1;
+    sel += (item - sel) * 0.3f;
+    scroll += (first * 16 - scroll) * 0.3f;
+    rxs::menuList(&g, t, rows, 8, sel, scroll, false);
+  }, { 400, 1600, 3000 });
   scene("16 зв'язок", 4000, [](uint32_t t) {
     static int8_t hr[60];
     static uint8_t hl[60];

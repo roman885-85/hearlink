@@ -14,7 +14,6 @@ assets/
 backup/
 tools/simrxc/out/
 tools/simrxc/build/
-# мост: журналы сборки и образ для передатчика (собирается bridge/build.sh)
+# мост: журналы сборки (образ для передатчика hearlink/bridge_fw.h — в git: без него передатчик не соберётся)
 bridge/*.log
 bridge/build-*.txt
-hearlink/bridge_fw.h

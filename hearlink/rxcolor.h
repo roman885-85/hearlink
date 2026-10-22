@@ -1453,6 +1453,15 @@ static void icon(G &g, int id, float x, float y, uint16_t c, float ph = -1, uint
       g.discFast(x + 14, y + 8.5f, 1.8f, C_SKY);
       g.line(x + 6, y + 18.5f, x + 14, y + 18.5f, 2, c);
       break;
+    case 24: {   // эквалайзер (с 4.00): три движка — ручки ходят вверх-вниз, каждая в свою сторону
+      static const float Y0[3] = { 7, 13, 9 };
+      for (int k = 0; k < 3; k++) {
+        float cx = x + 4 + k * 6, cy = y + Y0[k] + (mv ? 2.2f * sinf(a + k * 2.1f) : 0);
+        g.line(cx, y + 3, cx, y + 17, 1.6f, c);
+        g.discFast(cx, cy, 2.6f, c);
+      }
+      break;
+    }
     case 23: {   // яркость: солнце — лучи вращаются
       float r0 = 0.39f + (mv ? ph * 0.785398f : 0), rad = mv ? 4 + 0.5f * sn : 4;
       g.discFast(x + 10, y + 10, rad, c);
@@ -1583,7 +1592,7 @@ static void toast(G &g, const char *s, float k) {
 // полосу, а для перехода хранится копия прежней. Виды экрана — те же, что в ui_rx.h (SC_…).
 enum { SC_NONE, SC_UPDATE, SC_IDENT, SC_SLEEP, SC_SPLASH, SC_UNPAIRED, SC_GOING, SC_STARTING, SC_SEARCH, SC_MUTE, SC_MAIN, SC_LOST, SC_MENU, SC_ABOUT,
        SC_LINK, SC_EAR };
-constexpr int MENU_MAX = 30;
+constexpr int MENU_MAX = 36;   // с 4.00 пунктов 33 (+ эквалайзер)
 struct Scene {
   uint8_t sid = SC_NONE;
   uint32_t t = 0;              // время, по которому идёт движение этого экрана, мс

@@ -52,54 +52,5 @@ static void txBridgeFrame(const uint8_t *enc, int n) {
   txBr.frames++;
 }
 
-// Главный цикл: разобрать обратный канал и раз в секунду (или сразу после смены входа) напомнить мосту, какой вход играть.
-static void txBridgeTick() {
-  static uint8_t enc[64];
-  static int en = -1;   // −1 — ждём нуля-разделителя (начало потока или потеря)
-  uint32_t put = brPut, got = brGot;
-  if (put - got > BR_RING) {   // главный цикл отстал больше чем на 128 мс — пропущенное не разобрать
-    brLost = brLost + (put - got - BR_RING);
-    got = put - BR_RING;
-    en = -1;
-  }
-  while (got != put) {
-    uint8_t b = brRing[got & (BR_RING - 1)];
-    got++;
-    if (!b) {
-      if (en > 0) txBridgeFrame(enc, en);
-      en = 0;
-    } else if (en >= 0 && en < (int)sizeof(enc)) enc[en++] = b;
-    else en = -1;
-  }
-  brGot = got;
-  static uint32_t lastSet;
-  uint32_t now = millis();
-  if (txBr.kick || now - lastSet >= 1000) {
-    txBr.kick = false;
-    lastSet = now;
-    uint8_t d[4] = { (uint8_t)(cfg.bridgeSrc == BP_SRC_AES ? BP_SRC_AES : BP_SRC_PCM), BP_FMT_LJ, 0, ++txBr.seq };
-    txBridgeSend(BP_SET, d, sizeof(d));
-  }
-}
-
-// Порт: C — стан моста; C1 — цифровой вход, C2 — аналоговый.
-static void txBridgePrint() {
-  static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "тон моста", "перемикання" };
-  static const char *const AES[] = { "немає сигналу", "ловлю", "є", "частота, якої міст не бере" };
-  uint32_t now = millis();
-  Serial.printf("міст: обрано %s; кадрів стану %u, зіпсованих %u, байтів зворотного каналу втрачено %u, команд надіслано %u\n",
-                cfg.bridgeSrc == BP_SRC_AES ? "цифровий вхід" : "аналоговий вхід", (unsigned)txBr.frames, (unsigned)txBr.bad, (unsigned)brLost,
-                (unsigned)txBr.sent);
-  if (!txBr.lastMs) {
-    Serial.println("  міст МОВЧИТЬ: жодного кадру стану (не підключений, не прошитий або без живлення)");
-    return;
-  }
-  const bp_status_t &s = txBr.st;
-  Serial.printf("  %s; версія %u.%02u (завантажувач %u), працює %u с; звучить: %s; AES: %s %u Гц, помилок парності %u\n",
-                txBridgeOk() ? "на зв'язку" : "НЕ НА ЗВ'ЯЗКУ", s.verMajor, s.verMinor, s.loaderVer, (unsigned)s.uptime,
-                ACT[s.act <= BP_ACT_SWITCH ? s.act : 0], AES[s.aes <= BP_AES_RATE ? s.aes : 0], (unsigned)s.aesRate, (unsigned)s.aesParity);
-  Serial.printf("  пік Л −%.1f П −%.1f дБ; запас %d, поправка %+.1f ppm, провали %u/%u; перескоки такту %u; ядро звуку %u‰; "
-                "остання команда №%u (надіслано №%u); стан %u мс тому\n",
-                s.peakL / 2.0, s.peakR / 2.0, s.level, s.ppm10 / 10.0, s.under, s.over, s.resync, s.cpu1, s.seq, txBr.seq,
-                (unsigned)(now - txBr.lastMs));
-}
+// Идёт обновление моста (txbrupd.h): на выводе 40 ответы его загрузчика, а не звук — звуковая задача глушит вход.
+static volatile bool txBrMute;   // звук со входа — тишиной (на выводе 40 сейчас ответы загрузчика, а не звук)

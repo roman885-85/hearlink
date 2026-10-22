@@ -400,13 +400,16 @@ static void specUpdate() {
 // шумозаглушение. Те же три настройки меняются с передатчика (окно приёмника → «Обробка звуку»).
 // С 2.72 — и их настройки (владелец 11.10: «добавить настройки для шумодавов»): порог и закрытие пауз, чувствительность
 // шумозаглушения и образец шума.
-enum { M_VIEW, M_LED, M_LANG, M_CLARITY, M_BALANCE, M_VOLMAX, M_BOOST, M_COMP, M_GATE, M_GATETHR, M_GATEREL, M_NS, M_NSSENS, M_NSLEARN, M_EARTEST, M_LINK,
+// С 4.00 за «Чіткістю» — эквалайзер (пять полос и срез низов; владелец 22.10: «добавь настройки эквалайзера в
+// приемники»): до этого он ставился только с передатчика. Дверь та же — rxEqSet, передатчик видит новое в RxInfo.
+enum { M_VIEW, M_LED, M_LANG, M_CLARITY, M_EQ0, M_EQ1, M_EQ2, M_EQ3, M_EQ4, M_LOWCUT, M_BALANCE, M_VOLMAX, M_BOOST, M_COMP, M_GATE, M_GATETHR, M_GATEREL, M_NS, M_NSSENS, M_NSLEARN, M_EARTEST, M_LINK,
        M_KIT, M_CHANNEL, M_DEPTH, M_OUTPUT, M_STEREO, M_SCREEN, M_BRIGHT, M_FORGET, M_RESTART, M_ABOUT, M_EXIT, M_COUNT };
-static const char *const MENU_NAME[M_COUNT] = { "Вигляд", "Світлодіод", "Мова", "Чіткість", "Баланс", "Межа гучн.", "Підсилення", "Стискання", "У паузах",
+static const char *const MENU_NAME[M_COUNT] = { "Вигляд", "Світлодіод", "Мова", "Чіткість", "Екв. 125 Гц", "Екв. 400 Гц",
+                                                "Екв. 1 кГц", "Екв. 2,5 кГц", "Екв. 6 кГц", "Зріз низів", "Баланс", "Межа гучн.", "Підсилення", "Стискання", "У паузах",
                                                 "Поріг пауз", "Закриття", "Шумозагл.", "Чутл. шуму", "Зразок шуму", "Навушники", "Зв'язок",
                                                 "Набір", "Канал", "Запас", "Вихід звуку", "Виводи", "Екран", "Яскравість", "Забути набір", "Перезапуск",
                                                 "Про пристрій", "Вийти" };
-static const uint8_t MENU_ICON[M_COUNT] = { 9, 10, 11, 12, 13, 14, 17, 19, 20, 20, 20, 18, 18, 18, 15, 16, 0, 1, 2, 3, 4, 5, 23, 6, 21, 7, 8 };   // значки — rxs::menuIcon / rxc::icon
+static const uint8_t MENU_ICON[M_COUNT] = { 9, 10, 11, 12, 24, 24, 24, 24, 24, 24, 13, 14, 17, 19, 20, 20, 20, 18, 18, 18, 15, 16, 0, 1, 2, 3, 4, 5, 23, 6, 21, 7, 8 };   // значки — rxs::menuIcon / rxc::icon
 // какой пункт меню отвечает за настройку RXP_… (для оповещения «настройку сменили с передатчика»)
 static const uint8_t PARAM_ITEM[RXP_COUNT] = { M_CLARITY, M_BALANCE, M_VOLMAX, M_VIEW, M_LED, M_LANG };
 // «Забути набір»: стереть ключ набора — приёмник снова попросит доступ (для перехода к другому передатчику или
@@ -422,6 +425,16 @@ static void menuValue(int item, char *s, size_t n) {
     case M_CLARITY:
       snprintf(s, n, "%s", cfg.rxClarity == 0 ? tr("вимк.") : cfg.rxClarity == 1 ? tr("легка") : cfg.rxClarity == 2 ? tr("середня") : tr("сильна"));
       break;
+    case M_EQ0:
+    case M_EQ1:
+    case M_EQ2:
+    case M_EQ3:
+    case M_EQ4: {
+      int v = ((int)cfg.rxEq[item - M_EQ0] - 6) * 2;
+      snprintf(s, n, tr("%s%d дБ"), v > 0 ? "+" : "", v);
+      break;
+    }
+    case M_LOWCUT: snprintf(s, n, "%s", cfg.rxLowCut ? tr("увімк.") : tr("вимк.")); break;
     case M_BALANCE:   // при выходе «протифаза» канал один — баланс не к чему приложить
       if (!cfg.rxStereo) snprintf(s, n, "%s", tr("1 канал"));
       else if (!cfg.rxBalance) snprintf(s, n, "%s", tr("рівно"));
@@ -475,6 +488,16 @@ static bool menuChange(int item, int d) {   // true — нужна переза�
     case M_LED: rxParamSet(RXP_LED, cfg.rxLed + d); break;
     case M_LANG: rxParamSet(RXP_LANG, (cfg.rxLang + d + 3 * 8) % 3); break;
     case M_CLARITY: rxParamSet(RXP_CLARITY, cfg.rxClarity + d); break;           // слышно сразу: звук в меню идёт
+    case M_EQ0:
+    case M_EQ1:
+    case M_EQ2:
+    case M_EQ3:
+    case M_EQ4: {   // ±2 дБ за щелчок, −12…+12; слышно сразу
+      int b = item - M_EQ0, v = (int)cfg.rxEq[b] + (d > 0 ? 1 : -1);
+      rxEqSet(b, (uint8_t)(v < 0 ? 0 : v > 12 ? 12 : v));
+      break;
+    }
+    case M_LOWCUT: rxEqSet(5, cfg.rxLowCut ? 0 : 1); break;   // вкл./выкл. любым поворотом
     case M_BALANCE:
       if (cfg.rxStereo) rxParamSet(RXP_BALANCE, cfg.rxBalance + d);
       break;
