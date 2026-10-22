@@ -1258,6 +1258,11 @@ static void command(String s) {
     case 'C':   // передатчик 4.x: мост — C стан; C1 — цифровий вхід (AES), C2 — аналоговий (PCM1808); C9 — оновити міст зараз
       if (cfg.isTx) {
         if (arg.length() && v == 9) brUpd.ask = true;
+        if (arg.length() && v >= 3 && v <= 6) {   // проверочный сигнал моста: C3 нет, C4 тон, C5 розовый шум, C6 развёртка
+          txBr.gen = (uint8_t)(v - 3);
+          if (cfg.tone) cfg.tone = 0;   // сигнал идёт входом — вход и должен быть в эфире
+          txBr.kick = true;
+        }
         if (arg.length() && (v == BP_SRC_AES || v == BP_SRC_PCM)) {
           cfg.bridgeSrc = (uint8_t)v;
           if (cfg.tone) cfg.tone = 0;   // выбор входа — это и «в ефір вхід» (как кнопка на экране)

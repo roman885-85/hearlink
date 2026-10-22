@@ -17,7 +17,7 @@ struct BrUpd {
   volatile uint8_t st = BU_IDLE;
   volatile uint8_t pct = 0;      // ход, %
   const char *why = "";          // почему не вышло (порт)
-  uint32_t off = 0, t0 = 0, sentMs = 0, probeMs = 0;
+  uint32_t off = 0, t0 = 0, sentMs = 0, probeMs = 0, startMs = 0;
   uint8_t tries = 0, runs = 0;   // повторов шага; запусков в это включение
   bool probe = false;            // только спросить загрузчик (мост молчит)
   bool uartOn = false;
@@ -48,7 +48,7 @@ static void brUpdEnd(uint8_t st, const char *why) {
   txBr.kick = true;   // мосту — сразу, какой вход играть
   if (st == BU_FAIL) Serial.printf("міст: оновлення НЕ ВДАЛОСЯ — %s\n", why);
   else if (st == BU_DONE) Serial.printf("міст: оновлено до %u.%02u (%u байт) за %u с\n", BRIDGE_FW_VER_MAJOR, BRIDGE_FW_VER_MINOR,
-                                        (unsigned)BRIDGE_FW_SIZE, (unsigned)((millis() - u.t0) / 1000));
+                                        (unsigned)BRIDGE_FW_SIZE, (unsigned)((millis() - u.startMs) / 1000));
 }
 static bool brUpdBegin(bool probe) {
   BrUpd &u = brUpd;
@@ -74,8 +74,10 @@ static bool brUpdBegin(bool probe) {
   u.pct = 0;
   u.why = "";
   u.t0 = millis();
+  u.startMs = u.t0;
   u.sentMs = 0;
   if (!probe) u.runs++;
+  else Serial.println("міст мовчить — питаю, чи не сидить він у завантажувачі");
   txBrMute = true;
   if (probe) u.st = BU_HELLO;
   else {
@@ -255,19 +257,21 @@ static void txBridgeTick() {
   if (txBr.kick || now - lastSet >= 1000) {
     txBr.kick = false;
     lastSet = now;
-    uint8_t d[4] = { (uint8_t)(cfg.bridgeSrc == BP_SRC_AES ? BP_SRC_AES : BP_SRC_PCM), BP_FMT_LJ, 0, ++txBr.seq };
+    uint8_t d[4] = { (uint8_t)(cfg.bridgeSrc == BP_SRC_AES ? BP_SRC_AES : BP_SRC_PCM), BP_FMT_LJ, txBr.gen, ++txBr.seq };
     txBridgeSend(BP_SET, d, sizeof(d));
   }
 }
 
-// Порт: C — стан моста; C1 — цифровой вход, C2 — аналоговый; C9 — обновить мост сейчас.
+// Порт: C — стан моста; C1 — цифровой вход, C2 — аналоговый; C9 — обновить мост сейчас; проверочный сигнал моста вместо
+// входа (с моста 1.02): C3 — выключить, C4 — тон 1 кГц, C5 — розовый шум, C6 — развёртка 20 Гц → 16 кГц.
 static void txBridgePrint() {
-  static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "тон моста", "перемикання" };
+  static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "перевірочний сигнал моста", "перемикання" };
+  static const char *const GEN[] = { "немає", "тон 1 кГц", "рожевий шум", "розгортка 20 Гц – 16 кГц" };
   static const char *const AES[] = { "немає сигналу", "ловлю", "є", "частота, якої міст не бере" };
   uint32_t now = millis();
-  Serial.printf("міст: обрано %s; кадрів стану %u, зіпсованих %u, байтів зворотного каналу втрачено %u, команд надіслано %u\n",
-                cfg.bridgeSrc == BP_SRC_AES ? "цифровий вхід" : "аналоговий вхід", (unsigned)txBr.frames, (unsigned)txBr.bad, (unsigned)brLost,
-                (unsigned)txBr.sent);
+  Serial.printf("міст: обрано %s; перевірочний сигнал: %s; кадрів стану %u, зіпсованих %u, байтів зворотного каналу втрачено %u, команд надіслано %u\n",
+                cfg.bridgeSrc == BP_SRC_AES ? "цифровий вхід" : "аналоговий вхід", GEN[txBr.gen <= BP_GEN_SWEEP ? txBr.gen : 0], (unsigned)txBr.frames,
+                (unsigned)txBr.bad, (unsigned)brLost, (unsigned)txBr.sent);
   {
     static const char *const ST[] = { "немає", "у завантажувач", "чекаю завантажувач", "записую", "перевіряю", "запускаю", "чекаю програму", "зроблено", "НЕ ВДАЛОСЯ" };
     Serial.printf("  вбудована програма моста %u.%02u (%u байт, CRC-32 %08x); оновлювати сам: %s; оновлення: %s%s%s, %u %%, запусків %u\n",

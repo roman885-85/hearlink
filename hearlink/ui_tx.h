@@ -565,6 +565,7 @@ static void task(void *) {
     v.brAes = txBr.st.aes;
     v.brRate = txBr.st.aesRate;
     v.brUpdSt = brUpd.st;
+    v.brGen = txBr.gen;
     v.brUpdPct = brUpd.pct;
     v.val[ui::P_BRUPD] = cfg.brAutoUpd;
     {   // обновление моста кончилось — сказать на экране

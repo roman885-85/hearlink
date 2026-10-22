@@ -108,6 +108,7 @@ struct View {
   uint8_t brAes = 0;                   // стан AES: 0 — немає, 1 — ловить, 2 — є, 3 — частота, якої міст не бере
   uint32_t brRate = 0;                 // частота AES, Гц
   uint8_t brUpdSt = 0, brUpdPct = 0;   // обновление моста отсюда: стан (BU_*, txbridge.h) и ход, %
+  uint8_t brGen = 0;                   // проверочный сигнал моста вместо входа: 0 нет, 1 тон, 2 розовый шум, 3 развёртка
   uint8_t card = 0;                    // почему карты нет: 0 — не отвечает, 2 — не та разметка, 3 — отвечает, но не запускается
   char cardFs[12] = "";                // какая на ней разметка, если не та
   uint32_t recS = 0, sdFreeMb = 0;
@@ -1268,6 +1269,12 @@ static void drawContent() {
         const char *t = view.fileOn ? tr("Рівень звуку з файлу") : view.val[P_TONE] ? tr("Рівень перевірочного звуку") : nullptr;
         char tt[80];
         uint16_t ink = C_MUTED_FG;
+        if (!t && view.brGen >= 1 && view.brGen <= 3) {   // вместо входа — проверочный сигнал моста (порт C4…C6)
+          static const char *const G[3] = { "Замість входу — тон 1 кГц з моста", "Замість входу — рожевий шум з моста",
+                                            "Замість входу — розгортка з моста" };
+          t = tr(G[view.brGen - 1]);
+          ink = C_WARN;
+        }
         if (!t && view.brUpdSt >= 1 && view.brUpdSt <= 6) {   // идёт обновление моста (txbridge.h, BU_ENTER…BU_APP)
           snprintf(tt, sizeof(tt), tr("Оновлюю міст: %u %% — вхід тимчасово вимкнено"), view.brUpdPct);
           t = tt;
@@ -3712,7 +3719,8 @@ static void frameBody(bool down, int tx, int ty) {
     }
     {   // мост (4.00): пропал или вернулся, появился или пропал сигнал AES — на главной это в подписи уровня
       static int brShown = -1;
-      int br = (view.brOk ? 1 : 0) | (view.brAes << 1) | (int)(((view.brRate + 500) / 1000) << 4) | (view.brUpdSt << 12) | (view.brUpdPct << 16);
+      int br = (view.brOk ? 1 : 0) | (view.brAes << 1) | (int)(((view.brRate + 500) / 1000) << 4) | (view.brUpdSt << 12) | (view.brUpdPct << 16) |
+               (view.brGen << 24);
       if (br != brShown) {
         if (page == PG_HOME) needFull = true;
         brShown = br;

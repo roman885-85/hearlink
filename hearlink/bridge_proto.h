@@ -38,6 +38,8 @@ enum { BP_ACK_OK = 0, BP_ACK_BAD = 1, BP_ACK_FLASH = 2, BP_ACK_CRC = 3 };
 enum { BP_SRC_AUTO = 0, BP_SRC_AES = 1, BP_SRC_PCM = 2, BP_SRC_MUTE = 3 };
 // Формат PCM1808 (вивід FMT): 0 — «лівовирівняний» (FMT на 3,3 В, як зараз), 1 — I2S (FMT на землі)
 enum { BP_FMT_LJ = 0, BP_FMT_I2S = 1 };
+// Перевірочний сигнал моста (BP_SET d[2]; з 1.02 — не лише тон): іде замість входу через увесь шлях передавача
+enum { BP_GEN_OFF = 0, BP_GEN_TONE = 1 /* 1 кГц, −12 дБ */, BP_GEN_PINK = 2 /* рожевий шум, −20 дБ */, BP_GEN_SWEEP = 3 /* 20 Гц → 16 кГц за 10 с */ };
 // Що звучить насправді
 enum { BP_ACT_NONE = 0, BP_ACT_AES = 1, BP_ACT_PCM = 2, BP_ACT_MUTE = 3, BP_ACT_TONE = 4, BP_ACT_SWITCH = 5 };
 // Стан прийому AES

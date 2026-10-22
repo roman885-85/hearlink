@@ -21,6 +21,7 @@ static inline void IRAM_ATTR txBridgeFeed(const int32_t *raw, int frames) {
 
 struct TxBridge {
   bp_status_t st;                 // последний стан моста
+  volatile uint8_t gen;           // проверочный сигнал моста вместо входа (BP_GEN_*; не запоминается — с порта C3…C6)
   volatile uint32_t lastMs;       // когда он пришёл (0 — ни разу)
   uint32_t frames, bad, sent;     // кадров стану принято / испорчено; команд послано
   uint8_t seq;                    // номер последней команды (мост повторяет его в стане)
