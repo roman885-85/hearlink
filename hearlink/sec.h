@@ -79,48 +79,93 @@ static inline void secHwOff() {
   esp_aes_release_hardware();
 }
 
-// Шифр: AES-CTR, счётчик блоков — последние четыре байта, с нуля. in и out могут совпадать.
-static void secHwCtr(const uint8_t key[16], const uint8_t n[12], const uint8_t *in, uint8_t *out, size_t len) {
-  uint8_t c[16], ks[16];
-  uint32_t ctr = 0;
+// Ключ (AES-128, зашифрование) и один блок — прямо регистрами устройства. До 22.10 каждый блок шёл через
+// aes_hal_transform_block (вызов из флеша, побайтовое копирование в регистры и обратно), и XOR — по байту: пакет
+// «найвищої» в 1116 байт (~140 блоков) стоил передатчику 594 мкс — 297 мкс на кадр 2 мс, самый дорогой этап
+// (замер Q 22.10). Теперь — слова по 4 байта и код во внутренней памяти; байты на выходе те же (самопроверка B
+// сверяет с эталоном openssl).
+static inline __attribute__((always_inline)) void secHwKey(const uint8_t key[16]) {
+  uint32_t k[4];
+  memcpy(k, key, 16);
+  REG_WRITE(AES_KEY_BASE, k[0]);
+  REG_WRITE(AES_KEY_BASE + 4, k[1]);
+  REG_WRITE(AES_KEY_BASE + 8, k[2]);
+  REG_WRITE(AES_KEY_BASE + 12, k[3]);
+  REG_WRITE(AES_MODE_REG, 0);   // зашифрование, ключ 128 бит
+}
+static inline __attribute__((always_inline)) void secHwBlock(uint32_t w[4]) {
+  REG_WRITE(AES_TEXT_IN_BASE, w[0]);
+  REG_WRITE(AES_TEXT_IN_BASE + 4, w[1]);
+  REG_WRITE(AES_TEXT_IN_BASE + 8, w[2]);
+  REG_WRITE(AES_TEXT_IN_BASE + 12, w[3]);
+  REG_WRITE(AES_TRIGGER_REG, 1);
+  while (REG_READ(AES_STATE_REG) != ESP_AES_STATE_IDLE) {
+  }
+  w[0] = REG_READ(AES_TEXT_OUT_BASE);
+  w[1] = REG_READ(AES_TEXT_OUT_BASE + 4);
+  w[2] = REG_READ(AES_TEXT_OUT_BASE + 8);
+  w[3] = REG_READ(AES_TEXT_OUT_BASE + 12);
+}
+
+// Шифр: AES-CTR, счётчик блоков — последние четыре байта (старшим вперёд), с нуля. in и out могут совпадать.
+static IRAM_ATTR void secHwCtr(const uint8_t key[16], const uint8_t n[12], const uint8_t *in, uint8_t *out, size_t len) {
+  uint32_t c[3], k[4], x[4];
   memcpy(c, n, 12);
-  aes_hal_setkey(key, 16, ESP_AES_ENCRYPT);
-  while (len) {
-    c[12] = (uint8_t)(ctr >> 24);
-    c[13] = (uint8_t)(ctr >> 16);
-    c[14] = (uint8_t)(ctr >> 8);
-    c[15] = (uint8_t)ctr;
-    ctr++;
-    aes_hal_transform_block(c, ks);
-    size_t m = len < 16 ? len : 16;
-    for (size_t i = 0; i < m; i++) out[i] = in[i] ^ ks[i];
-    in += m;
-    out += m;
-    len -= m;
+  secHwKey(key);
+  for (uint32_t ctr = 0; len; ctr++) {
+    k[0] = c[0];
+    k[1] = c[1];
+    k[2] = c[2];
+    k[3] = __builtin_bswap32(ctr);
+    secHwBlock(k);
+    if (len >= 16) {
+      memcpy(x, in, 16);
+      x[0] ^= k[0];
+      x[1] ^= k[1];
+      x[2] ^= k[2];
+      x[3] ^= k[3];
+      memcpy(out, x, 16);
+      in += 16;
+      out += 16;
+      len -= 16;
+    } else {
+      const uint8_t *kb = (const uint8_t *)k;
+      for (size_t i = 0; i < len; i++) out[i] = in[i] ^ kb[i];
+      len = 0;
+    }
   }
 }
 
 // Подпись: AES-CBC-MAC по сообщению «первый блок | открытая часть | шифртекст» (каждая часть добита нулями до 16 байт).
 // В первом блоке — одноразовое число и обе длины, поэтому сообщение разбирается однозначно.
-static void secHwTag(const uint8_t key[16], const uint8_t n[12], const uint8_t *aad, size_t aadLen, const uint8_t *ct, size_t len, uint8_t tag[SEC_TAG]) {
-  uint8_t y[16] = {};
-  aes_hal_setkey(key, 16, ESP_AES_ENCRYPT);
-  memcpy(y, n, 12);
-  y[12] = (uint8_t)aadLen;
-  y[13] = (uint8_t)len;
-  y[14] = (uint8_t)(len >> 8);
-  y[15] = 0x48;
-  aes_hal_transform_block(y, y);
+static IRAM_ATTR void secHwTag(const uint8_t key[16], const uint8_t n[12], const uint8_t *aad, size_t aadLen, const uint8_t *ct, size_t len, uint8_t tag[SEC_TAG]) {
+  uint32_t y[4], x[4];
+  uint8_t *yb = (uint8_t *)y;
+  memcpy(yb, n, 12);
+  yb[12] = (uint8_t)aadLen;
+  yb[13] = (uint8_t)len;
+  yb[14] = (uint8_t)(len >> 8);
+  yb[15] = 0x48;
+  secHwKey(key);
+  secHwBlock(y);
   if (aadLen) {
-    for (size_t i = 0; i < aadLen; i++) y[i] ^= aad[i];
-    aes_hal_transform_block(y, y);
+    for (size_t i = 0; i < aadLen; i++) yb[i] ^= aad[i];
+    secHwBlock(y);
   }
   while (len) {
-    size_t m = len < 16 ? len : 16;
-    for (size_t i = 0; i < m; i++) y[i] ^= ct[i];
-    aes_hal_transform_block(y, y);
-    ct += m;
-    len -= m;
+    if (len >= 16) {
+      memcpy(x, ct, 16);
+      y[0] ^= x[0];
+      y[1] ^= x[1];
+      y[2] ^= x[2];
+      y[3] ^= x[3];
+      ct += 16;
+      len -= 16;
+    } else {
+      for (size_t i = 0; i < len; i++) yb[i] ^= ct[i];
+      len = 0;
+    }
+    secHwBlock(y);
   }
   memcpy(tag, y, SEC_TAG);
 }
