@@ -167,7 +167,7 @@ static bool pendSeen(int k, uint8_t cmd, uint8_t key, uint8_t rep, PendAgain *ag
     return false;
   }
   uint32_t now = millis();
-  if (now - e->sentMs < 1500) return true;   // ещё в пути
+  if (msSince(e->sentMs, now) < 1500) return true;   // ещё в пути (метка — millis() | 1, бывает на 1 мс впереди)
   if (e->tries >= 20) {
     memcpy((void *)pendLastLost, e->id, 3);
     pendLastLost[3] = cmd;

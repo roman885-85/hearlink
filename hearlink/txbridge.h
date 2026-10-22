@@ -31,7 +31,7 @@ static TxBridge txBr;
 // мост на связи: годный стан был за последние полторы секунды
 static bool txBridgeOk() {
   uint32_t t = txBr.lastMs;
-  return t && millis() - t < 1500;
+  return t && msSince(t) < 1500;   // msSince: метка «из будущего» (millis() | 1 в ту же мс) — это «только что», а не «давно»
 }
 
 static void txBridgeSend(uint8_t cmd, const uint8_t *d, size_t n) {
@@ -49,7 +49,8 @@ static void txBridgeFrame(const uint8_t *enc, int n) {
     return;
   }
   memcpy(&txBr.st, raw, sizeof(bp_status_t));
-  txBr.lastMs = millis() | 1;
+  uint32_t t = millis();
+  txBr.lastMs = t ? t : 1;   // не «| 1»: метка на 1 мс впереди часов при беззнаковом вычитании — «давно» (см. txBridgeOk)
   txBr.frames++;
 }
 

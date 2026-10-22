@@ -1053,7 +1053,7 @@ static void rxTask(void *) {
       static uint32_t hold;
       bool mine = rxTxBusy();
       if (mine && !hold) hold = millis() | 1;
-      if (!mine || millis() - hold >= 12) {
+      if (!mine || msSince(hold) >= 12) {   // hold — millis() | 1: беззнаковое вычитание давало «давно» и ожидание пропускалось
         hold = 0;
         rxHopDo(mine, false);
       }

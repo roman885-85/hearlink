@@ -255,7 +255,7 @@ static int chanScore(int ch) {
   return sc;
 }
 static inline bool chExpFresh(int ch, uint32_t now) {
-  return chExpMs[ch - 1] && now - chExpMs[ch - 1] < 1800000;
+  return chExpMs[ch - 1] && msSince(chExpMs[ch - 1], now) < 1800000;
 }
 static int peersPlayingNow() {
   int n = 0;

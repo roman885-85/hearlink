@@ -114,7 +114,7 @@ static void brUpdTick() {
     u.ask = false;
     if (!start && cfg.brAutoUpd && cfg.input == IN_I2S && !txPause && now > 15000 && u.runs < 3) {
       if (txBridgeOk() && brUpdVerOther()) start = true;
-      else if (!txBridgeOk() && (!txBr.lastMs || now - txBr.lastMs > 20000) && now - u.probeMs > 60000) {
+      else if (!txBridgeOk() && (!txBr.lastMs || msSince(txBr.lastMs, now) > 20000) && now - u.probeMs > 60000) {
         u.probeMs = now;
         start = probe = true;
       }
@@ -162,7 +162,7 @@ static void brUpdTick() {
                       (unsigned)(ver >> 8), (unsigned)(ver & 0xFF), BRIDGE_FW_VER_MAJOR, BRIDGE_FW_VER_MINOR);
       } else if (now - u.t0 > (u.probe ? 1500u : 5000u)) {
         brUpdEnd(u.probe ? BU_IDLE : BU_FAIL, "завантажувач моста не відповів");
-      } else if (!u.sentMs || now - u.sentMs > 250) {
+      } else if (!u.sentMs || msSince(u.sentMs, now) > 250) {
         txBridgeSend(BP_HELLO, nullptr, 0);
         u.sentMs = now;
       }
@@ -177,7 +177,7 @@ static void brUpdTick() {
           if (u.off >= BRIDGE_FW_SIZE) u.st = BU_FINISH;
         } else if (++u.tries > 3) brUpdEnd(BU_FAIL, "міст не записав шматок (флеш)");
         else u.sentMs = 0;
-      } else if (u.sentMs && now - u.sentMs > 1500) {   // кусок 4 КБ идёт ~0,36 с; ответа нет — ещё раз
+      } else if (u.sentMs && msSince(u.sentMs, now) > 1500) {   // кусок 4 КБ идёт ~0,36 с; ответа нет — ещё раз
         if (++u.tries > 3) brUpdEnd(BU_FAIL, "міст не підтверджує запис");
         else u.sentMs = 0;
       }
@@ -192,7 +192,7 @@ static void brUpdTick() {
           u.st = BU_BOOT;
           u.sentMs = 0;
         } else brUpdEnd(BU_FAIL, d[1] == BP_ACK_CRC ? "CRC записаного не зійшовся" : "міст не прийняв завершення");
-      } else if (!u.sentMs || now - u.sentMs > 3000) {
+      } else if (!u.sentMs || msSince(u.sentMs, now) > 3000) {
         if (u.sentMs && ++u.tries > 3) {
           brUpdEnd(BU_FAIL, "міст не відповів на завершення");
           break;
@@ -212,7 +212,7 @@ static void brUpdTick() {
         brUpdUartOff();   // дальше на выводе 40 — снова звук: программа моста запускается
         u.st = BU_APP;
         u.t0 = now;
-      } else if (!u.sentMs || now - u.sentMs > 500) {
+      } else if (!u.sentMs || msSince(u.sentMs, now) > 500) {
         if (u.sentMs && ++u.tries > 6) {
           brUpdEnd(BU_FAIL, "міст не запустив програму");
           break;
