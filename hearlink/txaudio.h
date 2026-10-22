@@ -260,7 +260,17 @@ static bool txRawCapGo(bool live) {
   txRawCapState = 2;
   return true;
 }
-// Внешний АЦП даёт два канала: в pcm — середина (Л+П)/2, в sd — разность (Л−П)/2.
+// Те же середина и разность с полной точностью входа (24 бита моста; в шкале 16 бит, с дробной частью): подсиление и
+// эквалайзер входа берут их, а не 16-битные pcm/sd. До 22.10 вход сразу становился 16-битным (старшие 16 бит слова,
+// округлением вниз, и ещё деление пополам с отбрасыванием), а подсиление входа (+24 дБ) поднимало и эту ступеньку:
+// пульт −87 дБ шёл лишь несколькими ступенями шкалы — шипение и треск (владелец: «при низком уровне звука на цифре
+// слышно фоновое шипение и немного треска»).
+static float txFineM[FRAME], txFineS[FRAME];
+static inline int16_t txRound16(float v) {   // к ближайшему (половина — от нуля), с ограничением
+  return v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (int16_t)(int32_t)(v + (v < 0 ? -0.5f : 0.5f));
+}
+// Внешний АЦП даёт два канала: в pcm — середина (Л+П)/2, в sd — разность (Л−П)/2 (округлённые до 16 бит; точные — в
+// txFineM / txFineS).
 static NSX_HOT bool txReadI2s(int16_t *pcm, int16_t *sd) {
   static int32_t raw[FRAME * 2];
   static int lp, rp;
@@ -317,9 +327,13 @@ static NSX_HOT bool txReadI2s(int16_t *pcm, int16_t *sd) {
   // ESP32 считает левым низкий — каналы переставлены. Поэтому при сдвиге слова кадра берутся наоборот.
   const int iL = sh ? 1 : 0, iR = sh ? 0 : 1;
   for (int i = 0; i < FRAME; i++) {
-    int l = raw[2 * i + iL] >> 16, r = raw[2 * i + iR] >> 16;
-    pcm[i] = (int16_t)((l + r) / 2);
-    sd[i] = (int16_t)((l - r) / 2);
+    int32_t l24 = raw[2 * i + iL] >> 8, r24 = raw[2 * i + iR] >> 8;   // 24 бита; биты 7…4 — обратный канал моста
+    float m = (float)(l24 + r24) * (1.0f / 512), d = (float)(l24 - r24) * (1.0f / 512);
+    txFineM[i] = m;
+    txFineS[i] = d;
+    pcm[i] = txRound16(m);
+    sd[i] = txRound16(d);
+    int l = l24 >> 8, r = r24 >> 8;
     uint32_t al = l < 0 ? -l : l, ar = r < 0 ? -r : r;
     if (al > pl) pl = al;
     if (ar > pr) pr = ar;
@@ -346,6 +360,8 @@ static NSX_HOT bool txReadI2s(int16_t *pcm, int16_t *sd) {
   if (txBrMute) {   // идёт обновление моста: на выводе 40 ответы его загрузчика, а не звук (txbridge.h)
     memset(pcm, 0, FRAME * sizeof(int16_t));
     memset(sd, 0, FRAME * sizeof(int16_t));
+    memset(txFineM, 0, sizeof(txFineM));
+    memset(txFineS, 0, sizeof(txFineS));
   }
   return true;
 }
@@ -836,10 +852,11 @@ NSX_HOT IRAM_ATTR void TxLim::run(const float *m, const float *s, int16_t *om, i
 // (41 % кадров — дольше 2 мс; обработка входа — 465 мкс против 232 у проверочного звука), и I2S терял кадры: 147 за 7 с —
 // каждый разрыв звука щелчок. Горячие места входа — эта функция, ограничитель и порог — с 3.21 собираются с -O2 и
 // (кроме measure) лежат во внутренней памяти: вся прошивка — -Os из флеша, а ядро радио делит кэш с драйвером Wi-Fi.
-static NSX_HOT IRAM_ATTR void txInEqGain(Eq6 &eq, bool eqS, float k, const int16_t *pcm, const int16_t *side, float *fm, float *fs) {
+// Источник — точные середина и разность входа (fine: txFineM / txFineS, см. txReadI2s) или 16-битные pcm/side.
+static NSX_HOT IRAM_ATTR void txInEqGain(Eq6 &eq, bool eqS, float k, const int16_t *pcm, const int16_t *side, bool fine, float *fm, float *fs) {
   const bool any = eq.any;
   for (int i = 0; i < FRAME; i++) {
-    float v = pcm[i], u = side[i];
+    float v = fine ? txFineM[i] : pcm[i], u = fine ? txFineS[i] : side[i];
     if (any) v = eq.run(0, v);
     if (eqS) u = eq.run(1, u);
     fm[i] = v * k;
@@ -1040,10 +1057,11 @@ static void txTask(void *) {
         k = powf(10.0f, lastDb / 20.0f);
       }
       bool eqS = inEq.any && cfg.input == IN_I2S;   // разность каналов есть только у внешнего АЦП
+      bool fine = got && inMode == IN_I2S;          // вход моста: середина и разность с полной точностью (txFineM/S)
       if (cfg.txLim && got && !lim) lim = new (std::nothrow) TxLim();   // из кучи: прошивка общая, приёмнику он не нужен
       if (lim && cfg.txLim && got) {
         static float fm[FRAME], fs[FRAME];
-        txInEqGain(inEq, eqS, k, pcm, side, fm, fs);
+        txInEqGain(inEq, eqS, k, pcm, side, fine, fm, fs);
         float low = 1;
         uint32_t busy = txLimBusy;
         lim->run(fm, fs, pcm, side, FRAME, cfg.txLimCeil, cfg.txLimComp, cfg.txLimRel, low, busy);
@@ -1052,13 +1070,13 @@ static void txTask(void *) {
         txLimBusy = busy;
       } else
         for (int i = 0; i < FRAME; i++) {
-          float v = pcm[i], u = side[i];
+          float v = fine ? txFineM[i] : pcm[i], u = fine ? txFineS[i] : side[i];
           if (inEq.any) v = inEq.run(0, v);
           if (eqS) u = inEq.run(1, u);
           v *= k;
           u *= k;
-          pcm[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v;
-          side[i] = u > 32767 ? 32767 : u < -32768 ? -32768 : (int16_t)u;
+          pcm[i] = txRound16(v);   // округлением: «(int16_t)v» отбрасывал дробь к нулю — мёртвая зона ±1 у нуля
+          side[i] = txRound16(u);
         }
     }
     // Шумозаглушение входа (с 2.68): только звук с пульта — проверочный звук и файлы чистые. Считает его отдельная

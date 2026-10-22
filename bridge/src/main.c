@@ -346,21 +346,19 @@ static inline void __not_in_flash_func(outPoll)(void) {
 static uint32_t pcmN, pcmB7, pcmB31;
 static volatile uint8_t pcmShift = 1;   // так виміряно з FMT на 3,3 В; перевіряється на ходу
 
-// 32-бітне слово зі звуком у старших бітах → 16 біт ОКРУГЛЕННЯМ до найближчого (і з обмеженням). До 22.10 тут
-// відкидали молодші біти (округлення вниз): крихітний сигнал пульта біля нуля (−140 дБ, його власний 24-бітний шум)
-// ставав стрибками 0 ↔ −1 молодший розряд 16 біт (−96 дБ, середнє — мінус пів розряду), і після підсилень передавача
-// (+15 дБ) і приймача (+24 дБ) чувся шипінням на цифровому вході (власник: «на цифре откуда шим»). Тепер усе, що
-// тихіше пів розряду, — рівно нуль.
-static inline int16_t __not_in_flash_func(to16)(int32_t v) {
-  v = (v >> 15) + 1;   // округлення: біт 15 — «пів розряду»
-  v >>= 1;
-  return (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+// 32-бітне слово зі звуком у старших 24 бітах → 24 біти зі знаком, без округлень: перерахунок частоти бере всі 24
+// (asrc.c). До 22.10 тут ставало 16 біт: спершу відкиданням молодших (крихітний сигнал пульта біля нуля ставав
+// стрибками 0 ↔ −1, −96 дБ — власник: «на цифре откуда шим»), потім округленням — тиша стала тишею, але тихий звук
+// (пульт −87 дБ) ішов лише кількома ступенями 16-бітної шкали: шипіння й тріск після підсилень передавача (+15 дБ) і
+// приймача (+24 дБ) (власник: «при низком уровне звука на цифре слышно фоновое шипение и немного треска»).
+static inline int32_t __not_in_flash_func(to24)(uint32_t w) {
+  return (int32_t)w >> 8;
 }
 
 // Нові кадри PCM1808 → перерахунок (feed) або в нікуди. Повертає, скільки кадрів забрано.
 static uint32_t __not_in_flash_func(pcmPull)(bool feed) {
   uint32_t idx = ((((uint32_t)dma_hw->ch[dmaPcm].write_addr - (uint32_t)pcmRing) / 4u) & (PCM_WORDS - 1)) & ~1u;
-  int16_t tmp[2 * 64];
+  int32_t tmp[2 * 64];
   uint32_t total = 0;
   while (pcmIdx != idx) {
     uint32_t n = 0;
@@ -372,7 +370,7 @@ static uint32_t __not_in_flash_func(pcmPull)(bool feed) {
           if (w & 0x80u) pcmB7++;
           if (w & 0x80000000u) pcmB31++;
         }
-        tmp[2 * n + k] = to16((int32_t)(pcmShift ? w << 1 : w));
+        tmp[2 * n + k] = to24(pcmShift ? w << 1 : w);
       }
       pcmIdx = (pcmIdx + 2) & (PCM_WORDS - 1);
       n++;
@@ -391,7 +389,7 @@ static uint32_t __not_in_flash_func(pcmPull)(bool feed) {
 // Нові кадри AES (слово бібліотеки: [27:4] — 24 біти звуку, [3:0] — синхро: B 1111, M 1011 — лівий, W 0111 — правий).
 // Читається «по кадру» — щойно DMA записав (spdif_rx_read_fine), не чекаючи цілої пачки в 4 мс.
 static uint32_t __not_in_flash_func(aesPull)(bool feed) {
-  int16_t tmp[2 * 64];
+  int32_t tmp[2 * 64];
   uint32_t total = 0;
   for (;;) {
     uint32_t avail = spdif_rx_get_fine_count() & ~1u;
@@ -406,8 +404,8 @@ static uint32_t __not_in_flash_func(aesPull)(bool feed) {
           i++;
           continue;
         }
-        tmp[2 * n] = to16((int32_t)(p[i] << 4));
-        tmp[2 * n + 1] = to16((int32_t)(p[i + 1] << 4));
+        tmp[2 * n] = to24(p[i] << 4);
+        tmp[2 * n + 1] = to24(p[i + 1] << 4);
         i += 2;
         n++;
       }
@@ -423,13 +421,20 @@ static uint32_t usbaRd;
 static volatile uint32_t usbIdleN;   // скільки разів USB «замовкав» понад 3 мс (видано тишу)
 static uint32_t __not_in_flash_func(usbPull)(bool feed) {
   uint32_t wr = usbaWr, total = 0;
+  int32_t tmp[2 * 64];
   __dmb();
   if (wr - usbaRd > USBA_RING) usbaRd = wr - USBA_RING / 2;
   while (usbaRd != wr) {
     uint32_t i = usbaRd & (USBA_RING - 1), n = wr - usbaRd;
     if (n > USBA_RING - i) n = USBA_RING - i;
     if (n > 64) n = 64;
-    if (feed) asrc_write(&A, &usbaRing[i][0], n);
+    if (feed) {   // комп'ютер шле 16 біт — у шкалу 24 біт перерахунку
+      for (uint32_t k = 0; k < n; k++) {
+        tmp[2 * k] = (int32_t)usbaRing[i + k][0] << 8;
+        tmp[2 * k + 1] = (int32_t)usbaRing[i + k][1] << 8;
+      }
+      asrc_write(&A, tmp, n);
+    }
     usbaRd += n;
     total += n;
   }
@@ -619,10 +624,11 @@ static void __not_in_flash_func(core1Main)(void) {
       outRing[i] = ((uint32_t)l << 8) | (bb & 0xF0u);
       outRing[i + 1] = ((uint32_t)r << 8) | ((uint32_t)(bb & 0x0Fu) << 4);
       outWr += 2;
-      if (usbrOn) {   // запис на комп'ютер (USB): те саме, що пішло передавачу, 16 біт; забирає задача USB (usb_audio.c)
+      if (usbrOn) {   // запис на комп'ютер (USB): те саме, що пішло передавачу, 16 біт (з округленням); забирає задача USB
         uint32_t w = usbrWr;
-        usbrRing[w & (USBR_RING - 1)][0] = (int16_t)(l >> 8);
-        usbrRing[w & (USBR_RING - 1)][1] = (int16_t)(r >> 8);
+        int32_t ql = (l + 128) >> 8, qr = (r + 128) >> 8;
+        usbrRing[w & (USBR_RING - 1)][0] = (int16_t)(ql > 32767 ? 32767 : ql);
+        usbrRing[w & (USBR_RING - 1)][1] = (int16_t)(qr > 32767 ? 32767 : qr);
         __dmb();
         usbrWr = w + 1;
       }
