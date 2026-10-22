@@ -402,6 +402,7 @@ static uint32_t __not_in_flash_func(aesPull)(bool feed) {
 // Нові кадри з комп'ютера (USB, 48 кГц): кільце пише задача USB на ядрі 0 (usb_audio.c) пачками по ~48 кадрів раз
 // на 1 мс. Забрати все, що є; відстали на ціле кільце (ядро 1 стояло) — пропустити зайве.
 static uint32_t usbaRd;
+static volatile uint32_t usbIdleN;   // скільки разів USB «замовкав» понад 3 мс (видано тишу)
 static uint32_t __not_in_flash_func(usbPull)(bool feed) {
   uint32_t wr = usbaWr, total = 0;
   __dmb();
@@ -538,6 +539,7 @@ static void __not_in_flash_func(core1Main)(void) {
     // Комп'ютер перестав слати пакети (кінець відтворення, хост пригальмував) — тиша, а не «провали» перерахунку
     // (22.10 кінець тону з Mac дав 361 провал, поки macOS не закрила потік); пакети пішли знову — запас наново.
     bool usbIdle = act == BP_ACT_USB && usSince(usbaPktT, time_us_32()) > 3000;
+    if (usbIdle && !usbWasIdle) usbIdleN = usbIdleN + 1;
     if (usbIdle) usbWasIdle = true;
     else if (usbWasIdle) {
       usbWasIdle = false;
@@ -589,6 +591,10 @@ static void __not_in_flash_func(core1Main)(void) {
       }
       l += dl;
       r += dr;
+      // Після дизера — знову в 24 біти: перерахунок обмежує свій вихід, але ±255 дизера на повній шкалі (перевантажений
+      // вхід) виводили за межу, і «l << 8» нижче міняв знак слова — гучний щиглик замість простого обмеження (22.10).
+      l = l > 8388607 ? 8388607 : l < -8388608 ? -8388608 : l;
+      r = r > 8388607 ? 8388607 : r < -8388608 ? -8388608 : r;
       int32_t al = l < 0 ? -l : l, ar = r < 0 ? -r : r;
       if (al > peakL) peakL = al;
       if (ar > peakR) peakR = ar;
@@ -599,6 +605,13 @@ static void __not_in_flash_func(core1Main)(void) {
       outRing[i] = ((uint32_t)l << 8) | (bb & 0xF0u);
       outRing[i + 1] = ((uint32_t)r << 8) | ((uint32_t)(bb & 0x0Fu) << 4);
       outWr += 2;
+      if (usbrOn) {   // запис на комп'ютер (USB): те саме, що пішло передавачу, 16 біт; забирає задача USB (usb_audio.c)
+        uint32_t w = usbrWr;
+        usbrRing[w & (USBR_RING - 1)][0] = (int16_t)(l >> 8);
+        usbrRing[w & (USBR_RING - 1)][1] = (int16_t)(r >> 8);
+        __dmb();
+        usbrWr = w + 1;
+      }
       made++;
       if (cs == CS_FADE && gain == 0) {   // тиша — можна міняти
         haveGen = wantGen;
@@ -885,6 +898,7 @@ int main(void) {
   uint8_t pkSecL = 255, pkSecR = 255;   // найбільший пік виходу за секунду рядка стану (−дБ ×2; 255 — тиша)
   uint8_t aesSeen = 0xFF, aesLogged = 0xFF, actLogged = 0xFF;   // що вже записано в журнал (0xFF — ще нічого)
   uint8_t usbLogged = BP_USB_NONE;
+  bool usbRecLogged = false;
   int8_t clkLogged = -1;
   bool lineWasHigh = false, crashCleared = false;
   logSend = logSendEnd = BLOG->head;
@@ -996,6 +1010,10 @@ int main(void) {
       blog(BL_USB, usbNow, 0, true);
       usbLogged = usbNow;
     }
+    if (usbrOn != usbRecLogged) {
+      blog(BL_USBREC, usbrOn, 0, true);
+      usbRecLogged = usbrOn;
+    }
     if (now - clipT >= 60000000u) {
       clipT = now;
       if (clipMin) blog(BL_CLIP, 0, clipMin, false);
@@ -1045,12 +1063,8 @@ int main(void) {
       st.btnSeq = btnSeq;
       st.btnSrc = btnSrc;
       st.usb = usbPlaying ? BP_USB_PLAY : usbaHost ? BP_USB_HOST : BP_USB_NONE;
-      // Пробна збірка в ОЗУ — кадр без полів USB: передавач 3bca5fd (22.10) довших кадрів не бере.
-#ifdef BRIDGE_RAM_CRC
-      const size_t SL = offsetof(bp_status_t, usb);
-#else
-      const size_t SL = sizeof st;
-#endif
+      st.usbRec = usbrOn;
+      const size_t SL = sizeof st;   // передавач з c6bb44f бере й довший кадр (відоме — собі)
       uint8_t raw[sizeof st + 2], enc[sizeof st + 8];
       memcpy(raw, &st, SL);
       uint16_t c = bp_crc16(raw, SL, 0xFFFF);
@@ -1181,13 +1195,21 @@ int main(void) {
         pkSecL = pkSecR = 255;
         printf("[%lu с] звучить: %s, пік %s; AES: %s %lu Гц, помилок парності %lu; передавач: %s; запас %d, поправка %+.1f ppm, "
                "провали %u/%u; перескоки %lu (останній на %lu с); ядро 1 зайняте %u‰ (на кадр: вихід %u нс, вхід %u нс); "
-               "USB: %s, пакетів %lu%s%s\n",
+               "USB: %s, пакетів %lu (перерва найбільша %lu мкс, понад 2 мс — %lu, тиша без пакетів — %lu; кадрів у пакеті %lu…%lu; "
+               "нулі посеред звуку: %lu разів, %lu пакетів); "
+               "запис на комп'ютер: %s (пакетів %lu)%s%s\n",
                (unsigned long)(time_us_64() / 1000000u), actName[a], pk, aesName[aes > 3 ? 0 : aes],
                (unsigned long)rate, (unsigned long)spdif_rx_get_parity_err_count(),
                now - outRdT < 200000 ? "такти є" : "НЕМАЄ тактів", stLevel, stPpm10 / 10.0, stUnder, stOver,
                (unsigned long)resync, (unsigned long)resyncAt, cpu1, nsProd, nsIn,
                usbPlaying ? "комп'ютер грає" : usbaHost ? "комп'ютер підключено" : "немає", (unsigned long)usbaPkts,
+               (unsigned long)usbaGapMax, (unsigned long)usbaLate, (unsigned long)usbIdleN, (unsigned long)(usbaFrMin == 999 ? 0 : usbaFrMin),
+               (unsigned long)usbaFrMax, (unsigned long)usbaZeroRuns, (unsigned long)usbaZeroPkts,
+               usbrOn ? "іде" : "ні", (unsigned long)usbrPkts,
                localSrcT ? "; вхід обрано з порту" : "", pcmShift ? "; PCM1808: дані на біт пізніше — вирівнюю" : "");
+        usbaGapMax = 0;
+        usbaFrMin = 999;
+        usbaFrMax = 0;
       }
     }
     // світлодіод: спалах раз на секунду — працює; два — грає AES; часто — немає тактів передавача

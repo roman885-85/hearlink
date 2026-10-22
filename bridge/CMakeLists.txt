@@ -41,7 +41,7 @@ pico_add_extra_outputs(bridge)
 
 # ---- пробна збірка програми лише в ОЗУ (ninja bridge_ram; picotool load -x -f build/bridge_ram.uf2): флеш моста не
 # змінюється, перезапуск — і знову програма з флешу. BRIDGE_RAM_CRC — CRC-32 програми у флеші моста (вона в стані
-# передавачу; інакше він вирішить, що міст «не той», і перепише його): cmake … -DBRIDGE_RAM_CRC=0xafb343b3
+# передавачу; інакше він вирішить, що міст «не той», і перепише його): cmake … -DBRIDGE_RAM_CRC=0x68c4a5f1
 set(BRIDGE_RAM_CRC 0 CACHE STRING "CRC-32 програми у флеші моста — для пробної збірки в ОЗУ")
 add_executable(bridge_ram EXCLUDE_FROM_ALL ${BRIDGE_SRC})
 bridge_setup(bridge_ram)

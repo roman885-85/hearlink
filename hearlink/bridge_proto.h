@@ -78,7 +78,8 @@ typedef struct __attribute__((packed)) {
   uint8_t btnSrc;        // вхід, який попросила кнопка: BP_SRC_AES чи BP_SRC_PCM
   // з 22.10 (USB): кадр стає довшим — передавач бере й довші, ніж знає (зайве відкидає), і коротші
   uint8_t usb;           // BP_USB_*
-  uint8_t usbRsv[3];
+  uint8_t usbRec;        // 1 — комп'ютер записує «Що йде в ефір» (потік запису USB відкрито)
+  uint8_t usbRsv[2];
 } bp_status_t;
 #define BP_STATUS_V1 offsetof(bp_status_t, appCrc)
 
@@ -113,6 +114,7 @@ enum {
   BL_CLIP = 12,    // перевантаження: b — скільки проміжків по 50 мс за хвилину пік був у межах 0,5 дБ від повної шкали
   BL_DROP = 13,    // пропущено записів (надто часті події — не більше 30 на хвилину): b — скільки
   BL_USB = 14,     // USB: a — новий стан BP_USB_* (комп'ютер підключили, почав чи перестав грати)
+  BL_USBREC = 15,  // запис на комп'ютер: a — 1 почав записувати «Що йде в ефір», 0 перестав
 };
 enum { BL_WHY_POWER = 0, BL_WHY_WATCHDOG = 1, BL_WHY_ASKED = 2 /* оновлення, команда, USB */, BL_WHY_PIN = 3 /* кнопка RST */ };
 
@@ -144,6 +146,7 @@ static inline int bp_log_text(const bp_log_rec_t *r, char *o, size_t cap) {
       return snprintf(o, cap, "у завантажувач: %s", LDR[r->a <= 2 ? r->a : 0]);
     case BL_BTN: return snprintf(o, cap, "кнопка USR: попросила %s", SRC[r->a <= BP_SRC_USB ? r->a : 0]);
     case BL_USB: return snprintf(o, cap, "USB: %s", USB[r->a <= BP_USB_PLAY ? r->a : 0]);
+    case BL_USBREC: return snprintf(o, cap, r->a ? "USB: комп'ютер записує, що йде в ефір" : "USB: запис на комп'ютер зупинено");
     case BL_CLIP: return snprintf(o, cap, "перевантаження: %lu разів за хвилину (пік до 0,5 дБ від повної шкали)", b);
     case BL_DROP: return snprintf(o, cap, "пропущено %lu записів (надто часті події)", b);
   }

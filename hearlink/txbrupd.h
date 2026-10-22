@@ -336,7 +336,8 @@ static void txBridgePrint() {
   Serial.printf("  %s; версія %u.%02u (завантажувач %u), працює %u с; звучить: %s; AES: %s %u Гц, помилок парності %u\n",
                 txBridgeOk() ? "на зв'язку" : "НЕ НА ЗВ'ЯЗКУ", s.verMajor, s.verMinor, s.loaderVer, (unsigned)s.uptime,
                 ACT[s.act <= BP_ACT_USB ? s.act : 0], AES[s.aes <= BP_AES_RATE ? s.aes : 0], (unsigned)s.aesRate, (unsigned)s.aesParity);
-  if (txBr.hasUsb) Serial.printf("  USB моста: %s\n", USB[s.usb <= BP_USB_PLAY ? s.usb : 0]);
+  if (txBr.hasUsb)
+    Serial.printf("  USB моста: %s; запис на комп'ютер («Що йде в ефір»): %s\n", USB[s.usb <= BP_USB_PLAY ? s.usb : 0], s.usbRec ? "іде" : "ні");
   Serial.printf("  пік Л −%.1f П −%.1f дБ; запас %d, поправка %+.1f ppm, провали %u/%u; перескоки такту %u; ядро звуку %u‰; "
                 "остання команда №%u (надіслано №%u); стан %u мс тому\n",
                 s.peakL / 2.0, s.peakR / 2.0, s.level, s.ppm10 / 10.0, s.under, s.over, s.resync, s.cpu1, s.seq, txBr.seq,
