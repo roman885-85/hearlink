@@ -19,6 +19,7 @@ struct BrUpd {
   const char *why = "";          // почему не вышло (порт)
   uint32_t off = 0, t0 = 0, sentMs = 0, probeMs = 0, startMs = 0;
   uint8_t tries = 0, runs = 0;   // повторов шага; запусков в это включение
+  uint8_t bootProbes = 0;        // ранних проб после запуска передатчика (мост с запуска ни разу не отозвался)
   bool probe = false;            // только спросить загрузчик (мост молчит)
   bool uartOn = false;
   volatile bool ask = false;     // попросили с порта (C9)
@@ -123,6 +124,16 @@ static void brUpdTick() {
         u.probeMs = now;
         start = probe = true;
       }
+    }
+    // Мост с запуска передатчика ни разу не отозвался — спросить загрузчик сразу (на 3-й и 8-й секунде), а не через
+    // 15 с и потом раз в минуту: мост мог уйти в загрузчик, пока передатчик перезапускался (до 22.10 так и было —
+    // 15–75 с без звука после сброса передатчика). Только дважды: проба глушит вход на 1,5 с, а мост, который играет, но
+    // почему-то не шлёт стан, не должен из-за неё получать провалы звука каждые несколько секунд — дальше правило выше.
+    if (!start && cfg.brAutoUpd && cfg.input == IN_I2S && !txPause && !txBr.lastMs && u.bootProbes < 2 && now > 3000 &&
+        (!u.probeMs || now - u.probeMs > 5000)) {
+      u.bootProbes++;
+      u.probeMs = now;
+      start = probe = true;
     }
     if (start) brUpdBegin(probe);
     return;
