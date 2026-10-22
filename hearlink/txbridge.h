@@ -27,6 +27,7 @@ struct TxBridge {
   uint8_t seq;                    // номер последней команды (мост повторяет его в стане)
   volatile bool kick;             // вход сменили — послать команду сейчас, не дожидаясь секунды
   bool newer;                     // мост сборки 22.10+: в стане есть CRC программы, журнал и кнопка
+  bool hasUsb;                    // мост с USB (звуковая карта компьютера, BP_SRC_USB): в стане есть поле usb
   // журнал моста: записи с номера logNext ещё не забраны (в журнал на карту); C8 — печать в порт до prnTo
   uint32_t logNext, prnNext, prnTo, logAskMs, logGot;
   bool logKnown;
@@ -107,11 +108,14 @@ static void txBridgeFrame(const uint8_t *enc, int n) {
     return;
   }
   m -= 2;
-  if (raw[0] == BP_ST_STATUS && m >= BP_STATUS_V1 && m <= sizeof(bp_status_t)) {
+  // Кадр стана длиннее известного — от моста новее этой прошивки: известное взять, остальное отбросить (22.10: иначе
+  // передатчик считал бы такой мост молчащим).
+  if (raw[0] == BP_ST_STATUS && m >= BP_STATUS_V1) {
     bp_status_t s;
     memset(&s, 0, sizeof(s));
-    memcpy(&s, raw, m);
-    bool newer = m == sizeof(bp_status_t);
+    memcpy(&s, raw, m < sizeof(s) ? m : sizeof(s));
+    bool newer = m >= offsetof(bp_status_t, usb);
+    txBr.hasUsb = m >= offsetof(bp_status_t, usb) + 1;
     if (newer) {
       // кнопка USR: после запуска моста (и первого знакомства) счётчик только запомнить
       if (!txBr.btnKnown || !txBr.newer || s.boot != txBr.st.boot) {

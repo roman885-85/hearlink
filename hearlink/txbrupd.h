@@ -290,7 +290,8 @@ static void txBridgeTick() {
   if (txBr.kick || now - lastSet >= 1000) {
     txBr.kick = false;
     lastSet = now;
-    uint8_t d[4] = { (uint8_t)(cfg.bridgeSrc == BP_SRC_AES ? BP_SRC_AES : BP_SRC_PCM), BP_FMT_LJ, txBr.gen, ++txBr.seq };
+    uint8_t src = cfg.bridgeSrc == BP_SRC_AES || cfg.bridgeSrc == BP_SRC_USB ? cfg.bridgeSrc : BP_SRC_PCM;
+    uint8_t d[4] = { src, BP_FMT_LJ, txBr.gen, ++txBr.seq };
     txBridgeSend(BP_SET, d, sizeof(d));
   }
 }
@@ -308,15 +309,18 @@ static void txBridgeLogAsk() {
   Serial.printf("міст: журнал — записів за весь час %u, у пам'яті моста останні %u\n", (unsigned)head, (unsigned)(head - txBr.prnNext));
 }
 
-// Порт: C — стан моста; C1 — цифровой вход, C2 — аналоговый; C8 — журнал моста; C9 — обновить мост сейчас; проверочный
+// Порт: C — стан моста; C1 — цифровой вход, C2 — аналоговый, C7 — вход USB (компьютер); C8 — журнал моста; C9 — обновить мост сейчас; проверочный
 // сигнал моста вместо входа (с моста 1.02): C3 — выключить, C4 — тон 1 кГц, C5 — розовый шум, C6 — развёртка 20 Гц → 16 кГц.
 static void txBridgePrint() {
-  static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "перевірочний сигнал моста", "перемикання" };
+  static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "перевірочний сигнал моста", "перемикання",
+                                     "вхід USB (комп'ютер)" };
+  static const char *const USB[] = { "комп'ютера немає", "комп'ютер підключено, не грає", "комп'ютер грає в міст" };
   static const char *const GEN[] = { "немає", "тон 1 кГц", "рожевий шум", "розгортка 20 Гц – 16 кГц" };
   static const char *const AES[] = { "немає сигналу", "ловлю", "є", "частота, якої міст не бере" };
   uint32_t now = millis();
   Serial.printf("міст: обрано %s; перевірочний сигнал: %s; кадрів стану %u, зіпсованих %u, байтів зворотного каналу втрачено %u, команд надіслано %u\n",
-                cfg.bridgeSrc == BP_SRC_AES ? "цифровий вхід" : "аналоговий вхід", GEN[txBr.gen <= BP_GEN_SWEEP ? txBr.gen : 0], (unsigned)txBr.frames,
+                cfg.bridgeSrc == BP_SRC_AES ? "цифровий вхід" : cfg.bridgeSrc == BP_SRC_USB ? "вхід USB" : "аналоговий вхід",
+                GEN[txBr.gen <= BP_GEN_SWEEP ? txBr.gen : 0], (unsigned)txBr.frames,
                 (unsigned)txBr.bad, (unsigned)brLost, (unsigned)txBr.sent);
   {
     static const char *const ST[] = { "немає", "у завантажувач", "чекаю завантажувач", "записую", "перевіряю", "запускаю", "чекаю програму", "зроблено", "НЕ ВДАЛОСЯ" };
@@ -331,7 +335,8 @@ static void txBridgePrint() {
   const bp_status_t &s = txBr.st;
   Serial.printf("  %s; версія %u.%02u (завантажувач %u), працює %u с; звучить: %s; AES: %s %u Гц, помилок парності %u\n",
                 txBridgeOk() ? "на зв'язку" : "НЕ НА ЗВ'ЯЗКУ", s.verMajor, s.verMinor, s.loaderVer, (unsigned)s.uptime,
-                ACT[s.act <= BP_ACT_SWITCH ? s.act : 0], AES[s.aes <= BP_AES_RATE ? s.aes : 0], (unsigned)s.aesRate, (unsigned)s.aesParity);
+                ACT[s.act <= BP_ACT_USB ? s.act : 0], AES[s.aes <= BP_AES_RATE ? s.aes : 0], (unsigned)s.aesRate, (unsigned)s.aesParity);
+  if (txBr.hasUsb) Serial.printf("  USB моста: %s\n", USB[s.usb <= BP_USB_PLAY ? s.usb : 0]);
   Serial.printf("  пік Л −%.1f П −%.1f дБ; запас %d, поправка %+.1f ppm, провали %u/%u; перескоки такту %u; ядро звуку %u‰; "
                 "остання команда №%u (надіслано №%u); стан %u мс тому\n",
                 s.peakL / 2.0, s.peakR / 2.0, s.level, s.ppm10 / 10.0, s.under, s.over, s.resync, s.cpu1, s.seq, txBr.seq,

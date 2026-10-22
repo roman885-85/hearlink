@@ -566,7 +566,8 @@ static void task(void *) {
       ui::activate(w == BP_SRC_AES ? ui::ID_SRC_DIG : ui::ID_SRC_LIVE);
       ui::toast(w == BP_SRC_AES ? tr("Кнопка на мосту: цифровий вхід") : tr("Кнопка на мосту: аналоговий вхід"));
     }
-    v.brSrc = cfg.bridgeSrc == BP_SRC_AES ? 1 : 2;   // мост (4.00, txbridge.h)
+    v.brSrc = cfg.bridgeSrc == BP_SRC_AES ? 1 : cfg.bridgeSrc == BP_SRC_USB ? 4 : 2;   // мост (4.00, txbridge.h)
+    v.brUsb = txBr.hasUsb ? txBr.st.usb : 0;
     v.brOk = txBridgeOk();
     v.brAes = txBr.st.aes;
     v.brRate = txBr.st.aesRate;
@@ -844,7 +845,7 @@ static void task(void *) {
       saveAt = now + 600;
     }
     if (o.bridgeSrc) {   // вход моста (4.00): аналоговый или цифровой — команда мосту сейчас же
-      cfg.bridgeSrc = (uint8_t)(o.bridgeSrc == 1 ? BP_SRC_AES : BP_SRC_PCM);
+      cfg.bridgeSrc = (uint8_t)(o.bridgeSrc == 1 ? BP_SRC_AES : o.bridgeSrc == 4 ? BP_SRC_USB : BP_SRC_PCM);
       o.bridgeSrc = 0;
       txBr.gen = BP_GEN_OFF;   // выбрали вход — он и в эфире (проверочный сигнал моста — выключить)
       txBr.kick = true;

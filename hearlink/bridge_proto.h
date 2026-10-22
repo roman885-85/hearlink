@@ -36,14 +36,16 @@ enum {
 enum { BP_R_HELLO = 0x90, BP_R_ACK = 0x91 };
 enum { BP_ACK_OK = 0, BP_ACK_BAD = 1, BP_ACK_FLASH = 2, BP_ACK_CRC = 3 };
 
-// Джерело звуку моста
-enum { BP_SRC_AUTO = 0, BP_SRC_AES = 1, BP_SRC_PCM = 2, BP_SRC_MUTE = 3 };
+// Джерело звуку моста (BP_SRC_USB — з 22.10: міст як звукова карта комп'ютера, bridge/src/usb_audio.h)
+enum { BP_SRC_AUTO = 0, BP_SRC_AES = 1, BP_SRC_PCM = 2, BP_SRC_MUTE = 3, BP_SRC_USB = 4 };
 // Формат PCM1808 (вивід FMT): 0 — «лівовирівняний» (FMT на 3,3 В, як зараз), 1 — I2S (FMT на землі)
 enum { BP_FMT_LJ = 0, BP_FMT_I2S = 1 };
 // Перевірочний сигнал моста (BP_SET d[2]; з 1.02 — не лише тон): іде замість входу через увесь шлях передавача
 enum { BP_GEN_OFF = 0, BP_GEN_TONE = 1 /* 1 кГц, −12 дБ */, BP_GEN_PINK = 2 /* рожевий шум, −20 дБ */, BP_GEN_SWEEP = 3 /* 20 Гц → 16 кГц за 10 с */ };
 // Що звучить насправді
-enum { BP_ACT_NONE = 0, BP_ACT_AES = 1, BP_ACT_PCM = 2, BP_ACT_MUTE = 3, BP_ACT_TONE = 4, BP_ACT_SWITCH = 5 };
+enum { BP_ACT_NONE = 0, BP_ACT_AES = 1, BP_ACT_PCM = 2, BP_ACT_MUTE = 3, BP_ACT_TONE = 4, BP_ACT_SWITCH = 5, BP_ACT_USB = 6 };
+// USB моста: комп'ютера немає / підключено / комп'ютер грає в міст (потік відкрито)
+enum { BP_USB_NONE = 0, BP_USB_HOST = 1, BP_USB_PLAY = 2 };
 // Стан прийому AES
 enum { BP_AES_NONE = 0, BP_AES_WAIT = 1, BP_AES_OK = 2, BP_AES_RATE = 3 /* частота, якої міст не бере */ };
 
@@ -74,6 +76,9 @@ typedef struct __attribute__((packed)) {
   uint16_t boot;         // номер запуску моста від увімкнення живлення (1 — перший)
   uint8_t btnSeq;        // натискань кнопки USR моста (лічильник: передавач дивиться на зміну)
   uint8_t btnSrc;        // вхід, який попросила кнопка: BP_SRC_AES чи BP_SRC_PCM
+  // з 22.10 (USB): кадр стає довшим — передавач бере й довші, ніж знає (зайве відкидає), і коротші
+  uint8_t usb;           // BP_USB_*
+  uint8_t usbRsv[3];
 } bp_status_t;
 #define BP_STATUS_V1 offsetof(bp_status_t, appCrc)
 
@@ -107,15 +112,18 @@ enum {
   BL_BTN = 11,     // кнопка USR: a — вхід, який попросила (BP_SRC_*)
   BL_CLIP = 12,    // перевантаження: b — скільки проміжків по 50 мс за хвилину пік був у межах 0,5 дБ від повної шкали
   BL_DROP = 13,    // пропущено записів (надто часті події — не більше 30 на хвилину): b — скільки
+  BL_USB = 14,     // USB: a — новий стан BP_USB_* (комп'ютер підключили, почав чи перестав грати)
 };
 enum { BL_WHY_POWER = 0, BL_WHY_WATCHDOG = 1, BL_WHY_ASKED = 2 /* оновлення, команда, USB */, BL_WHY_PIN = 3 /* кнопка RST */ };
 
 // Запис журналу словами — однаково для порту USB моста і для передавача (його порт і журнал на карті). Повертає довжину.
 static inline int bp_log_text(const bp_log_rec_t *r, char *o, size_t cap) {
   static const char *const WHY[] = { "увімкнули живлення", "сторож (міст зависав)", "на прохання (оновлення, команда)", "кнопка RST" };
-  static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "перевірочний сигнал", "перемикання" };
+  static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "перевірочний сигнал", "перемикання",
+                                     "вхід USB (комп'ютер)" };
   static const char *const AES[] = { "немає сигналу", "ловлю", "є", "частота, якої міст не бере" };
-  static const char *const SRC[] = { "авто", "цифровий вхід", "аналоговий вхід", "тиша" };
+  static const char *const SRC[] = { "авто", "цифровий вхід", "аналоговий вхід", "тиша", "вхід USB" };
+  static const char *const USB[] = { "комп'ютер відключили", "комп'ютер підключено", "комп'ютер грає в міст" };
   static const char *const GEN[] = { "", ", перевірочний тон", ", рожевий шум", ", розгортка" };
   static const char *const LDR[] = { "команда передавача", "«розрив» лінії команд", "з USB" };
   unsigned long b = (unsigned long)r->b;
@@ -125,8 +133,8 @@ static inline int bp_log_text(const bp_log_rec_t *r, char *o, size_t cap) {
     case BL_AES:
       if (r->a == BP_AES_OK || r->a == BP_AES_RATE) return snprintf(o, cap, "AES: %s, %lu Гц", AES[r->a], b);
       return snprintf(o, cap, "AES: %s", AES[r->a & 3]);
-    case BL_ACT: return snprintf(o, cap, "звучить: %s", ACT[r->a <= BP_ACT_SWITCH ? r->a : 0]);
-    case BL_SET: return snprintf(o, cap, "передавач обрав: %s%s", SRC[r->a & 3], GEN[b & 3]);
+    case BL_ACT: return snprintf(o, cap, "звучить: %s", ACT[r->a <= BP_ACT_USB ? r->a : 0]);
+    case BL_SET: return snprintf(o, cap, "передавач обрав: %s%s", SRC[r->a <= BP_SRC_USB ? r->a : 0], GEN[b & 3]);
     case BL_CLK: return snprintf(o, cap, r->a == 1 ? "такти передавача є" : r->a == 2 ? "тактів передавача немає" : "такти передавача ЗНИКЛИ");
     case BL_RESYNC: return snprintf(o, cap, "вихід ловив такт передавача наново (усього %lu)", b);
     case BL_UNDER: return snprintf(o, cap, "провал перерахунку — входу забракло (усього %lu)", b);
@@ -134,7 +142,8 @@ static inline int bp_log_text(const bp_log_rec_t *r, char *o, size_t cap) {
     case BL_LOADER:
       if (b) return snprintf(o, cap, "у режим запису USB (з порту USB)");
       return snprintf(o, cap, "у завантажувач: %s", LDR[r->a <= 2 ? r->a : 0]);
-    case BL_BTN: return snprintf(o, cap, "кнопка USR: попросила %s", SRC[r->a & 3]);
+    case BL_BTN: return snprintf(o, cap, "кнопка USR: попросила %s", SRC[r->a <= BP_SRC_USB ? r->a : 0]);
+    case BL_USB: return snprintf(o, cap, "USB: %s", USB[r->a <= BP_USB_PLAY ? r->a : 0]);
     case BL_CLIP: return snprintf(o, cap, "перевантаження: %lu разів за хвилину (пік до 0,5 дБ від повної шкали)", b);
     case BL_DROP: return snprintf(o, cap, "пропущено %lu записів (надто часті події)", b);
   }

@@ -30,6 +30,7 @@
 #include "bridge_proto.h"
 #include "layout.h"
 #include "version.h"
+#include "usb_audio.h"
 
 #define PIN_MCLK 0
 #define PIN_PCM_BCK 1   // LRCK — наступний (GP2): бокові біти PIO
@@ -157,6 +158,10 @@ static uint8_t blogStart(void) {
 }
 
 // ---------------------------------------------------------------- спільне для ядер
+// Скільки мкс минуло від мітки t. Знаково: мітка «з майбутнього» (її поставило переривання чи друге ядро вже після того,
+// як тут узяли now, або «now | 1») дає ≤ 0, а не «дуже давно». 22.10 беззнакове «now − мітка пакета USB» раз у раз
+// давало «комп'ютер не грає» — вибір входу смикався USB ↔ тиша, і ядро 1 без кінця перераховувало фільтр.
+static inline int32_t usSince(uint32_t t, uint32_t now) { return (int32_t)(now - t); }
 // Ядро 0 → ядро 1: що грати. Ядро 1 бере новий запит, коли wantGen ≠ тому, що вже виконано.
 static volatile uint32_t wantGen;
 static volatile uint8_t wantAct, wantFmt;
@@ -394,6 +399,24 @@ static uint32_t __not_in_flash_func(aesPull)(bool feed) {
   }
 }
 
+// Нові кадри з комп'ютера (USB, 48 кГц): кільце пише задача USB на ядрі 0 (usb_audio.c) пачками по ~48 кадрів раз
+// на 1 мс. Забрати все, що є; відстали на ціле кільце (ядро 1 стояло) — пропустити зайве.
+static uint32_t usbaRd;
+static uint32_t __not_in_flash_func(usbPull)(bool feed) {
+  uint32_t wr = usbaWr, total = 0;
+  __dmb();
+  if (wr - usbaRd > USBA_RING) usbaRd = wr - USBA_RING / 2;
+  while (usbaRd != wr) {
+    uint32_t i = usbaRd & (USBA_RING - 1), n = wr - usbaRd;
+    if (n > USBA_RING - i) n = USBA_RING - i;
+    if (n > 64) n = 64;
+    if (feed) asrc_write(&A, &usbaRing[i][0], n);
+    usbaRd += n;
+    total += n;
+  }
+  return total;
+}
+
 // Синус 1 кГц −12 дБ (перевірочний): 32 відліки на період при 32 кГц, з повною 24-бітною точністю. Не «16 біт << 8»: тоді
 // молодші біти слова — нулі, і передавач 3.29 вирішував, що дані PCM1808 зсунуті на біт (власник: «тон с постоянными
 // щелчками как трещотка»).
@@ -480,6 +503,7 @@ static void __not_in_flash_func(linkRecover)(void) {
 static void __not_in_flash_func(core1Main)(void) {
   audioSetup();
   uint32_t haveGen = 0, steerN = 0, tonePh = 0, busy = 0, winT = time_us_32();
+  bool usbWasIdle = false;
   uint32_t prodUs = 0, prodFr = 0, inUs = 0, inFr = 0;
   bool restartPending = false;
   uint32_t pullT = 0, ditherSeed = 12345;
@@ -497,7 +521,7 @@ static void __not_in_flash_func(core1Main)(void) {
     uint32_t got = 0;
     if (t0 - pullT >= 100) {
       pullT = t0;
-      got = pcmPull(feed && act == BP_ACT_PCM) + aesPull(feed && act == BP_ACT_AES);
+      got = pcmPull(feed && act == BP_ACT_PCM) + aesPull(feed && act == BP_ACT_AES) + usbPull(feed && act == BP_ACT_USB);
     }
     uint32_t tIn = time_us_32();
     if (got) {
@@ -511,9 +535,17 @@ static void __not_in_flash_func(core1Main)(void) {
     outPoll();
     stOutRd = outRd;
     int lead = cs == CS_BUILD ? LEAD_BUILD : LEAD_RUN;
+    // Комп'ютер перестав слати пакети (кінець відтворення, хост пригальмував) — тиша, а не «провали» перерахунку
+    // (22.10 кінець тону з Mac дав 361 провал, поки macOS не закрила потік); пакети пішли знову — запас наново.
+    bool usbIdle = act == BP_ACT_USB && usSince(usbaPktT, time_us_32()) > 3000;
+    if (usbIdle) usbWasIdle = true;
+    else if (usbWasIdle) {
+      usbWasIdle = false;
+      restartPending = true;
+    }
     while ((int32_t)(outWr - outRd) < lead) {
       int32_t l = 0, r = 0;
-      bool snd = act == BP_ACT_PCM || act == BP_ACT_AES;
+      bool snd = (act == BP_ACT_PCM || act == BP_ACT_AES || act == BP_ACT_USB) && !usbIdle;
       if (cs != CS_BUILD && snd) {
         // Перший кадр після нового фільтра: черга тиші, накопичена за розрахунок ваг (до 4 мс), уже пішла — лише тепер
         // ставимо точку читання (інакше запас підскакував до 47 кадрів замість 16, і регулятор зганяв його секунди).
@@ -524,7 +556,14 @@ static void __not_in_flash_func(core1Main)(void) {
         asrc_read(&A, &l, &r);
         if (++steerN == 32) {
           steerN = 0;
-          asrc_steer(&A, 32, 0);   // обидва входи читаються по кадру — запас рівний, «кадрів у дорозі» нема
+          // AES і PCM1808 читаються по кадру — запас рівний, «кадрів у дорозі» нема. USB — пачками раз на 1 мс: скільки
+          // кадрів «уже йде», але ще не прийшло, — з часу від останнього пакета (див. asrc_steer).
+          float frac = 0;
+          if (act == BP_ACT_USB) {
+            int32_t dt = usSince(usbaPktT, time_us_32());
+            frac = dt <= 0 ? 0.0f : dt >= 1000 ? (float)(USBA_RATE / 1000) : (float)dt * (USBA_RATE / 1000) / 1000.0f;
+          }
+          asrc_steer(&A, 32, frac);
           stLevel = (int16_t)asrc_level(&A);
           stPpm10 = (int16_t)(A.ppm * 10.0f);
           stUnder = (uint16_t)A.under;
@@ -567,10 +606,12 @@ static void __not_in_flash_func(core1Main)(void) {
         uint32_t rate = wantRate;
         act = want;
         actNow = BP_ACT_SWITCH;
-        if (act == BP_ACT_PCM || act == BP_ACT_AES) {
+        if (act == BP_ACT_PCM || act == BP_ACT_AES || act == BP_ACT_USB) {
           // Затримка моста: запас + пів фільтра + вихід наперед. AES 48 кГц: 24 + 32 кадри (0,5 + 0,67 мс) + 0,4 мс;
           // PCM1808: 16 + 16 (0,5 + 0,5 мс) + 0,4 мс. Перевірено на Mac (bridge/test/asrc_test.c): 98 і 97 дБ.
+          // USB: пачка 48 кадрів (1 мс) — запас 72 (пачка і пів пачки поля): 1,5 + 0,67 мс + 0,4 мс.
           if (act == BP_ACT_AES) asrc_begin(&A, rate, FS_OUT, 64, 24, 8);
+          else if (act == BP_ACT_USB) asrc_begin(&A, USBA_RATE, FS_OUT, 64, 72, USBA_RATE / 1000);
           else asrc_begin(&A, FS_PCM, FS_OUT, 32, 16, 8);
           cs = CS_BUILD;
         } else {
@@ -590,6 +631,7 @@ static void __not_in_flash_func(core1Main)(void) {
       // свіжий вхід: старі кадри викинути, почати з нуля
       pcmPull(false);
       aesPull(false);
+      usbPull(false);
       asrc_finish(&A);
       restartPending = true;
       steerN = 0;
@@ -612,6 +654,13 @@ static void __not_in_flash_func(core1Main)(void) {
 // ---------------------------------------------------------------- команди і стан (ядро 0)
 static uint8_t reqSrc = BP_SRC_AUTO, reqFmt = BP_FMT_LJ, reqTone, lastSeq;
 static uint32_t logSend, logSendEnd;   // записи журналу для передавача: від logSend до logSendEnd (ставить BP_LOG)
+// Вхід, обраний буквою в порту USB (a, p, u, m, w), тримається хвилину: передавач щосекунди нагадує свій (BP_SET) і
+// інакше перебивав би його одразу — на столі так можна послухати будь-який вхід при підключеному передавачі.
+static uint32_t localSrcT;   // коли обрали з порту (мкс; 0 — не обирали)
+static bool localSrcHeld(void) {
+  if (localSrcT && usSince(localSrcT, time_us_32()) >= 60000000) localSrcT = 0;
+  return localSrcT != 0;
+}
 // Розбір команд: буфер на 4 КБ — НЕ на стеку (стек ядра 0 — 2 КБ: перша версія мосту падала саме від цього — буфер
 // вилазив за стек і псував пам'ять ядра 1, сторож перезапускав Pico, а після трьох падінь завантажувач чекав команд).
 static bp_rx_t rx;
@@ -628,11 +677,12 @@ static void enterLoader(uint8_t why) {   // why — для журналу: 0 к�
 
 // Порт USB (лише на столі: міст підключено до комп'ютера) — рядок стану раз на секунду і команди однією буквою.
 // У ділі USB не підключено, і цей код нічого не робить.
-static const char *const actName[] = {"нічого", "AES", "PCM1808", "тиша", "перевірочний сигнал", "перемикання"};
+static const char *const actName[] = {"нічого", "AES", "PCM1808", "тиша", "перевірочний сигнал", "перемикання", "USB (комп'ютер)"};
 static const char *const aesName[] = {"немає", "ловлю", "є", "частота не та"};
 
 static void usbHelp(void) {
-  printf("міст %d.%02d: a — AES, p — PCM1808, u — авто, m — тиша, t — перевірочний сигнал по колу, "
+  printf("міст %d.%02d: a — AES, p — PCM1808, w — USB (комп'ютер), u — авто, m — тиша (вхід з порту тримається хвилину), "
+         "t — перевірочний сигнал по колу, "
          "l — у завантажувач, b — у режим запису USB (без диска; писати picotool), g — що на вході AES, "
          "k — чи живі виводи (такти й дані PCM1808, такти передавача, AES), j — журнал моста\n", BRIDGE_VER_MAJOR, BRIDGE_VER_MINOR);
 }
@@ -646,9 +696,10 @@ static void handleCmd(const bp_rx_t *rx) {
       break;
     case BP_SET:
       if (n >= 4) {
-        uint8_t src = d[0] <= BP_SRC_MUTE ? d[0] : BP_SRC_AUTO;
+        uint8_t src = d[0] <= BP_SRC_USB ? d[0] : BP_SRC_AUTO;
         // d[1] — формат PCM1808: лише «лівовирівняний» (FMT на 3,3 В), інший прибрано (див. bridge.pio)
         uint8_t gen = d[2] <= BP_GEN_SWEEP ? d[2] : BP_GEN_TONE;   // 0 — немає, 1 — тон, 2 — рожевий шум, 3 — розгортка
+        if (localSrcHeld()) src = reqSrc;   // хвилину після вибору з порту USB — його
         if (src != reqSrc || gen != reqTone) blog(BL_SET, src, gen, true);
         reqSrc = src;
         reqTone = gen;
@@ -684,8 +735,9 @@ static uint8_t peakDb2(int32_t p) {   // 24-бітний пік → −дБ ×2 
 // натиск 30 мс – 1,5 с, і лише після того, як кнопку бачили відпущеною секунду: у Raspberry Pi Pico на GP24 датчик
 // живлення USB, і відключення USB (вивід надовго в «0») за кнопку так не сприймається.
 // Кольоровий світлодіод: колір — що звучить, яскравість — рівень:
-//   зелений — цифровий вхід (AES); синій — аналоговий (PCM1808); жовтий — перевірочний сигнал; тьмяний білий — тиша;
-//   помаранчевий блимає — обрано цифровий вхід, а сигналу AES немає; червоний блимає — немає тактів передавача
+//   зелений — цифровий вхід (AES); синій — аналоговий (PCM1808); фіолетовий — USB (комп'ютер); жовтий — перевірочний
+//   сигнал; тьмяний білий — тиша; помаранчевий блимає — обрано цифровий вхід, а сигналу AES немає; фіолетовий
+//   блимає — обрано USB, а комп'ютер не грає; червоний блимає — немає тактів передавача
 //   (вимкнений, перезапускається, обрив); червоний спалах — перевантаження (пік у межах 0,5 дБ від повної шкали);
 //   білий спалах — натиснули USR; три червоні спалахи — передавач за 2 с вхід не змінив (не та версія, не той вхід).
 static uint8_t btnSeq, btnSrc;
@@ -720,7 +772,7 @@ static void panelInit(void) {
   rgbPut(0, 0, 0);
 }
 
-static void panelTick(uint32_t now, bool linkOk, uint8_t aes) {
+static void panelTick(uint32_t now, bool linkOk, uint8_t aes, bool usbPlaying) {
   static uint32_t sampT, rawT, downT, flashT, waitT, rgbT, errT;
   static bool raw = true, down, armed, waiting;
   static uint8_t errN, lastR = 255, lastG = 255, lastB = 255;
@@ -763,8 +815,8 @@ static void panelTick(uint32_t now, bool linkOk, uint8_t aes) {
   float k = 0.15f + 0.85f * lvl;
   uint32_t ms = now / 1000u;
   uint8_t act = actNow, r = 0, g = 0, b = 0;
-  if (flashT && now - flashT >= 150000u) flashT = 0;
-  if (panelClipT && now - panelClipT >= 250000u) panelClipT = 0;
+  if (flashT && usSince(flashT, now) >= 150000) flashT = 0;
+  if (panelClipT && usSince(panelClipT, now) >= 250000) panelClipT = 0;
   if (flashT) r = g = b = 28;
   else if (errN) {
     if (now - errT >= 150000u) {
@@ -782,9 +834,17 @@ static void panelTick(uint32_t now, bool linkOk, uint8_t aes) {
       r = 40;
       g = 12;
     }
+  } else if (reqSrc == BP_SRC_USB && !usbPlaying) {
+    if ((ms / 500) & 1) {
+      r = 24;
+      b = 40;
+    }
   } else if (act == BP_ACT_AES) g = (uint8_t)(40 * k);
   else if (act == BP_ACT_PCM) b = (uint8_t)(44 * k);
-  else r = g = b = 4;
+  else if (act == BP_ACT_USB) {
+    r = (uint8_t)(24 * k);
+    b = (uint8_t)(40 * k);
+  } else r = g = b = 4;
   if (r != lastR || g != lastG || b != lastB) {
     lastR = r;
     lastG = g;
@@ -824,12 +884,19 @@ int main(void) {
   uint16_t underSeen = 0, overSeen = 0;
   uint8_t pkSecL = 255, pkSecR = 255;   // найбільший пік виходу за секунду рядка стану (−дБ ×2; 255 — тиша)
   uint8_t aesSeen = 0xFF, aesLogged = 0xFF, actLogged = 0xFF;   // що вже записано в журнал (0xFF — ще нічого)
+  uint8_t usbLogged = BP_USB_NONE;
   int8_t clkLogged = -1;
   bool lineWasHigh = false, crashCleared = false;
   logSend = logSendEnd = BLOG->head;
-  // CRC-32 своєї програми — з відомостей, які записав завантажувач (або перша запис з комп'ютера, bridge-full.uf2)
+  // CRC-32 своєї програми — з відомостей, які записав завантажувач (або перша запис з комп'ютера, bridge-full.uf2).
+  // Пробна збірка в ОЗУ (bridge_ram, picotool load -x) флеш не читає — називає CRC програми, що лежить у флеші
+  // (BRIDGE_RAM_CRC): інакше передавач вирішив би, що міст «не той», і переписав би його своїм образом.
+#ifdef BRIDGE_RAM_CRC
+  uint32_t myCrc = BRIDGE_RAM_CRC;
+#else
   const app_info_t *info = (const app_info_t *)(FLASH_BASE_ADDR + INFO_OFF);
   uint32_t myCrc = info->magic == INFO_MAGIC && info->magic2 == ~INFO_MAGIC ? info->crc32 : 0;
+#endif
   for (;;) {
     uint32_t now = time_us_32();
     // пропрацювали 10 с — лічильник «падінь поспіль» для завантажувача скинути (див. loader/main.c)
@@ -855,7 +922,7 @@ int main(void) {
       lowSince = 0;
     } else if (lineWasHigh) {
       if (!lowSince) lowSince = now | 1;
-      else if (now - lowSince > 80000) enterLoader(1);
+      else if (usSince(lowSince, now) > 80000) enterLoader(1);
     }
     // перескоки синхронізації виходу (PIO IRQ 0)
     if (stResync != resync) {
@@ -873,12 +940,15 @@ int main(void) {
     } else {
       aesOkSince = 0;
     }
-    bool aesSteady = aesOkSince && now - aesOkSince > 300000;   // «авто» бере AES, коли він тримається 0,3 с
+    bool aesSteady = aesOkSince && usSince(aesOkSince, now) > 300000;   // «авто» бере AES, коли він тримається 0,3 с
     uint8_t want;
+    // USB «грає», поки потік відкрито і пакети йдуть (macOS закриває потік не одразу після кінця відтворення)
+    bool usbPlaying = usbaOn && usSince(usbaPktT, now) < 50000;
     if (reqTone) want = BP_ACT_TONE;
     else if (reqSrc == BP_SRC_PCM) want = BP_ACT_PCM;
     else if (reqSrc == BP_SRC_MUTE) want = BP_ACT_MUTE;
     else if (reqSrc == BP_SRC_AES) want = aes == BP_AES_OK ? BP_ACT_AES : BP_ACT_MUTE;
+    else if (reqSrc == BP_SRC_USB) want = usbPlaying ? BP_ACT_USB : BP_ACT_MUTE;
     else want = aesSteady ? BP_ACT_AES : BP_ACT_PCM;
     if (want != wantAct || reqFmt != wantFmt || (want == BP_ACT_AES && rate != wantRate)) {
       wantAct = want;
@@ -921,13 +991,18 @@ int main(void) {
       if (ov > overSeen) blog(BL_OVER, 0, ov, true);
       overSeen = ov;
     }
+    uint8_t usbNow = usbPlaying ? BP_USB_PLAY : usbaHost ? BP_USB_HOST : BP_USB_NONE;
+    if (usbNow != usbLogged) {
+      blog(BL_USB, usbNow, 0, true);
+      usbLogged = usbNow;
+    }
     if (now - clipT >= 60000000u) {
       clipT = now;
       if (clipMin) blog(BL_CLIP, 0, clipMin, false);
       clipMin = 0;
     }
     blogTick(now);
-    panelTick(now, linkOk, aes);
+    panelTick(now, linkOk, aes, usbPlaying);
     // стан — 20 разів на секунду
     if (now - statT >= 50000) {
       statT = now;
@@ -969,12 +1044,19 @@ int main(void) {
       st.boot = BLOG->boot;
       st.btnSeq = btnSeq;
       st.btnSrc = btnSrc;
+      st.usb = usbPlaying ? BP_USB_PLAY : usbaHost ? BP_USB_HOST : BP_USB_NONE;
+      // Пробна збірка в ОЗУ — кадр без полів USB: передавач 3bca5fd (22.10) довших кадрів не бере.
+#ifdef BRIDGE_RAM_CRC
+      const size_t SL = offsetof(bp_status_t, usb);
+#else
+      const size_t SL = sizeof st;
+#endif
       uint8_t raw[sizeof st + 2], enc[sizeof st + 8];
-      memcpy(raw, &st, sizeof st);
-      uint16_t c = bp_crc16(raw, sizeof st, 0xFFFF);
-      raw[sizeof st] = (uint8_t)c;
-      raw[sizeof st + 1] = (uint8_t)(c >> 8);
-      size_t m = bp_cobs_enc(raw, sizeof raw, enc);
+      memcpy(raw, &st, SL);
+      uint16_t c = bp_crc16(raw, SL, 0xFFFF);
+      raw[SL] = (uint8_t)c;
+      raw[SL + 1] = (uint8_t)(c >> 8);
+      size_t m = bp_cobs_enc(raw, SL + 2, enc);
       enc[m++] = 0;
       bqPush(enc, (uint32_t)m);
     }
@@ -1000,10 +1082,12 @@ int main(void) {
     // USB: команди однією буквою і рядок стану раз на секунду
     if (stdio_usb_connected()) {
       int ch = getchar_timeout_us(0);
-      if (ch == 'a') reqSrc = BP_SRC_AES;
-      else if (ch == 'p') reqSrc = BP_SRC_PCM;
-      else if (ch == 'u') reqSrc = BP_SRC_AUTO;
-      else if (ch == 'm') reqSrc = BP_SRC_MUTE;
+      if (ch == 'a' || ch == 'p' || ch == 'u' || ch == 'm' || ch == 'w') {
+        reqSrc = ch == 'a' ? BP_SRC_AES : ch == 'p' ? BP_SRC_PCM : ch == 'm' ? BP_SRC_MUTE : ch == 'w' ? BP_SRC_USB : BP_SRC_AUTO;
+        localSrcT = now | 1;
+        printf("вхід з порту: %s — передавач не перебиває хвилину\n",
+               ch == 'a' ? "AES" : ch == 'p' ? "PCM1808" : ch == 'm' ? "тиша" : ch == 'w' ? "USB (комп'ютер)" : "авто");
+      }
       else if (ch == 't') {   // перевірочний сигнал по колу: немає → тон → рожевий шум → розгортка → немає
         reqTone = (uint8_t)((reqTone + 1) % 4);
         if (reqTone) genKind = reqTone;
@@ -1089,19 +1173,21 @@ int main(void) {
           }
           lastFault = 0;
         }
-        uint8_t a = actNow > BP_ACT_SWITCH ? BP_ACT_SWITCH : actNow;
+        uint8_t a = actNow > BP_ACT_USB ? BP_ACT_SWITCH : actNow;
         // пік виходу (з підмішаним шумом ±1 молодшого біта 16-бітного звуку: «рівний нуль» на вході дає тут близько −90 дБ)
         char pk[48];
         if (pkSecL >= 180 && pkSecR >= 180) snprintf(pk, sizeof pk, "тиша (≤ −90 дБ)");
         else snprintf(pk, sizeof pk, "Л −%.1f П −%.1f дБ", pkSecL / 2.0, pkSecR / 2.0);
         pkSecL = pkSecR = 255;
         printf("[%lu с] звучить: %s, пік %s; AES: %s %lu Гц, помилок парності %lu; передавач: %s; запас %d, поправка %+.1f ppm, "
-               "провали %u/%u; перескоки %lu (останній на %lu с); ядро 1 зайняте %u‰ (на кадр: вихід %u нс, вхід %u нс)%s\n",
+               "провали %u/%u; перескоки %lu (останній на %lu с); ядро 1 зайняте %u‰ (на кадр: вихід %u нс, вхід %u нс); "
+               "USB: %s, пакетів %lu%s%s\n",
                (unsigned long)(time_us_64() / 1000000u), actName[a], pk, aesName[aes > 3 ? 0 : aes],
                (unsigned long)rate, (unsigned long)spdif_rx_get_parity_err_count(),
                now - outRdT < 200000 ? "такти є" : "НЕМАЄ тактів", stLevel, stPpm10 / 10.0, stUnder, stOver,
                (unsigned long)resync, (unsigned long)resyncAt, cpu1, nsProd, nsIn,
-               pcmShift ? "; PCM1808: дані на біт пізніше — вирівнюю" : "");
+               usbPlaying ? "комп'ютер грає" : usbaHost ? "комп'ютер підключено" : "немає", (unsigned long)usbaPkts,
+               localSrcT ? "; вхід обрано з порту" : "", pcmShift ? "; PCM1808: дані на біт пізніше — вирівнюю" : "");
       }
     }
     // світлодіод: спалах раз на секунду — працює; два — грає AES; часто — немає тактів передавача

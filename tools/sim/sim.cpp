@@ -155,6 +155,19 @@ int main() {
   for (int k = 0; k < 18; k++) frame(false, 0, 0);
   save("01g-golovna-mist-movchyt");
   view.brOk = true;
+  { Box b = itemBox(ID_SRC_USB); tap(b.x + 28, b.y + 20); }   // вход USB моста (компьютер), с 22.10
+  out.bridgeSrc = 0;
+  view.brUsb = 2;
+  needFull = true;
+  for (int k = 0; k < 18; k++) frame(false, 0, 0);
+  save("01i-golovna-usb-grae");
+  view.brUsb = 1;
+  for (int k = 0; k < 18; k++) frame(false, 0, 0);
+  save("01j-golovna-usb-ne-grae");
+  view.brUsb = 0;
+  for (int k = 0; k < 18; k++) frame(false, 0, 0);
+  save("01k-golovna-usb-nemaie");
+  view.brUsb = 2;
   { Box b = itemBox(ID_SRC_LIVE); tap(b.x + 40, b.y + 20); }
   out.bridgeSrc = 0;
   save("01h-golovna-analogovyi");
