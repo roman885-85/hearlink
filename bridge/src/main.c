@@ -261,6 +261,25 @@ static void pcmStart(void) {
   pio_sm_set_enabled(pio, smPcm, true);
 }
 
+// Прийом AES (бібліотека — на перериваннях ядра 1, тож пускає й зупиняє його лише ядро 1). Канали DMA бібліотека займає
+// САМА (dma_channel_claim): тут лише знаходимо вільні й одразу відпускаємо — інакше її claim падає в panic (так і було
+// з першою версією: ядро 1 ставало, сторож перезапускав Pico).
+static alarm_pool_t *aesAlarms;
+static void aesStart(void) {
+  int ch0 = dma_claim_unused_channel(true), ch1 = dma_claim_unused_channel(true);
+  dma_channel_unclaim((uint)ch0);
+  dma_channel_unclaim((uint)ch1);
+  spdif_rx_config_t sc = {
+      .data_pin = PIN_AES,
+      .pio_sm = 0,
+      .dma_channel0 = (uint)ch0,
+      .dma_channel1 = (uint)ch1,
+      .alarm_pool = aesAlarms,
+      .flags = SPDIF_RX_FLAG_CALLBACKS | SPDIF_RX_FLAG_CHECK_PARITY,
+  };
+  spdif_rx_start(&sc);
+}
+
 static void audioSetup(void) {
   // MCLK 12,5 МГц — ШІМ (зріз 0, канал A на GP0): 200 МГц / 16. Той самий такт, що й у PIO (BCK = 200 МГц / 96), —
   // частоти кратні (×6), тож для PCM1808 усі три такти синхронні.
@@ -308,21 +327,9 @@ static void audioSetup(void) {
   irq_set_enabled(DMA_IRQ_1, true);
   pcmStart();
   pio_sm_set_enabled(pio, smLink, true);
-  // AES — переривання цього ядра, свій пул будильників теж на цьому ядрі. Канали DMA бібліотека займає САМА
-  // (dma_channel_claim): тут лише знаходимо вільні й одразу відпускаємо — інакше її claim падає в panic (так і було
-  // з першою версією: ядро 1 ставало, сторож перезапускав Pico).
-  int ch0 = dma_claim_unused_channel(true), ch1 = dma_claim_unused_channel(true);
-  dma_channel_unclaim((uint)ch0);
-  dma_channel_unclaim((uint)ch1);
-  spdif_rx_config_t sc = {
-      .data_pin = PIN_AES,
-      .pio_sm = 0,
-      .dma_channel0 = (uint)ch0,
-      .dma_channel1 = (uint)ch1,
-      .alarm_pool = alarm_pool_create_with_unused_hardware_alarm(16),
-      .flags = SPDIF_RX_FLAG_CALLBACKS | SPDIF_RX_FLAG_CHECK_PARITY,
-  };
-  spdif_rx_start(&sc);
+  // AES — переривання цього ядра, свій пул будильників теж на цьому ядрі (див. aesStart)
+  aesAlarms = alarm_pool_create_with_unused_hardware_alarm(16);
+  aesStart();
 }
 
 static inline void __not_in_flash_func(outPoll)(void) {
@@ -507,7 +514,7 @@ static void __not_in_flash_func(core1Main)(void) {
   bool usbWasIdle = false;
   uint32_t prodUs = 0, prodFr = 0, inUs = 0, inFr = 0;
   bool restartPending = false;
-  uint32_t pullT = 0, ditherSeed = 12345;
+  uint32_t pullT = 0;
   uint8_t act = BP_ACT_NONE;   // що звучить
   int cs = CS_PLAY;
   int32_t gain = 0;            // Q15
@@ -574,13 +581,11 @@ static void __not_in_flash_func(core1Main)(void) {
       } else if (cs != CS_BUILD && act == BP_ACT_TONE) {
         l = r = genNext(genKind, &tonePh);   // однаково в обидва канали: міряємо тембр (середину), не стерео
       }
-      // Дизер: трикутний шум ±1 молодшого біта 16-бітного звуку (−96 дБ — не чути). Передавач працює в 16 бітах, і
-      // цифрова тиша з AES доходила до нього рівно нулями: фільтри еквалайзера в паузах загасали до «підпорогових»
-      // чисел, процесор рахував їх у рази довше — задача звуку не встигала, губились кадри I2S (190 за 21 с лише
-      // на AES; на PCM1808 і тоні — 0), у навушниках «прерывистый» звук і тріск. Шум не дає тиші стати рівно нулем.
-      ditherSeed = ditherSeed * 1664525u + 1013904223u;
-      int32_t dl = (int32_t)((ditherSeed >> 24) & 0xFF) - (int32_t)((ditherSeed >> 16) & 0xFF);
-      int32_t dr = (int32_t)((ditherSeed >> 8) & 0xFF) - (int32_t)(ditherSeed & 0xFF);
+      // Дизера (шуму ±1 молодшого біта 16 біт) більше немає (22.10): тиша мусить бути тишею. Його додали 21.10 проти
+      // «підпорогових» чисел у фільтрах еквалайзера передавача на точних нулях AES (губились кадри I2S), але після
+      // підсилення входу передавача (+15 дБ) і приймача (+24 дБ) він чувся в навушниках шипінням на всіх входах
+      // (власник: «если на цифре нет звука, то шипению неоткуда взяться»). Підпорогові числа тепер прибирають самі
+      // фільтри (hearlink/eq.h).
       // плавно: уходимо до нуля перед зміною, входимо після
       if (cs == CS_FADE) gain = gain > gStep ? gain - gStep : 0;
       else if (cs == CS_PLAY) gain = gain < 32768 - gStep ? gain + gStep : 32768;
@@ -589,10 +594,8 @@ static void __not_in_flash_func(core1Main)(void) {
         l = (l >> 8) * gain >> 7;
         r = (r >> 8) * gain >> 7;
       }
-      l += dl;
-      r += dr;
-      // Після дизера — знову в 24 біти: перерахунок обмежує свій вихід, але ±255 дизера на повній шкалі (перевантажений
-      // вхід) виводили за межу, і «l << 8» нижче міняв знак слова — гучний щиглик замість простого обмеження (22.10).
+      // У 24 біти: «l << 8» нижче за межею міняв би знак слова — гучний щиглик замість простого обмеження (22.10:
+      // так бувало з дизером на повній шкалі; перерахунок свій вихід обмежує, тут — на будь-який випадок).
       l = l > 8388607 ? 8388607 : l < -8388608 ? -8388608 : l;
       r = r > 8388607 ? 8388607 : r < -8388608 ? -8388608 : r;
       int32_t al = l < 0 ? -l : l, ar = r < 0 ? -r : r;
