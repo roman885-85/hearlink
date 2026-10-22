@@ -346,6 +346,17 @@ static inline void __not_in_flash_func(outPoll)(void) {
 static uint32_t pcmN, pcmB7, pcmB31;
 static volatile uint8_t pcmShift = 1;   // так виміряно з FMT на 3,3 В; перевіряється на ходу
 
+// 32-бітне слово зі звуком у старших бітах → 16 біт ОКРУГЛЕННЯМ до найближчого (і з обмеженням). До 22.10 тут
+// відкидали молодші біти (округлення вниз): крихітний сигнал пульта біля нуля (−140 дБ, його власний 24-бітний шум)
+// ставав стрибками 0 ↔ −1 молодший розряд 16 біт (−96 дБ, середнє — мінус пів розряду), і після підсилень передавача
+// (+15 дБ) і приймача (+24 дБ) чувся шипінням на цифровому вході (власник: «на цифре откуда шим»). Тепер усе, що
+// тихіше пів розряду, — рівно нуль.
+static inline int16_t __not_in_flash_func(to16)(int32_t v) {
+  v = (v >> 15) + 1;   // округлення: біт 15 — «пів розряду»
+  v >>= 1;
+  return (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+}
+
 // Нові кадри PCM1808 → перерахунок (feed) або в нікуди. Повертає, скільки кадрів забрано.
 static uint32_t __not_in_flash_func(pcmPull)(bool feed) {
   uint32_t idx = ((((uint32_t)dma_hw->ch[dmaPcm].write_addr - (uint32_t)pcmRing) / 4u) & (PCM_WORDS - 1)) & ~1u;
@@ -361,7 +372,7 @@ static uint32_t __not_in_flash_func(pcmPull)(bool feed) {
           if (w & 0x80u) pcmB7++;
           if (w & 0x80000000u) pcmB31++;
         }
-        tmp[2 * n + k] = (int16_t)((int32_t)(pcmShift ? w << 1 : w) >> 16);
+        tmp[2 * n + k] = to16((int32_t)(pcmShift ? w << 1 : w));
       }
       pcmIdx = (pcmIdx + 2) & (PCM_WORDS - 1);
       n++;
@@ -395,8 +406,8 @@ static uint32_t __not_in_flash_func(aesPull)(bool feed) {
           i++;
           continue;
         }
-        tmp[2 * n] = (int16_t)((int32_t)(p[i] << 4) >> 16);
-        tmp[2 * n + 1] = (int16_t)((int32_t)(p[i + 1] << 4) >> 16);
+        tmp[2 * n] = to16((int32_t)(p[i] << 4));
+        tmp[2 * n + 1] = to16((int32_t)(p[i + 1] << 4));
         i += 2;
         n++;
       }
