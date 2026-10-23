@@ -302,7 +302,8 @@ static void txBridgeTick() {
     txBr.kick = false;
     lastSet = now;
     uint8_t src = cfg.bridgeSrc == BP_SRC_AES || cfg.bridgeSrc == BP_SRC_USB ? cfg.bridgeSrc : BP_SRC_PCM;
-    uint8_t d[4] = { src, (uint8_t)(BP_FMT_LJ | (cfg.pcmDiff ? BP_PCM_DIFF : 0)), txBr.gen, ++txBr.seq };
+    uint8_t d[4] = { src, (uint8_t)(BP_FMT_LJ | (cfg.pcmDiff ? BP_PCM_DIFF : 0) | (cfg.quality == Q_MON ? BP_OUT48 : 0)), txBr.gen,
+                     ++txBr.seq };   // «Монітор» (с 23.10): мост даёт 48 кГц, такт I2S передатчика — тоже 48 кГц (txaudio.h)
     txBridgeSend(BP_SET, d, sizeof(d));
   }
 }

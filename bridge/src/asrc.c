@@ -34,7 +34,11 @@ void asrc_begin(asrc_t *a, uint32_t fsIn, uint32_t fsOut, int taps, int32_t targ
 // Ваги. Відлік x[i − T/2 + 1 + j] для дробової позиції μ (між i та i+1) має вагу k(μ + T/2 − 1 − j).
 bool asrc_build(asrc_t *a, int rows) {
   const int taps = a->taps;
-  const float fc = 2.0f * ASRC_CUT * (float)a->fsOut / (float)a->fsIn;   // смуга відносно вхідної частоти
+  // Зріз — менше з двох: 0,48 вихідної (щоб нічого вище половини виходу не перекинулося вниз) і 0,458 вхідної (з 23.10,
+  // для виходу 48 кГц: при однакових частотах фільтр мусить гасити дзеркала входу вище його половини; 48 → 48 — 22 кГц).
+  float fcHz = ASRC_CUT * (float)a->fsOut, fcIn = 0.458f * (float)a->fsIn;
+  if (fcIn < fcHz) fcHz = fcIn;
+  const float fc = 2.0f * fcHz / (float)a->fsIn;   // смуга відносно вхідної частоти
   const float i0b = besselI0(ASRC_BETA), half = (float)taps * 0.5f;
   for (; rows > 0 && a->built <= ASRC_PHASES; rows--) {
     int p = a->built++;

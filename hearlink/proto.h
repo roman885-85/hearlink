@@ -98,6 +98,9 @@ static inline bool qStereoOk(int q) { return QDEF[q].copiesSt != 255; }
 static inline int qCopies(int q, bool st) { return st ? QDEF[q].copiesSt : QDEF[q].copies; }
 static inline int qPktLen(int q, bool st = false) { return sizeof(Hdr) + qMainLen(q) + (st ? qBlock(q) : 0) + qCopies(q, st) * qBlock(q) + SEC_TAG; }
 static inline uint32_t qFrameUs(int q) { return (uint32_t)QDEF[q].n * 1000000u / QDEF[q].sr; }
+// «Монітор» (Q_MON, config.h): заголовок, два кадра по MON_N отсчётов — середина и разность по 3 байта (24 бита, младшим
+// вперёд), подпись. Без запасных копий: 14 + 1152 + 8 = 1174 байта раз в 4 мс.
+static inline int qPktLenMon() { return (int)sizeof(Hdr) + 2 * MON_N * 2 * 3 + SEC_TAG; }
 // «двойной» пакет: заголовок, два кадра (середина и, в стерео, разность), сжатые копии четырёх прошлых кадров (от
 // ближнего к дальнему), в стерео — копии их разности в том же порядке, подпись.
 // «Найвища»: стерео 14 + 2·(128 + 35) + 4·35 + 4·19 + 8 = 564 байта; моно 14 + 2·128 + 4·35 + 8 = 418.

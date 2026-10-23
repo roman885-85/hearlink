@@ -201,7 +201,7 @@ static void settingsLoad() {
   if (cfg.txLimCeil > 3) cfg.txLimCeil = 1;
   if (cfg.txLimComp > 3) cfg.txLimComp = 1;
   if (cfg.txLimRel > 2) cfg.txLimRel = 1;
-  if (cfg.quality >= Q_COUNT) cfg.quality = Q_HI;
+  if (cfg.quality >= Q_COUNT && cfg.quality != Q_MON) cfg.quality = Q_HI;
   if (cfg.testTrack > 7) cfg.testTrack = 0;
   if (cfg.duckS < 10 || cfg.duckS > 240) cfg.duckS = 30;
   if (cfg.duckDb < -40 || cfg.duckDb > -6) cfg.duckDb = -16;
@@ -343,9 +343,13 @@ static void help() {
       mpUsMax = 0;
       mpUnder = 0;
     }
-    int q = txQNow < Q_COUNT ? (int)txQNow : qForRate(cfg.quality, cfg.rateIdx);
+    int q = txQNow < Q_COUNT ? (int)txQNow : qForRate(cfg.quality == Q_MON ? Q_HI : cfg.quality, cfg.rateIdx);
     bool st = txStNow;
-    {
+    if (cfg.quality == Q_MON) {   // «Монітор» (с 23.10): своя ветка задачи звука (txaudio.h)
+      uint32_t pl = (uint32_t)qPktLenMon(), air = airUs(pl, cfg.rateIdx);
+      Serial.printf("якість звуку: МОНІТОР — %u Гц, 24 біти, стерео, два кадри по 2 мс у пакеті без копій, пакет %u байт, в ефірі %u мкс із 4000 (%u %%)%s\n",
+                    (unsigned)MON_RATE, (unsigned)pl, (unsigned)air, (unsigned)(air / 40), cfg.input == IN_I2S ? "" : " — НЕ ЙДЕ: потрібен вхід моста");
+    } else {
       bool db = txDblNow && q == Q_HI;   // два кадра в пакете (proto.h, Q_DOUBLE)
       bool dp = db && txDupNow;          // двойной пакет с точными копиями прошлого (с 2.77)
       bool ps = dp && st && txPcmSNow;   // и стерео с разностью без сжатия (с 2.86)
@@ -953,8 +957,8 @@ static void command(String s) {
       }
       break;
     }
-    case 'q':   // якість звуку: 0 найвища … 3 дальня
-      if (v < 0 || v >= Q_COUNT) return;
+    case 'q':   // якість звуку: 0 найвища … 3 дальня, 4 — «Монітор» (48 кГц, 24 біти, з 23.10)
+      if (v < 0 || (v >= Q_COUNT && v != Q_MON)) return;
       cfg.quality = v;
       if (cfg.isTx && rateHeldLow()) rateKick = 1;   // как с экрана: подняться с нижней ступени, если приёмники уже слышат
       break;
@@ -1987,7 +1991,7 @@ static void reportTx() {
   txThinned = 0;
   txSkipped = 0;
   Serial.printf("ПЕРЕДАВАЧ к=%u шв=%s як=%s набір %u | пакетів %u, відмов %u, не пішло в ефір %u, перезапусків радіо %u, до ефіру сер. %u макс. %u мкс | ",
-                cfg.channel, RATES[cfg.rateIdx].name, Q_NAME[txQNow < Q_COUNT ? txQNow : 0], cfg.kit, (unsigned)frames, (unsigned)refused, (unsigned)air,
+                cfg.channel, RATES[cfg.rateIdx].name, txQNow == Q_MON ? "монітор" : Q_NAME[txQNow < Q_COUNT ? txQNow : 0], cfg.kit, (unsigned)frames, (unsigned)refused, (unsigned)air,
                 (unsigned)rRestarts, (unsigned)(airN ? airSum / airN : 0), (unsigned)airMax);
   if (cfg.input == IN_ADC)
     Serial.printf("АЦП %u відл/с, сирі %u…%u, перевантажень %u, перезапусків АЦП %u | ", (unsigned)raw, (unsigned)mn, (unsigned)mx, (unsigned)clips,

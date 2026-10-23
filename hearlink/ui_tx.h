@@ -869,7 +869,7 @@ static void task(void *) {
             rApply = true;
             rateKick = 1;
             int q = txQPick(cfg.quality, cfg.rateIdx, cfg.stereo != 0, nullptr);
-            if (q != cfg.quality) {   // выбранное качество в эту скорость не помещается — сказать, что пойдёт на деле
+            if (q != cfg.quality && cfg.quality != Q_MON) {   // выбранное качество в эту скорость не помещается — сказать, что пойдёт на деле
               static char msg[128];
               snprintf(msg, sizeof(msg), tr("На цій швидкості якість звуку — «%s»"), tr(Q_NAME[q]));
               ui::toast(msg);
@@ -886,6 +886,7 @@ static void task(void *) {
             rateKick = 1;
             break;
           }
+          if (cfg.quality == Q_MON) break;   // «Монітор» скорость не понижает (txaudio.h)
           int q = txQPick(cfg.quality, cfg.rateIdx, cfg.stereo != 0, nullptr);
           if (q != cfg.quality && !cfg.rateAuto) {
             static char msg[128];

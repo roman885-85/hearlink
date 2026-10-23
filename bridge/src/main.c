@@ -44,7 +44,8 @@
 #define PIN_USR 24   // кнопка USR до землі (YD-RP2040; у Raspberry Pi Pico — датчик живлення USB, див. panelTick)
 #define PIN_LED 25
 
-#define FS_OUT 32000
+#define FS_OUT 32000         // вихід до передавача, як було; з 23.10 буває й 48 кГц (BP_OUT48, «Монітор») — fsOut
+static volatile uint32_t fsOut = FS_OUT, wantFsOut = FS_OUT;   // нинішня (ядро 1) і задана передавачем (ядро 0)
 #define FS_PCM 32552     // 200 МГц / 6144 = 32 552,08 Гц (решту виправляє регулятор)
 
 // ---------------------------------------------------------------- останнє падіння
@@ -451,6 +452,7 @@ static uint32_t __not_in_flash_func(usbPull)(bool feed) {
 // Синус 1 кГц −12 дБ (перевірочний): 32 відліки на період при 32 кГц, з повною 24-бітною точністю. Не «16 біт << 8»: тоді
 // молодші біти слова — нулі, і передавач 3.29 вирішував, що дані PCM1808 зсунуті на біт (власник: «тон с постоянными
 // щелчками как трещотка»).
+static int32_t tone48[48];   // той самий тон 1 кГц −12 дБ для виходу 48 кГц (рахується при запуску, 24 біти)
 static const int32_t tone32[32] = {0, 409134, 802545, 1165115, 1482910, 1743718, 1937516, 2056856, 2097152, 2056856,
                                    1937516, 1743718, 1482910, 1165115, 802545, 409134, 0, -409134, -802545, -1165115,
                                    -1482910, -1743718, -1937516, -2056856, -2097152, -2056856, -1937516, -1743718,
@@ -462,6 +464,7 @@ static const int32_t tone32[32] = {0, 409134, 802545, 1165115, 1482910, 1743718,
 static int16_t sinTab[1025];   // синус на 1024 кроки (+1 — для лінійного проміжку), ±32767
 static void genInit(void) {
   for (int i = 0; i <= 1024; i++) sinTab[i] = (int16_t)lrintf(32767.0f * sinf(6.2831853f * (float)i / 1024.0f));
+  for (int i = 0; i < 48; i++) tone48[i] = (int32_t)lrintf(2097152.0f * sinf(6.2831853f * (float)i / 48.0f));
 }
 static volatile uint8_t genKind = BP_GEN_TONE;   // який сигнал (ставить ядро 0 з BP_SET, читає ядро 1)
 static uint32_t genRnd = 22222;
@@ -488,8 +491,8 @@ static int32_t __not_in_flash_func(genPink)(void) {
 static uint32_t sweepPh, sweepN;
 static float sweepInc;
 static int32_t __not_in_flash_func(genSweep)(void) {
-  const uint32_t RUN = FS_OUT * 10, GAP = FS_OUT;
-  if (sweepN == 0) sweepInc = 20.0f / (float)FS_OUT * 4294967296.0f;
+  const uint32_t fs = fsOut, RUN = fs * 10, GAP = fs;
+  if (sweepN == 0) sweepInc = 20.0f / (float)fs * 4294967296.0f;
   uint32_t n = sweepN++;
   if (sweepN >= RUN + GAP) sweepN = 0;
   if (n >= RUN) return 0;
@@ -503,6 +506,10 @@ static int32_t __not_in_flash_func(genSweep)(void) {
 static int32_t __not_in_flash_func(genNext)(uint8_t kind, uint32_t *ph) {
   if (kind == BP_GEN_PINK) return genPink();
   if (kind == BP_GEN_SWEEP) return genSweep();
+  if (fsOut == 48000) {
+    uint32_t i = (*ph)++ % 48;
+    return tone48[i];
+  }
   return tone32[(*ph)++ & 31];
 }
 
@@ -631,7 +638,7 @@ static void __not_in_flash_func(core1Main)(void) {
       outRing[i] = ((uint32_t)l << 8) | (bb & 0xF0u);
       outRing[i + 1] = ((uint32_t)r << 8) | ((uint32_t)(bb & 0x0Fu) << 4);
       outWr += 2;
-      if (usbrOn) {   // запис на комп'ютер (USB): те саме, що пішло передавачу, 16 біт (з округленням); забирає задача USB
+      if (usbrOn && fsOut == FS_OUT) {   // запис на комп'ютер описано як 32 кГц — на виході 48 кГц не пишемо   // запис на комп'ютер (USB): те саме, що пішло передавачу, 16 біт (з округленням); забирає задача USB
         uint32_t w = usbrWr;
         int32_t ql = (l + 128) >> 8, qr = (r + 128) >> 8;
         usbrRing[w & (USBR_RING - 1)][0] = (int16_t)(ql > 32767 ? 32767 : ql);
@@ -642,6 +649,7 @@ static void __not_in_flash_func(core1Main)(void) {
       made++;
       if (cs == CS_FADE && gain == 0) {   // тиша — можна міняти
         haveGen = wantGen;
+        fsOut = wantFsOut;   // і частоту виходу (32 / 48 кГц) — теж лише в тиші
         uint8_t want = wantAct;
         uint32_t rate = wantRate;
         act = want;
@@ -650,9 +658,13 @@ static void __not_in_flash_func(core1Main)(void) {
           // Затримка моста: запас + пів фільтра + вихід наперед. AES 48 кГц: 24 + 32 кадри (0,5 + 0,67 мс) + 0,4 мс;
           // PCM1808: 16 + 16 (0,5 + 0,5 мс) + 0,4 мс. Перевірено на Mac (bridge/test/asrc_test.c): 98 і 97 дБ.
           // USB: пачка 48 кадрів (1 мс) — запас 72 (пачка і пів пачки поля): 1,5 + 0,67 мс + 0,4 мс.
-          if (act == BP_ACT_AES) asrc_begin(&A, rate, FS_OUT, 64, 24, 8);
-          else if (act == BP_ACT_USB) asrc_begin(&A, USBA_RATE, FS_OUT, 64, 72, USBA_RATE / 1000);
-          else asrc_begin(&A, FS_PCM, FS_OUT, 32, 16, 8);
+          // Вихід 48 кГц («Монітор», з 23.10): фільтр — 32 відводи (зріз 22 кГц; на Mac 48 → 48: 89–91 дБ), бо відліків
+          // виходу в півтора раза більше, а частоти входу й виходу близькі — довгий фільтр не потрібен.
+          uint32_t fo = fsOut;
+          int tAes = fo == 48000 ? 32 : 64;
+          if (act == BP_ACT_AES) asrc_begin(&A, rate, fo, tAes, 24, 8);
+          else if (act == BP_ACT_USB) asrc_begin(&A, USBA_RATE, fo, tAes, 72, USBA_RATE / 1000);
+          else asrc_begin(&A, FS_PCM, fo, 32, 16, 8);
           cs = CS_BUILD;
         } else {
           actNow = act;
@@ -741,6 +753,7 @@ static void handleCmd(const bp_rx_t *rx) {
         // d[1] — формат PCM1808: лише «лівовирівняний» (FMT на 3,3 В), інший прибрано (див. bridge.pio); біт 1 —
         // симетричний аналоговий вхід (BP_PCM_DIFF)
         pcmDiffTx = (d[1] & BP_PCM_DIFF) != 0;
+        wantFsOut = (d[1] & BP_OUT48) ? 48000 : FS_OUT;
         uint8_t gen = d[2] <= BP_GEN_SWEEP ? d[2] : BP_GEN_TONE;   // 0 — немає, 1 — тон, 2 — рожевий шум, 3 — розгортка
         if (localSrcHeld()) src = reqSrc;   // хвилину після вибору з порту USB — його
         if (src != reqSrc || gen != reqTone) blog(BL_SET, src, gen, true);
@@ -1004,7 +1017,7 @@ int main(void) {
     else if (reqSrc == BP_SRC_AES) want = aes == BP_AES_OK ? BP_ACT_AES : BP_ACT_MUTE;
     else if (reqSrc == BP_SRC_USB) want = usbPlaying ? BP_ACT_USB : BP_ACT_MUTE;
     else want = aesSteady ? BP_ACT_AES : BP_ACT_PCM;
-    if (want != wantAct || reqFmt != wantFmt || (want == BP_ACT_AES && rate != wantRate)) {
+    if (want != wantAct || reqFmt != wantFmt || (want == BP_ACT_AES && rate != wantRate) || wantFsOut != fsOut) {
       wantAct = want;
       wantFmt = reqFmt;
       wantRate = rate;

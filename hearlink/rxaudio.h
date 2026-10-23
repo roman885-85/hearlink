@@ -222,6 +222,68 @@ static SubcDec rxSubDec;                         // сборка звука по
 static volatile bool rxSubNow;                   // идёт пакетами подполосного кодека — для запаса (см. задачу звука) и отчёта
 static volatile uint32_t rxPcmSFrames;           // кадров, пришедших с разностью каналов без сжатия (с 2.86) — для отчёта
 static volatile uint32_t rxSubUsSum, rxSubUsMax, rxSubCalls;   // сколько времени задача Wi-Fi тратит на разбор пакета нового кодека — для n8=8
+// ---- «Монітор» (Q_MON, с 23.10): два кадра по MON_N отсчётов 48 кГц, середина и разность по 24 бита (proto.h). Кольцо —
+// та же память, что у обычных качеств (rxRing/rxRingS), но как int32 на RING32 отсчётов (85 мс при 48 кГц): вместе эти
+// режимы не идут. rxMonNow — в кольце отсчёты «Монітора»; выход (rxTask) по нему перестраивается на 48 кГц.
+#define RING32 (RING / 2)
+static volatile bool rxMonNow;
+static inline int32_t rxGet24(const uint8_t *p) {
+  return (int32_t)(((uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16)) << 8) >> 8;
+}
+static inline void rxPushMon(const uint8_t *m, const uint8_t *s, int n) {   // m, s — NULL: тишина
+  int32_t *rm = (int32_t *)rxRing, *rs = (int32_t *)rxRingS;
+  uint32_t hd = rxHead;
+  for (int i = 0; i < n; i++) {
+    rm[(hd + i) & (RING32 - 1)] = m ? rxGet24(m + 3 * i) : 0;
+    rs[(hd + i) & (RING32 - 1)] = s ? rxGet24(s + 3 * i) : 0;
+  }
+  rxHead = hd + n;
+}
+static void rxOnPacketMon(const Hdr *h, const uint8_t *payload) {
+  if (rxHopCh && (int32_t)(h->seq + 2 - rxHopSeq) >= 0) rxHopNow = true;   // последний пакет на прежнем канале
+  {
+    uint8_t lg = (h->q & Q_LANG_EN) ? 1 : 0;
+    if (lg != cfg.lang) {
+      cfg.lang = lg;
+      if (!cfg.rxLang) uiLang = lg;
+      rxLangDirty = true;
+    }
+  }
+  int32_t gap = (int32_t)(h->seq - rxLastSeq);
+  bool fresh = !rxHave || h->boot != rxBoot || !rxMonNow;
+  if (!fresh && gap <= 0) return;   // повтор или пакет из прошлого
+  if (fresh || gap > 200) {
+    rxHave = true;
+    rxBoot = h->boot;
+    rxQ = Q_MON | Q_STEREO;
+    rxAirStereo = true;
+    rxMonNow = true;
+    rxNeedPrime = true;
+    sResync = sResync + 1;
+    gap = 1;
+  }
+  rxFlags = h->flags & 0x0F;
+  rxSeqMs = 2;
+  rxFrameMs = 4;
+  rxCopyMs = 0;
+  if (gap >= 2) {   // пакеты пропали, копий нет — на их место тишина (счёт по часам передатчика)
+    rxGapMs = millis() ? millis() : 1;
+    int32_t lost = gap - 1, fill = lost * MON_N;
+    sLostFrames = sLostFrames + lost;
+    portENTER_CRITICAL(&rxMux);
+    int32_t dd = rxDebt < fill ? rxDebt : fill;   // что выход уже сыграл впустую — не доигрываем
+    rxDebt -= dd;
+    portEXIT_CRITICAL(&rxMux);
+    if (fill - dd > 0) rxPushMon(NULL, NULL, fill - dd);
+  }
+  rxPushMon(payload, payload + MON_N * 3, MON_N);
+  rxPushMon(payload + MON_N * 6, payload + MON_N * 9, MON_N);
+  rxDblCount = rxDblCount + 1;
+  rxInSamples = rxInSamples + (uint32_t)(gap + 1) * MON_N;
+  rxLastSeq = h->seq + 1;
+  sFrames = sFrames + 2;
+}
+
 // Вызывается из задачи Wi-Fi на каждый свой пакет.
 static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
   static int16_t tmp[Q_MAX_N], tmpS[Q_MAX_N];
@@ -234,6 +296,14 @@ static void rxOnPacket(const Hdr *h, const uint8_t *payload) {
   if (!rxAudioOn) {   // ожидание: играть некому — пакет не разбираем; после пробуждения начнём заново
     rxHave = false;
     return;
+  }
+  if ((h->q & Q_MASK) == Q_MON) {
+    rxOnPacketMon(h, payload);
+    return;
+  }
+  if (rxMonNow) {   // после «Монітора» — снова обычные качества: кольцо начнётся заново (вид пакета другой — «свежее»)
+    rxMonNow = false;
+    rxHave = false;
   }
   int q = h->q & Q_MASK;
   bool st = h->q & Q_STEREO;
@@ -810,6 +880,25 @@ static bool rsBegin() {
   return true;
 }
 
+// «Монітор» (с 23.10): выход на внешний ЦАП — 48 кГц и обратно (CS4344 — 48 077 и 31 250 Гц: главный такт 160 МГц / 13
+// и / 20 — целым делением). Однобитный выход остаётся на 32 кГц — подгонка темпа пересчитывает 48 → 32.
+static void rxOutRateMon(bool mon) {
+  uint32_t in = mon ? MON_RATE : SRATE;
+  if (cfg.output == OUT_PDM) {
+    rxRateBase = (double)in / rxOutRate;
+    return;
+  }
+  uint32_t hz = cfg.output == OUT_CS4344 ? (mon ? 48077 : 31250) : in;
+  i2s_std_clk_config_t ck = I2S_STD_CLK_DEFAULT_CONFIG(hz);
+  ck.clk_src = cfg.output == OUT_CS4344 ? I2S_CLK_SRC_PLL_160M : I2S_CLK_SRC_DEFAULT;
+  ck.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+  i2s_channel_disable(rxI2s);
+  i2s_channel_reconfig_std_clock(rxI2s, &ck);
+  i2s_channel_enable(rxI2s);
+  rxOutRate = hz;
+  rxRateBase = (double)in / hz;
+}
+
 static void rxTask(void *) {
   static int16_t out[OUT_BLOCK * 2];     // 16 бит: однобитному выходу — сам звук, внешнему ЦАП — для сторожа выхода
   const bool wide = cfg.output != OUT_PDM;   // выход выбирается при запуске (смена — с перезапуском)
@@ -835,6 +924,7 @@ static void rxTask(void *) {
   float dynG = 1;
   uint8_t boostStep = 255;
   bool rsOk = rsBegin();   // памяти не нашлось — останется прежняя, кубическая
+  bool monOut = false;     // выход играет «Монітор» (48 кГц, кольцо int32) — см. rxOutRateMon
   specBuf = (int16_t *)heap_caps_calloc(SPEC_N, sizeof(int16_t), MALLOC_CAP_INTERNAL);   // нет памяти — спектра не будет, звук будет
   if (!rxOutBegin()) {
     Serial.println("вихід звуку не запустився");
@@ -989,6 +1079,14 @@ static void rxTask(void *) {
       continue;
     }
     uint32_t cyc0 = esp_cpu_get_cycle_count();
+    if (rxMonNow != monOut) {   // «Монітор» начался или кончился: выход — 48 / 32 кГц, запас — заново, эквалайзер — под частоту
+      monOut = rxMonNow;
+      rxOutRateMon(monOut);
+      step = (uint64_t)(rxRateBase * 4294967296.0);
+      integ = 0;
+      rxNeedPrime = true;
+      eqGen = rxEqGen - 1;
+    }
     // кадр длиннее — запас больше: звук приходит порциями, и между порциями запас тает на целый кадр
     // Потолок запаса: у длинных кадров (8 и 12 мс — «мова» и «дальня», на них передатчик уходит ради слабого
     // приёмника) он выше — 58 и 74 мс вместо 42 и 50. На 1 Мбит/с пакет занимает эфир 2,3 мс и ждёт свободного
@@ -1016,7 +1114,8 @@ static void rxTask(void *) {
       if (autoMs < lossLo) autoMs = lossLo;
     }
     float targetMs = cfg.depthMs ? (float)cfg.depthMs : autoMs;
-    uint32_t target = (uint32_t)(targetMs * SRATE / 1000);
+    const uint32_t inHz = monOut ? MON_RATE : SRATE;   // отсчётов кольца в секунду
+    uint32_t target = (uint32_t)(targetMs * inHz / 1000);
     rxTargetMs = targetMs;
     if (rxNeedPrime) {   // начать заново: выбросить накопленное, набрать запас
       rxNeedPrime = false;
@@ -1061,7 +1160,7 @@ static void rxTask(void *) {
     }
     uint32_t pc1 = esp_cpu_get_cycle_count();
     if (!priming) {
-      if (fill > target + SRATE * 25 / 1000) {   // накопилось слишком много — вернуться к заданному запасу
+      if (fill > target + inHz * 25 / 1000) {   // накопилось слишком много — вернуться к заданному запасу
         rxTail = rxHead - target;
         fill = target;
         fillSm = fill;
@@ -1088,7 +1187,7 @@ static void rxTask(void *) {
       if (fill > rxFillMax) rxFillMax = fill;
       if (fill < winMin) winMin = fill;
       if (++winBlocks >= 5000) {
-        float minMs = winMin * 1000.0f / SRATE, used = targetMs - minMs, mx = 0;
+        float minMs = winMin * 1000.0f / inHz, used = targetMs - minMs, mx = 0;
         if (used > need[needPos]) need[needPos] = used;   // в этом окне уже мог быть записан провал
         needPos = (needPos + 1) % 12;
         need[needPos] = 0;
@@ -1115,7 +1214,7 @@ static void rxTask(void *) {
       dyn.gateRel = cfg.rxGateRel > 2 ? 1 : cfg.rxGateRel;
     }
     float limRel = dyn.comp && boostStep ? LIM_REL_FAST : LIM_REL;   // без усиления всё как до 2.68
-    bool nsOn = cfg.rxNs >= 1 && cfg.rxNs <= 3;
+    bool nsOn = cfg.rxNs >= 1 && cfg.rxNs <= 3 && !monOut;   // шумозаглушение считано на 32 кГц — в «Моніторі» его нет
     if (nsOn && !ns) {
       nsWork = (float *)heap_caps_aligned_alloc(16, 2 * NSX_N * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
       ns = nsWork ? (NsSpec *)heap_caps_malloc(sizeof(NsSpec), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : nullptr;
@@ -1185,6 +1284,41 @@ static void rxTask(void *) {
         y = last;
         if (!priming) under++;
         fade = 0;
+      } else if (monOut) {   // «Монітор»: кольцо int32 (24 бита), RING32 отсчётов
+        if (rsOk) {
+          uint32_t pi = frac >> 25;
+          float a = (float)(frac & 0x1FFFFFFu) * (1.0f / 33554432.0f);
+          const int TAPS = rxRsTaps;
+          uint32_t base = (tail - (TAPS / 2 - 1)) & (RING32 - 1);
+          const int32_t *rm = (const int32_t *)rxRing, *rs = (const int32_t *)rxRingS;
+          const int32_t *pm = rm + base, *ps = rs + base;
+          int32_t tm[RXRS_MAX], ts[RXRS_MAX];
+          if (base + TAPS > RING32) {
+            for (int j = 0; j < TAPS; j++) {
+              tm[j] = rm[(base + j) & (RING32 - 1)];
+              ts[j] = rs[(base + j) & (RING32 - 1)];
+            }
+            pm = tm;
+            ps = ts;
+          }
+          rsDotT<int32_t>(rxRsTab + pi * TAPS, a, TAPS, pm, stOut ? ps : nullptr, &y, &ys);
+          y *= 1.0f / 256;   // в шкалу 16 бит, с дробью: точность 24 бит остаётся
+          ys *= 1.0f / 256;
+        } else y = ys = 0;   // таблицы нет — «Монітор» не играем
+        uint64_t acc = (uint64_t)frac + step;
+        rxTail = tail + (uint32_t)(acc >> 32);
+        frac = (uint32_t)acc;
+        if (fade < 1) {
+          fade += fadeStep;
+          if (fade >= 1) {
+            fade = 1;
+            fadeStep = FADE_FAST;
+          }
+          float k = fadeStep == FADE_SLOW ? fade * fade : fade;
+          y *= k;
+          ys *= k;
+        }
+        last = y;
       } else if (rsOk) {
         // Номер строки таблицы и доля до следующей — целыми числами (с 2.84). До этого было «frac × 128 / 2^32»
         // дробным числом: при frac от 0xFFFFFF80 оно округлялось до 128, и вторая строка бралась за краем таблицы.

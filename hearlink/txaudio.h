@@ -153,6 +153,17 @@ static bool txI2sBegin() {
   return i2s_channel_enable(txI2s) == ESP_OK;
 }
 
+// Частота такта I2S моста: 32 кГц — как всегда, 48 кГц — «Монітор» (Q_MON, с 23.10). Такт даёт передатчик, мост
+// подстраивает свой выход сам (по BP_OUT48 — уже 48 кГц).
+static void txI2sRate(uint32_t hz) {
+  i2s_std_clk_config_t ck = I2S_STD_CLK_DEFAULT_CONFIG(hz);
+  ck.clk_src = I2S_CLK_SRC_DEFAULT;
+  ck.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+  i2s_channel_disable(txI2s);
+  i2s_channel_reconfig_std_clock(txI2s, &ck);
+  i2s_channel_enable(txI2s);
+}
+
 // ---- вывод 43 модуля: главный такт PCM1808 или порт
 // Свободных выводов у модуля не хватает, и главный такт внешнего АЦП идёт выводом 43 — это же TXD порта: пока такт
 // на выводе, передатчик в порт не печатает (команды принимает). Из-за этого для работы с портом вход приходилось
@@ -364,6 +375,32 @@ static NSX_HOT bool txReadI2s(int16_t *pcm, int16_t *sd) {
     memset(txFineS, 0, sizeof(txFineS));
   }
   return true;
+}
+
+// «Монітор»: кадр MON_N отсчётов при 48 кГц — середина (Л+П)/2 и разность (Л−П)/2 в шкале 24 бит, с полной точностью
+// моста; обратный канал моста — как обычно (биты 7…4 слов).
+static int32_t txMonRaw[MON_N * 2];
+static NSX_HOT bool txReadI2sMon(float *m, float *s) {
+  size_t got = 0;
+  if (i2s_channel_read(txI2s, txMonRaw, sizeof(txMonRaw), &got, 50) != ESP_OK || got != sizeof(txMonRaw)) return false;
+  txBridgeFeed(txMonRaw, MON_N);
+  for (int i = 0; i < MON_N; i++) {
+    int32_t l = txMonRaw[2 * i] >> 8, r = txMonRaw[2 * i + 1] >> 8;
+    m[i] = (float)(l + r) * 0.5f;
+    s[i] = (float)(l - r) * 0.5f;
+  }
+  if (txBrMute) {   // мост обновляется: на выводе 40 его загрузчик, а не звук
+    memset(m, 0, MON_N * sizeof(float));
+    memset(s, 0, MON_N * sizeof(float));
+  }
+  txRawSamples = txRawSamples + MON_N;
+  return true;
+}
+// 24 бита со знаком — в три байта, младшим вперёд
+static inline void monPut24(uint8_t *p, int32_t v) {
+  p[0] = (uint8_t)v;
+  p[1] = (uint8_t)(v >> 8);
+  p[2] = (uint8_t)(v >> 16);
 }
 
 // Пробный тон 1000 Гц на четверти полной шкалы (−12 дБ): ровно 32 отсчёта на период.
@@ -978,6 +1015,122 @@ static void txTask(void *) {
   txWdtErr = wdtAdd;
   for (;;) {
     if (wdtMine) esp_task_wdt_reset();
+    // ---- «Монітор» (Q_MON, с 23.10): 48 кГц, 24 бита, два кадра по 2 мс в пакете раз в 4 мс, без копий — своя короткая
+    // ветка. От основного цикла в ней только нужное: обратный канал моста, номера кадров, переход на другой канал вместе
+    // с приёмниками, служебные пакеты в свободном кадре пары, «тиша», заставка, пауза на раздачу прошивки. Обработки
+    // (эквалайзер, ограничитель, шумозаглушение) нет — звук как есть, с подсилением входа.
+    {
+      static bool monNow;
+      bool mon = cfg.quality == Q_MON && inMode == IN_I2S && ok;
+      if (mon != monNow) {
+        monNow = mon;
+        txI2sRate(mon ? MON_RATE : SRATE);
+        txBr.kick = true;   // мосту — частоту выхода сейчас же (txbrupd.h, BP_OUT48)
+        pairHave = false;
+        accN = 0;
+        q = -1;             // основной цикл после «Монітора» выберет качество заново
+        if (mon) txQNow = Q_MON;
+      }
+      if (mon) {
+        static float mm[MON_N], ms[MON_N];
+        static uint8_t pairMon[MON_N * 2 * 3];
+        static uint32_t monPairSeq;
+        static uint8_t monPairFl;
+        static int8_t monDb = 127;
+        static float monK = 1;
+        if (!txReadI2sMon(mm, ms)) {   // входа нет — тишина, темп по часам
+          memset(mm, 0, sizeof(mm));
+          memset(ms, 0, sizeof(ms));
+          TickType_t nowT = xTaskGetTickCount();
+          if (nowT - tick > 20) tick = nowT;
+          vTaskDelayUntil(&tick, 2);
+        }
+        if (txHold) {
+          rLastDoneMs = millis();
+          continue;
+        }
+        if (txPause && txPauseLight) {
+          txPaused = true;
+          rLastDoneMs = millis();
+          continue;
+        }
+        if (monDb != cfg.gainDb) {
+          monDb = cfg.gainDb;
+          monK = powf(10.0f, monDb / 20.0f);
+        }
+        uint8_t fl = txMute ? FLAG_MUTE : 0;
+        uint8_t *dst = pairHave ? pkt + sizeof(Hdr) + MON_N * 2 * 3 : pairMon;   // второй кадр пары — прямо в пакет
+        int32_t pk = 0;
+        for (int i = 0; i < MON_N; i++) {
+          float vm = txMute ? 0 : mm[i] * monK, vs = txMute ? 0 : ms[i] * monK;
+          int32_t a = vm >= 8388607.0f ? 8388607 : vm <= -8388608.0f ? -8388608 : (int32_t)(vm + (vm < 0 ? -0.5f : 0.5f));
+          int32_t b = vs >= 8388607.0f ? 8388607 : vs <= -8388608.0f ? -8388608 : (int32_t)(vs + (vs < 0 ? -0.5f : 0.5f));
+          if (a == 8388607 || a == -8388608) fl |= FLAG_CLIP;
+          int32_t aa = a < 0 ? -a : a;
+          if (aa > pk) pk = aa;
+          monPut24(dst + 3 * i, a);
+          monPut24(dst + MON_N * 3 + 3 * i, b);
+        }
+        pk >>= 8;   // в шкале 16 бит — для отчёта и экрана
+        if (pk > txPeakAir) txPeakAir = pk > 32767 ? 32767 : pk;
+        if (pk > 160) txLoudMs = millis() ? millis() : 1;
+        {   // переход на другой канал вместе с приёмниками — как в основном цикле: на границе пары, через ~0,2 с
+          static bool armedM;
+          static uint8_t tickM;
+          uint8_t hc = txHopCh;
+          if (hc && !armedM) {
+            txHopSeq = seq + 100;
+            uint32_t firstPar = pairHave ? ((seq ^ 1) & 1) : (seq & 1);
+            if ((txHopSeq & 1) != firstPar) txHopSeq = txHopSeq + 1;
+            armedM = true;
+            tickM = 0;
+          }
+          if (armedM && hc) {
+            if ((int32_t)(seq - txHopSeq) >= 0) {
+              for (int i = 0; i < 30 && (int32_t)(rPut - rGot) > 0; i++) vTaskDelay(1);
+              cfg.channel = hc;
+              esp_wifi_set_channel(hc, WIFI_SECOND_CHAN_NONE);
+              bbMark(BB_HOP, hc);
+              armedM = false;
+              txHopCh = 0;
+              txHopDone = true;
+            } else if (txHopSend && (tickM++ % 6) == 0) txHopSend(hc, txHopSeq);
+          }
+        }
+        uint32_t mySeq = seq++;
+        txSeqNow = mySeq;
+        if (!pairHave) {   // первый кадр пары — запомнить; этот кадр — служебным пакетам
+          monPairSeq = mySeq;
+          monPairFl = fl;
+          pairHave = true;
+          if (!txPause) {
+            radioSend(NULL, 0);
+            static uint8_t auxSkipM;
+            if (rPut == rGot || ++auxSkipM >= (txAuxWant ? 4 : 25)) {
+              auxSkipM = 0;
+              if (txAfterSend) txAfterSend();
+            }
+          } else rLastDoneMs = millis();
+        } else {
+          pairHave = false;
+          h->magic = MAGIC;
+          h->ver = PROTO_VER;
+          h->kit = cfg.kit;
+          h->boot = boot;
+          h->seq = monPairSeq;
+          h->flags = fl | monPairFl | (cfg.channel << 4);
+          h->q = Q_MON | Q_STEREO | Q_DOUBLE | (cfg.lang ? Q_LANG_EN : 0);
+          memcpy(pkt + sizeof(Hdr), pairMon, MON_N * 2 * 3);
+          if (!txPause) {
+            uint8_t *w = pkt + qPktLenMon() - SEC_TAG;
+            secSeal(SEC_AUDIO, h->boot, h->seq, NULL, pkt, sizeof(Hdr), pkt + sizeof(Hdr), (w - pkt) - sizeof(Hdr), w);
+            radioSend(pkt, qPktLenMon());
+          } else rLastDoneMs = millis();
+        }
+        txPaused = txPause;
+        continue;
+      }
+    }
     uint32_t clipsBefore = txClips;
     memset(side, 0, sizeof(side));
     if (tpAfter) {   // сколько длилась обработка прошлого кадра (от конца чтения входа до начала следующего чтения)

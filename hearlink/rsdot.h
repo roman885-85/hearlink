@@ -23,7 +23,9 @@
 
 enum { RS_TAPS_MAX = 48 };   // taps — кратно четырём, не больше этого
 
-static RS_HOT void rsDot(const float *c0, float a, int taps, const int16_t *xm, const int16_t *xs, float *ym, float *ys) {
+// Отсчёты — int16 (обычные качества) или int32 (с 23.10: «Монітор», 24 бита в кольце).
+template <typename T>
+static RS_HOT void rsDotT(const float *c0, float a, int taps, const T *xm, const T *xs, float *ym, float *ys) {
   const float *c1 = c0 + taps;
   if (!xs) {   // моно: одна свёртка
     float m0 = 0, m1 = 0, m2 = 0, m3 = 0;
@@ -48,4 +50,7 @@ static RS_HOT void rsDot(const float *c0, float a, int taps, const int16_t *xm, 
   }
   *ym = m0 + m1;
   *ys = s0 + s1;
+}
+static inline void rsDot(const float *c0, float a, int taps, const int16_t *xm, const int16_t *xs, float *ym, float *ys) {
+  rsDotT<int16_t>(c0, a, taps, xm, xs, ym, ys);
 }
