@@ -46,7 +46,10 @@
 
 #define FS_OUT 32000         // вихід до передавача, як було; з 23.10 буває й 48 кГц (BP_OUT48, «Монітор») — fsOut
 static volatile uint32_t fsOut = FS_OUT, wantFsOut = FS_OUT;   // нинішня (ядро 1) і задана передавачем (ядро 0)
-#define FS_PCM 32552     // 200 МГц / 6144 = 32 552,08 Гц (решту виправляє регулятор)
+// PCM1808 — 48 828 Гц (з 23.10; було 32 552): головний такт той самий 12,5 МГц = 256 × fs, такт бітів — 200 МГц / 64.
+// Власник: «крайне низкая частота дискретизации, из-за чего звук глухой» — АЦП на 32,5 кГц пропускав до 14,8 кГц
+// (0,454 fs — фільтр самої PCM1808); тепер до 22 кГц, і в «Моніторі» (48 кГц) аналог не вужчий за цифру.
+#define FS_PCM 48828     // 200 МГц / 4096 = 48 828,1 Гц (решту виправляє регулятор)
 
 // ---------------------------------------------------------------- останнє падіння
 // panic() SDK (PICO_PANIC_FUNCTION=bridge_panic у CMakeLists.txt) і апаратна помилка не «висять», а пишуть, що сталося,
@@ -249,7 +252,7 @@ static void pcmStart(void) {
   sm_config_set_in_pins(&c, PIN_PCM_DOUT);
   sm_config_set_in_shift(&c, false, true, 32);
   sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
-  sm_config_set_clkdiv_int_frac(&c, 24, 0);   // 200 МГц / 24 / 4 такти = BCK 2,0833 МГц
+  sm_config_set_clkdiv_int_frac(&c, 16, 0);   // 200 МГц / 16 / 4 такти = BCK 3,125 МГц (64 × 48 828 Гц)
   pio_sm_init(pio, smPcm, offPcm, &c);
   dma_channel_config d = dma_channel_get_default_config(dmaPcm);
   channel_config_set_transfer_data_size(&d, DMA_SIZE_32);
@@ -282,8 +285,8 @@ static void aesStart(void) {
 }
 
 static void audioSetup(void) {
-  // MCLK 12,5 МГц — ШІМ (зріз 0, канал A на GP0): 200 МГц / 16. Той самий такт, що й у PIO (BCK = 200 МГц / 96), —
-  // частоти кратні (×6), тож для PCM1808 усі три такти синхронні.
+  // MCLK 12,5 МГц — ШІМ (зріз 0, канал A на GP0): 200 МГц / 16. Той самий такт, що й у PIO (BCK = 200 МГц / 64), —
+  // частоти кратні (×4), тож для PCM1808 усі три такти синхронні (з 23.10: 256 fs, 48,8 кГц; до того 384 fs, 32,5 кГц).
   gpio_set_function(PIN_MCLK, GPIO_FUNC_PWM);
   uint sl = pwm_gpio_to_slice_num(PIN_MCLK);
   pwm_config pc = pwm_get_default_config();
@@ -664,7 +667,7 @@ static void __not_in_flash_func(core1Main)(void) {
           int tAes = fo == 48000 ? 32 : 64;
           if (act == BP_ACT_AES) asrc_begin(&A, rate, fo, tAes, 24, 8);
           else if (act == BP_ACT_USB) asrc_begin(&A, USBA_RATE, fo, tAes, 72, USBA_RATE / 1000);
-          else asrc_begin(&A, FS_PCM, fo, 32, 16, 8);
+          else asrc_begin(&A, FS_PCM, fo, fo == 48000 ? 32 : 64, 16, 8);   // 48,8 → 32 кГц — як AES 48 → 32
           cs = CS_BUILD;
         } else {
           actNow = act;

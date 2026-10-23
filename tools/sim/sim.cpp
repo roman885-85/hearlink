@@ -488,7 +488,7 @@ int main() {
   needFull = true;
   frame(false, 0, 0);
   // с 22.10: третий вариант — мост с симметричным аналоговым входом (cfg.pcmDiff)
-  view.val[P_INPUT] = 2;
+  view.val[P_INPUT] = 1;
   needFull = true;
   frame(false, 0, 0);
   save("05d-zvuk-symetrychnyi");
@@ -843,7 +843,7 @@ int main() {
       save(EN[pg]);
     }
     page = PG_SOUND;   // окно «Вхід передавача» с третьим вариантом (симметричный аналоговый вход) — помещается ли
-    view.val[P_INPUT] = 2;
+    view.val[P_INPUT] = 1;
     needFull = true;
     frame(false, 0, 0);
     tap(360, 245);
