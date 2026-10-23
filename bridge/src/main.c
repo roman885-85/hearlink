@@ -27,6 +27,8 @@
 #include "spdif_rx.h"
 #include "bridge.pio.h"
 #include "asrc.h"
+#define HUM_FN(f) __not_in_flash_func(f)
+#include "hum.h"
 #include "bridge_proto.h"
 #include "layout.h"
 #include "version.h"
@@ -181,6 +183,12 @@ static volatile int16_t stLevel, stPpm10;     // запас і поправка 
 static volatile uint16_t stUnder, stOver;
 static volatile uint32_t stOutRd;             // скільки слів забрав передавач (чи є його такти)
 static asrc_t A;
+// Віднімання гулу радіо передавача з аналогового входу (hum.h): шаблон веде ядро 1 на виході перерахунку, лише коли
+// звучить PCM1808. Вмикає передавач (BP_PCM_HUM; без нього, як у старого передавача, — вимкнено), буква r у порту USB
+// перемикає навпаки (на столі, до перезапуску). Шаблон стирає саме ядро 1: перерахунок з початку (новий вхід, частота
+// виходу) і збій такту виходу (linkRecover) зсувають фазу гулу відносно кадрів.
+static hum_t hum;
+static volatile bool humTx, humLocal;
 
 // Зворотний канал (ядро 0 пише, ядро 1 видає по два байти на кадр I2S)
 #define BQ 1024
@@ -342,16 +350,26 @@ static inline void __not_in_flash_func(outPoll)(void) {
   outRdIdx = idx;
 }
 
-// Вирівнювання PCM1808 (вимір на платі 21.10, запис слів через передавач): з тактами від моста PCM1808 (FMT на 3,3 В)
-// видає дані на такт BCK ПІЗНІШЕ, ніж міст їх читає: біт 31 слова — «хвіст» попереднього (0), D23…D0 — біти 30…7, і
-// слабкий мінус (−1480) читався як майже повна шкала плюс (0x7FFD1C). Признак: біт 7 (у рівному слові там уже нулі
-// доповнення) часто 1, а біт 31 — ніколи; тоді слово зсувається на біт ліворуч. Рахується на ходу (по 4096 ненульових
-// слів), рішення — лише за явних ознак, щоб тиша чи постійний зсув нуля його не перемикали.
+// Вирівнювання PCM1808 (вимір на платі 21.10, запис слів через передавач): PCM1808 видає дані на такт BCK ПІЗНІШЕ,
+// ніж міст їх читає (програма pcm_lj — «лівовирівняна»): біт 31 слова — «хвіст» попереднього (0), D23…D0 — біти 30…7,
+// і слабкий мінус (−1480) читався як майже повна шкала плюс (0x7FFD1C). Причина — формат I2S: у наборі FMT на землі
+// (власник 23.10: «fmy, md0, md1 — подключены на gnd»), а не на 3,3 В, як я вважав. Признак: біт 7 (у рівному слові
+// там уже нулі доповнення) часто 1, а біт 31 — ніколи; тоді слово зсувається на біт ліворуч. Рахується на ходу (по 4096
+// ненульових слів), рішення — лише за явних ознак, щоб тиша чи постійний зсув нуля його не перемикали.
+// В I2S лівий канал іде при LRCK = 0, тож у пів-кадрі LRCK = 1 (перше слово пари) — ПРАВИЙ: зі зсувом міст міняє
+// канали місцями. До 23.10 цього не було — аналог ішов з переставленими Л і П (одночасний знімок: слово «Л» PCM1808
+// збігається з правим AES, когерентність 0,93–0,98).
 static uint32_t pcmN, pcmB7, pcmB31;
-static volatile uint8_t pcmShift = 1;   // так виміряно з FMT на 3,3 В; перевіряється на ходу
+static volatile uint8_t pcmShift = 1;   // I2S (FMT на землі) — так у наборі; перевіряється на ходу
 // Симетричний аналоговий вхід (BP_PCM_DIFF, bridge_proto.h): у перерахунок іде (Л − П) / 2 в обидва канали. Ставить
 // передавач (BP_SET) або буква d у порту USB (на столі, до перезапуску).
 static volatile bool pcmDiffTx, pcmDiffLocal;
+// Знімок обох входів одночасно (з 23.10, буква c у порту USB): сирі 24-бітні відліки AES і PCM1808 (PCM — до
+// симетричного режиму) по CAP_N кадрів з одного й того самого моменту — порівняти аналог із цифрою того самого звуку.
+#define CAP_N 1024
+static int32_t capA[CAP_N][2], capP[CAP_N][2];
+static volatile uint32_t capAn, capPn;
+static volatile bool capOn;
 
 // 32-бітне слово зі звуком у старших 24 бітах → 24 біти зі знаком, без округлень: перерахунок частоти бере всі 24
 // (asrc.c). До 22.10 тут ставало 16 біт: спершу відкиданням молодших (крихітний сигнал пульта біля нуля ставав
@@ -377,7 +395,12 @@ static uint32_t __not_in_flash_func(pcmPull)(bool feed) {
           if (w & 0x80u) pcmB7++;
           if (w & 0x80000000u) pcmB31++;
         }
-        tmp[2 * n + k] = to24(pcmShift ? w << 1 : w);
+        tmp[2 * n + (k ^ pcmShift)] = to24(pcmShift ? w << 1 : w);   // I2S: перше слово пари — правий
+      }
+      if (capOn && capPn < CAP_N) {
+        capP[capPn][0] = tmp[2 * n];
+        capP[capPn][1] = tmp[2 * n + 1];
+        capPn = capPn + 1;
       }
       if (pcmDiffTx || pcmDiffLocal) {   // симетричний вхід: різниця — сигнал, однакове в обох проводах (гул) — геть
         int32_t m = (tmp[2 * n] - tmp[2 * n + 1]) >> 1;
@@ -417,6 +440,11 @@ static uint32_t __not_in_flash_func(aesPull)(bool feed) {
         }
         tmp[2 * n] = to24(p[i] << 4);
         tmp[2 * n + 1] = to24(p[i + 1] << 4);
+        if (capOn && capAn < CAP_N) {
+          capA[capAn][0] = tmp[2 * n];
+          capA[capAn][1] = tmp[2 * n + 1];
+          capAn = capAn + 1;
+        }
         i += 2;
         n++;
       }
@@ -537,6 +565,7 @@ static void __not_in_flash_func(linkRecover)(void) {
   pio_interrupt_clear(pio, 0);
   pio_sm_set_enabled(pio, smLink, true);
   stResync = stResync + 1;
+  hum_reset(&hum, fsOut);   // кадри виходу зсунулись відносно пакетів передавача
 }
 
 // Увесь «гарячий» шлях ядра 1 — з ОЗП (__not_in_flash_func): з флешу через спільний з ядром 0 і USB кеш на 16 КБ
@@ -544,7 +573,7 @@ static void __not_in_flash_func(linkRecover)(void) {
 static void __not_in_flash_func(core1Main)(void) {
   audioSetup();
   uint32_t haveGen = 0, steerN = 0, tonePh = 0, busy = 0, winT = time_us_32();
-  bool usbWasIdle = false;
+  bool usbWasIdle = false, humOn = false;
   uint32_t prodUs = 0, prodFr = 0, inUs = 0, inFr = 0;
   bool restartPending = false;
   uint32_t pullT = 0;
@@ -594,8 +623,15 @@ static void __not_in_flash_func(core1Main)(void) {
         if (restartPending) {
           asrc_restart(&A);
           restartPending = false;
+          hum_reset(&hum, fsOut);
         }
         asrc_read(&A, &l, &r);
+        bool hOn = act == BP_ACT_PCM && humTx != humLocal;
+        if (hOn != humOn) {
+          hum_reset(&hum, fsOut);
+          humOn = hOn;
+        }
+        if (hOn) hum_step(&hum, &l, &r);
         if (++steerN == 32) {
           steerN = 0;
           // AES і PCM1808 читаються по кадру — запас рівний, «кадрів у дорозі» нема. USB — пачками раз на 1 мс: скільки
@@ -740,7 +776,9 @@ static void usbHelp(void) {
          "t — перевірочний сигнал по колу, "
          "l — у завантажувач, b — у режим запису USB (без диска; писати picotool), g — що на вході AES, "
          "k — чи живі виводи (такти й дані PCM1808, такти передавача, AES), j — журнал моста, "
-         "d — аналоговий вхід симетричний (різниця каналів, моно) / стерео\n", BRIDGE_VER_MAJOR, BRIDGE_VER_MINOR);
+         "d — аналоговий вхід симетричний (різниця каналів, моно) / стерео, "
+         "r — гул радіо з аналогового входу: прибирати / ні (навпаки до передавача), "
+         "c — знімок обох входів\n", BRIDGE_VER_MAJOR, BRIDGE_VER_MINOR);
 }
 
 static void handleCmd(const bp_rx_t *rx) {
@@ -753,9 +791,10 @@ static void handleCmd(const bp_rx_t *rx) {
     case BP_SET:
       if (n >= 4) {
         uint8_t src = d[0] <= BP_SRC_USB ? d[0] : BP_SRC_AUTO;
-        // d[1] — формат PCM1808: лише «лівовирівняний» (FMT на 3,3 В), інший прибрано (див. bridge.pio); біт 1 —
-        // симетричний аналоговий вхід (BP_PCM_DIFF)
+        // d[1]: біт 0 (формат PCM1808) не читається — міст розпізнає I2S сам (pcmShift); біт 1 — симетричний аналоговий
+        // вхід (BP_PCM_DIFF); біт 3 — прибирати гул радіо з аналогового входу (BP_PCM_HUM)
         pcmDiffTx = (d[1] & BP_PCM_DIFF) != 0;
+        humTx = (d[1] & BP_PCM_HUM) != 0;
         wantFsOut = (d[1] & BP_OUT48) ? 48000 : FS_OUT;
         uint8_t gen = d[2] <= BP_GEN_SWEEP ? d[2] : BP_GEN_TONE;   // 0 — немає, 1 — тон, 2 — рожевий шум, 3 — розгортка
         if (localSrcHeld()) src = reqSrc;   // хвилину після вибору з порту USB — його
@@ -1149,6 +1188,20 @@ int main(void) {
       if (!bqPush(enc, (uint32_t)m)) break;
       logSend += n;
     }
+    // знімок готовий — у порт: «@@CAPA i hex» / «@@CAPP i hex», по 8 кадрів у рядку (Л, П — int32 LE)
+    if (capOn && capAn >= CAP_N && capPn >= CAP_N) {
+      capOn = false;
+      printf("@@CAP begin %u %u\n", (unsigned)CAP_N, (unsigned)FS_PCM);
+      for (int src = 0; src < 2; src++)
+        for (int i = 0; i < CAP_N; i += 8) {
+          const uint8_t *b = (const uint8_t *)(src ? &capP[i][0] : &capA[i][0]);
+          printf("@@CAP%c %d ", src ? 'P' : 'A', i);
+          for (int k = 0; k < 64; k++) printf("%02x", b[k]);
+          printf("\n");
+          watchdog_update();
+        }
+      printf("@@CAP end\n");
+    }
     // USB: команди однією буквою і рядок стану раз на секунду
     if (stdio_usb_connected()) {
       int ch = getchar_timeout_us(0);
@@ -1163,10 +1216,20 @@ int main(void) {
         if (reqTone) genKind = reqTone;
       }
       else if (ch == 'l') enterLoader(2);
+      else if (ch == 'c') {   // знімок обох входів (див. capA / capP)
+        capAn = capPn = 0;
+        __dmb();
+        capOn = true;
+      }
       else if (ch == 'd') {   // симетричний аналоговий вхід (різниця каналів) — увімкнути / вимкнути, до перезапуску
         pcmDiffLocal = !pcmDiffLocal;
         printf("аналоговий вхід: %s\n", pcmDiffLocal ? "СИМЕТРИЧНИЙ — (Л − П) / 2 в обидва канали (з порту)"
                                                        : pcmDiffTx ? "симетричний (так велить передавач)" : "стерео, як є");
+      }
+      else if (ch == 'r') {   // гул радіо з аналогового входу — навпаки до передавача, до перезапуску
+        humLocal = !humLocal;
+        printf("гул радіо з аналогового входу: %s%s\n", humTx != humLocal ? "ПРИБИРАЮ" : "не прибираю",
+               humLocal ? " (з порту, навпаки до передавача)" : " (як велить передавач)");
       }
       else if (ch == 'b') {   // режим запису без «диска» RPI-RP2 (див. CMakeLists.txt)
         blog(BL_LOADER, 2, 1, false);
@@ -1254,11 +1317,17 @@ int main(void) {
         if (pkSecL >= 180 && pkSecR >= 180) snprintf(pk, sizeof pk, "тиша (≤ −90 дБ)");
         else snprintf(pk, sizeof pk, "Л −%.1f П −%.1f дБ", pkSecL / 2.0, pkSecR / 2.0);
         pkSecL = pkSecR = 255;
+        char hm[176] = "";   // гул радіо (hum.h): рівень шаблону — скільки віднімається; залишок — що лишилось у циклі
+        if (a == BP_ACT_PCM && humTx != humLocal) {
+          float lv = hum_level(&hum), er = (float)hum.eLast * (256.0f / (8388608.0f * 8388608.0f));
+          snprintf(hm, sizeof hm, "; гул радіо: прибираю (шаблон %.1f дБ, залишок %.1f дБ, тихих циклів %lu)",
+                   lv > 0 ? 10 * log10f(lv) : -200.0f, er > 0 ? 10 * log10f(er) : -200.0f, (unsigned long)hum.n);
+        } else if (a == BP_ACT_PCM) snprintf(hm, sizeof hm, "; гул радіо: не прибираю");
         printf("[%lu с] звучить: %s, пік %s; AES: %s %lu Гц, помилок парності %lu; передавач: %s; запас %d, поправка %+.1f ppm, "
                "провали %u/%u; перескоки %lu (останній на %lu с); ядро 1 зайняте %u‰ (на кадр: вихід %u нс, вхід %u нс); "
                "USB: %s, пакетів %lu (перерва найбільша %lu мкс, понад 2 мс — %lu, тиша без пакетів — %lu; кадрів у пакеті %lu…%lu; "
                "нулі посеред звуку: %lu разів, %lu пакетів); "
-               "запис на комп'ютер: %s (пакетів %lu)%s%s\n",
+               "запис на комп'ютер: %s (пакетів %lu)%s%s%s\n",
                (unsigned long)(time_us_64() / 1000000u), actName[a], pk, aesName[aes > 3 ? 0 : aes],
                (unsigned long)rate, (unsigned long)spdif_rx_get_parity_err_count(),
                now - outRdT < 200000 ? "такти є" : "НЕМАЄ тактів", stLevel, stPpm10 / 10.0, stUnder, stOver,
@@ -1267,7 +1336,8 @@ int main(void) {
                (unsigned long)usbaGapMax, (unsigned long)usbaLate, (unsigned long)usbIdleN, (unsigned long)(usbaFrMin == 999 ? 0 : usbaFrMin),
                (unsigned long)usbaFrMax, (unsigned long)usbaZeroRuns, (unsigned long)usbaZeroPkts,
                usbrOn ? "іде" : "ні", (unsigned long)usbrPkts,
-               localSrcT ? "; вхід обрано з порту" : "", pcmShift ? "; PCM1808: дані на біт пізніше — вирівнюю" : "");
+               localSrcT ? "; вхід обрано з порту" : "", pcmShift ? "; PCM1808: формат I2S — вирівнюю на біт, Л і П на місці" : "",
+               hm);
         usbaGapMax = 0;
         usbaFrMin = 999;
         usbaFrMax = 0;

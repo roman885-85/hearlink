@@ -1275,6 +1275,12 @@ static void command(String s) {
           settingsSave();
           if (cfg.board == BOARD_4848) ui::needFull = true;
         }
+        if (arg.length() && (v == 12 || v == 13)) {   // гул радио на аналоговом входе: C12 — вычитать, C13 — нет (cfg.pcmHum)
+          cfg.pcmHum = v == 12 ? 1 : 0;
+          txBr.kick = true;
+          settingsSave();
+          if (cfg.board == BOARD_4848) ui::needFull = true;
+        }
         if (arg.length() && v >= 3 && v <= 6) {   // проверочный сигнал моста: C3 нет, C4 тон, C5 розовый шум, C6 развёртка
           txBr.gen = (uint8_t)(v - 3);
           if (cfg.tone) cfg.tone = 0;   // сигнал идёт входом — вход и должен быть в эфире

@@ -302,7 +302,8 @@ static void txBridgeTick() {
     txBr.kick = false;
     lastSet = now;
     uint8_t src = cfg.bridgeSrc == BP_SRC_AES || cfg.bridgeSrc == BP_SRC_USB ? cfg.bridgeSrc : BP_SRC_PCM;
-    uint8_t d[4] = { src, (uint8_t)(BP_FMT_LJ | (cfg.pcmDiff ? BP_PCM_DIFF : 0) | (cfg.quality == Q_MON ? BP_OUT48 : 0)), txBr.gen,
+    uint8_t d[4] = { src, (uint8_t)(BP_FMT_LJ | (cfg.pcmDiff ? BP_PCM_DIFF : 0) | (cfg.quality == Q_MON ? BP_OUT48 : 0)
+                                    | (cfg.pcmHum ? BP_PCM_HUM : 0)), txBr.gen,
                      ++txBr.seq };   // «Монітор» (с 23.10): мост даёт 48 кГц, такт I2S передатчика — тоже 48 кГц (txaudio.h)
     txBridgeSend(BP_SET, d, sizeof(d));
   }
@@ -323,6 +324,7 @@ static void txBridgeLogAsk() {
 
 // Порт: C — стан моста; C1 — цифровой вход, C2 — аналоговый, C7 — вход USB (компьютер); C8 — журнал моста; C9 — обновить мост сейчас; проверочный
 // сигнал моста вместо входа (с моста 1.02): C3 — выключить, C4 — тон 1 кГц, C5 — розовый шум, C6 — развёртка 20 Гц → 16 кГц.
+// Аналоговый вход: C10 — стерео, C11 — симметричный; C12 — гул радио вычитать, C13 — нет (с 23.10).
 static void txBridgePrint() {
   static const char *const ACT[] = { "нічого", "цифровий вхід (AES)", "аналоговий вхід (PCM1808)", "тиша", "перевірочний сигнал моста", "перемикання",
                                      "вхід USB (комп'ютер)" };
@@ -330,9 +332,11 @@ static void txBridgePrint() {
   static const char *const GEN[] = { "немає", "тон 1 кГц", "рожевий шум", "розгортка 20 Гц – 16 кГц" };
   static const char *const AES[] = { "немає сигналу", "ловлю", "є", "частота, якої міст не бере" };
   uint32_t now = millis();
-  Serial.printf("міст: обрано %s; перевірочний сигнал: %s; кадрів стану %u, зіпсованих %u, байтів зворотного каналу втрачено %u, команд надіслано %u\n",
+  Serial.printf("міст: обрано %s%s; перевірочний сигнал: %s; кадрів стану %u, зіпсованих %u, байтів зворотного каналу втрачено %u, команд надіслано %u\n",
                 cfg.bridgeSrc == BP_SRC_AES ? "цифровий вхід" : cfg.bridgeSrc == BP_SRC_USB ? "вхід USB"
                 : cfg.pcmDiff ? "аналоговий вхід, СИМЕТРИЧНИЙ (різниця каналів, моно; C10 — стерео)" : "аналоговий вхід (стерео; C11 — симетричний)",
+                cfg.bridgeSrc == BP_SRC_AES || cfg.bridgeSrc == BP_SRC_USB ? ""
+                : cfg.pcmHum ? ", гул радіо прибирається (C13 — не прибирати)" : ", гул радіо НЕ прибирається (C12 — прибирати)",
                 GEN[txBr.gen <= BP_GEN_SWEEP ? txBr.gen : 0], (unsigned)txBr.frames,
                 (unsigned)txBr.bad, (unsigned)brLost, (unsigned)txBr.sent);
   {

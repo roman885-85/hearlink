@@ -495,6 +495,12 @@ int main() {
   tap(360, 245);
   save("05e-zvuk-dzherelo-symetrychnyi");
   modal = M_NONE;
+  // с 23.10: варианты «… як є» — гул радио не вычитать (cfg.pcmHum = 0): самая длинная надпись на кнопке
+  view.val[P_INPUT] = 3;
+  needFull = true;
+  frame(false, 0, 0);
+  save("05f-zvuk-analog-z-gulom");
+  modal = M_NONE;
   view.val[P_INPUT] = 0;
   needFull = true;
   frame(false, 0, 0);

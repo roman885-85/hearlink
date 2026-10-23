@@ -12,6 +12,12 @@ cc -O2 -Wall -Wextra -Wno-missing-field-initializers -Isrc test/asrc_test.c src/
 "$T" > build-asrc-test.txt || { cat build-asrc-test.txt; rm -f "$T"; echo "ПЕРЕВІРКА ПЕРЕРАХУНКУ НЕ ПРОЙШЛА"; exit 1; }
 rm -f "$T"
 tail -1 build-asrc-test.txt
+# віднімання гулу радіо з аналогового входу (src/hum.h) — на своїх сигналах; на записах з приладу: test/hum_test.c
+H="${TMPDIR:-/tmp}/hearlink-hum-test.$$"
+cc -O2 -Wall -Wextra -Isrc test/hum_test.c -lm -o "$H"
+"$H" > build-hum-test.txt || { cat build-hum-test.txt; rm -f "$H"; echo "ПЕРЕВІРКА ВІДНІМАННЯ ГУЛУ НЕ ПРОЙШЛА"; exit 1; }
+rm -f "$H"
+tail -1 build-hum-test.txt
 cmake -S . -B build -G Ninja -DPICO_BOARD=pico > build-cmake.log 2>&1 || { tail -30 build-cmake.log; exit 1; }
 ninja -C build
 ls -la build/bridge.bin build/loader.bin build/bridge-full.uf2

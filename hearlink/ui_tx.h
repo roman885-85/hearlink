@@ -451,7 +451,8 @@ static void task(void *) {
     v.gateThrDb = txGateThrDb;
     v.gateOpen = txGateOpen;
     v.gateActive = txGateActive;
-    v.val[ui::P_INPUT] = cfg.pcmDiff ? 1 : 0;   // с 23.10 — «Аналоговий вхід»: стерео / симметричный (cfg.pcmDiff)
+    // с 23.10 — «Аналоговий вхід»: бит 0 — симметричный (cfg.pcmDiff), бит 1 — гул радио НЕ вычитать (cfg.pcmHum = 0)
+    v.val[ui::P_INPUT] = (cfg.pcmDiff ? 1 : 0) | (cfg.pcmHum ? 0 : 2);
     v.val[ui::P_TONE] = cfg.tone;
     v.lastTone = cfg.lastTone;
     v.muted = txMute;
@@ -918,8 +919,9 @@ static void task(void *) {
         case ui::P_VOICE_DB: cfg.voiceDb = val; break;
         case ui::P_BRIGHT: cfg.brightness = val; break;
         case ui::P_DIM: cfg.dimIdx = val; break;
-        case ui::P_INPUT:   // с 23.10 — «Аналоговий вхід»: 0 стерео, 1 симметричный; мосту — сейчас же (вход передатчика — порт a0/a1)
-          cfg.pcmDiff = val ? 1 : 0;
+        case ui::P_INPUT:   // с 23.10 — «Аналоговий вхід»: бит 0 — симметричный, бит 1 — гул радио не вычитать; мосту — сейчас же
+          cfg.pcmDiff = (val & 1) ? 1 : 0;
+          cfg.pcmHum = (val & 2) ? 0 : 1;
           txBr.kick = true;
           break;
       }

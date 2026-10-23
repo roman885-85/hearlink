@@ -1,4 +1,5 @@
 build/
 build-*.log
 build-asrc-test.txt
+build-hum-test.txt
 setup-rp2040.log
