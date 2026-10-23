@@ -88,7 +88,7 @@ static const QDef QDEF[Q_COUNT] = {
 static const char *const Q_NAME[Q_COUNT] = { "найвища", "стандартна", "мова", "дальня" };
 #define Q_MAX_N 192                         // самый длинный кадр, отсчётов
 #define Q_MAX_COPIES 2
-#define PKT_MAX 1200                        // самый длинный пакет, байт: «двойной» стерео с разностью без сжатия, 1116 (до
+#define PKT_MAX 1400                        // самый длинный пакет, байт: «двойной» стерео с разностью без сжатия, 1116 (до
                                             // 2.60 было 250 — предел ESP-NOW версии 1; версия 2, с ESP-IDF 5.4, несёт до 1470;
                                             // до 2.86 — 800, в 2.86 — 1000)
 // сжатый кадр: первый отсчёт (2 байта), шаг (1 байт) и по 4 бита на отсчёт
@@ -99,8 +99,11 @@ static inline int qCopies(int q, bool st) { return st ? QDEF[q].copiesSt : QDEF[
 static inline int qPktLen(int q, bool st = false) { return sizeof(Hdr) + qMainLen(q) + (st ? qBlock(q) : 0) + qCopies(q, st) * qBlock(q) + SEC_TAG; }
 static inline uint32_t qFrameUs(int q) { return (uint32_t)QDEF[q].n * 1000000u / QDEF[q].sr; }
 // «Монітор» (Q_MON, config.h): заголовок, два кадра по MON_N отсчётов — середина и разность по 3 байта (24 бита, младшим
-// вперёд), подпись. Без запасных копий: 14 + 1152 + 8 = 1174 байта раз в 4 мс.
-static inline int qPktLenMon() { return (int)sizeof(Hdr) + 2 * MON_N * 2 * 3 + SEC_TAG; }
+// вперёд), копия прошлой пары — четыре блока IMA ADPCM (середина и разность двух кадров: при пропаже одного пакета
+// приёмник играет их вместо 4 мс тишины), подпись: 14 + 1152 + 204 + 8 = 1378 байт раз в 4 мс (PKT_MAX — 1400).
+#define MON_BLK (3 + MON_N / 2)
+#define MON_CPY (4 * MON_BLK)
+static inline int qPktLenMon() { return (int)sizeof(Hdr) + 2 * MON_N * 2 * 3 + MON_CPY + SEC_TAG; }
 // «двойной» пакет: заголовок, два кадра (середина и, в стерео, разность), сжатые копии четырёх прошлых кадров (от
 // ближнего к дальнему), в стерео — копии их разности в том же порядке, подпись.
 // «Найвища»: стерео 14 + 2·(128 + 35) + 4·35 + 4·19 + 8 = 564 байта; моно 14 + 2·128 + 4·35 + 8 = 418.

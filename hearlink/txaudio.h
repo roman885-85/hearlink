@@ -1038,6 +1038,9 @@ static void txTask(void *) {
         static uint8_t monPairFl;
         static int8_t monDb = 127;
         static float monK = 1;
+        static int16_t cp16[4][MON_N];        // пара в 16 битах — для копии: середина и разность кадров A и B
+        static uint8_t monCpy[MON_CPY];       // копия прошлой пары (ADPCM) — уходит в следующем пакете
+        static int cpIdx[4];
         if (!txReadI2sMon(mm, ms)) {   // входа нет — тишина, темп по часам
           memset(mm, 0, sizeof(mm));
           memset(ms, 0, sizeof(ms));
@@ -1070,6 +1073,10 @@ static void txTask(void *) {
           if (aa > pk) pk = aa;
           monPut24(dst + 3 * i, a);
           monPut24(dst + MON_N * 3 + 3 * i, b);
+          int k = pairHave ? 2 : 0;   // кадр A — строки 0 и 1, кадр B — 2 и 3
+          int32_t a16 = (a + 128) >> 8, b16 = (b + 128) >> 8;
+          cp16[k][i] = (int16_t)(a16 > 32767 ? 32767 : a16);
+          cp16[k + 1][i] = (int16_t)(b16 > 32767 ? 32767 : b16);
         }
         pk >>= 8;   // в шкале 16 бит — для отчёта и экрана
         if (pk > txPeakAir) txPeakAir = pk > 32767 ? 32767 : pk;
@@ -1121,6 +1128,8 @@ static void txTask(void *) {
           h->flags = fl | monPairFl | (cfg.channel << 4);
           h->q = Q_MON | Q_STEREO | Q_DOUBLE | (cfg.lang ? Q_LANG_EN : 0);
           memcpy(pkt + sizeof(Hdr), pairMon, MON_N * 2 * 3);
+          memcpy(pkt + sizeof(Hdr) + 2 * MON_N * 2 * 3, monCpy, MON_CPY);   // копия прошлой пары
+          for (int k = 0; k < 4; k++) adpcmEncodeBlock(cp16[k], MON_N, monCpy + k * MON_BLK, cpIdx[k]);   // эта — в следующий
           if (!txPause) {
             uint8_t *w = pkt + qPktLenMon() - SEC_TAG;
             secSeal(SEC_AUDIO, h->boot, h->seq, NULL, pkt, sizeof(Hdr), pkt + sizeof(Hdr), (w - pkt) - sizeof(Hdr), w);

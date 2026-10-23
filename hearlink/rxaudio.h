@@ -266,15 +266,35 @@ static void rxOnPacketMon(const Hdr *h, const uint8_t *payload) {
   rxSeqMs = 2;
   rxFrameMs = 4;
   rxCopyMs = 0;
-  if (gap >= 2) {   // пакеты пропали, копий нет — на их место тишина (счёт по часам передатчика)
+  if (gap >= 2) {   // пакеты пропали: два последних кадра — из копии этого пакета (ADPCM), что раньше — тишина
     rxGapMs = millis() ? millis() : 1;
-    int32_t lost = gap - 1, fill = lost * MON_N;
-    sLostFrames = sLostFrames + lost;
+    int32_t lost = gap - 1, rec = lost >= 2 ? 2 : 0, fill = (lost - rec) * MON_N;
+    sLostFrames = sLostFrames + (lost - rec);
+    sRecovered = sRecovered + rec;
     portENTER_CRITICAL(&rxMux);
-    int32_t dd = rxDebt < fill ? rxDebt : fill;   // что выход уже сыграл впустую — не доигрываем
+    int32_t dd = rxDebt < fill + rec * MON_N ? rxDebt : fill + rec * MON_N;   // что выход уже сыграл впустую — не доигрываем
     rxDebt -= dd;
     portEXIT_CRITICAL(&rxMux);
-    if (fill - dd > 0) rxPushMon(NULL, NULL, fill - dd);
+    int32_t skipFill = dd < fill ? dd : fill;
+    if (fill - skipFill > 0) rxPushMon(NULL, NULL, fill - skipFill);
+    dd -= skipFill;
+    if (rec) {
+      static int16_t cm[MON_N], cs[MON_N];
+      const uint8_t *cp = payload + 2 * MON_N * 2 * 3;
+      for (int f = 0; f < 2; f++) {
+        adpcmDecodeBlock(cp + (2 * f) * MON_BLK, MON_N, cm);
+        adpcmDecodeBlock(cp + (2 * f + 1) * MON_BLK, MON_N, cs);
+        int32_t *rm = (int32_t *)rxRing, *rs = (int32_t *)rxRingS;
+        uint32_t hd = rxHead;
+        int skip = dd < MON_N ? (int)dd : MON_N;
+        dd -= skip;
+        for (int i = skip; i < MON_N; i++, hd++) {
+          rm[hd & (RING32 - 1)] = (int32_t)cm[i] << 8;
+          rs[hd & (RING32 - 1)] = (int32_t)cs[i] << 8;
+        }
+        rxHead = hd;
+      }
+    }
   }
   rxPushMon(payload, payload + MON_N * 3, MON_N);
   rxPushMon(payload + MON_N * 6, payload + MON_N * 9, MON_N);
