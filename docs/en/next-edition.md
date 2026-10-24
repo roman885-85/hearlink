@@ -48,6 +48,43 @@ The receivers are the same: same board, same firmware (one for all boards), same
 
 ![What to remove on the PCM1808 module](../photos/pcm1808-snyat-kondensatory.png)
 
+## The bridge board: Raspberry Pi Pico / YD-RP2040
+
+![Bridge pins](../img/mist-pico-vyvody-en.png)
+
+**What it is.** The Raspberry Pi Pico is a small board (51 × 21 mm) with an RP2040 microcontroller (two cores,
+programmable I/O blocks — PIO), 2 MB of flash, a USB connector and 40 pins along the edges (2.54 mm pitch — solder wires
+or a header). The **YD-RP2040** (VCC-GND Studio) is a copy with the same pin layout, USB-C, 4 or 16 MB of flash, RST and
+USR buttons and an RGB LED; the bridge was tested on it. Sold as “Raspberry Pi Pico”, “RP2040 Pico”, “YD-RP2040”.
+
+| Board | Suitable |
+|---|---|
+| YD-RP2040 (4 or 16 MB) | yes — tested; has the USR button and the RGB LED |
+| Raspberry Pi Pico, Pico H | yes — same layout; no USR button and no RGB LED (they are optional) |
+| Raspberry Pi Pico W, Pico 2 / RP2350 | no — a different chip, or pins 23–25 are used by the radio module |
+
+**What is where.** USB at the top; pins 1–20 on the left (GP0…GP15), 21–40 on the right (VBUS, VSYS, 3V3 power and
+GP16…GP28). Each pin number is printed on the back of the board. The bridge uses pins 1–10 (PCM1808 and the
+transmitter), 18 and 20 (digital input), 36 and 39 (power). The rest are free.
+
+**Buttons.** **BOOT** — hold it while plugging in USB to write the program for the first time. **USR** (YD-RP2040 only)
+— a click switches the input “analog ↔ digital” (the transmitter switches too; a white flash means the press was
+taken). **RST** (YD-RP2040) — restart.
+
+**LEDs.** Blue (GP25): one flash a second — the bridge works; two flashes — the digital input is playing; fast — no
+clocks from the transmitter (check the IO1, IO2 wires). RGB (YD-RP2040 only), brightness follows the sound level:
+
+| Colour | Meaning |
+|---|---|
+| green | the digital input is playing |
+| blue | the analog input is playing |
+| violet | the USB input is playing |
+| orange | the bridge test signal |
+| red, blinking | no link to the transmitter |
+| red, steady | input overload (end of scale) |
+| orange, blinking | digital input selected but no signal |
+| violet, blinking | USB selected but the computer is not playing |
+
 ## Transmitter back side: what goes where
 
 ![Transmitter module back side](../img/peredavach-4848-zvorot-en.png)
