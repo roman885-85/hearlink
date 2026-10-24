@@ -2,10 +2,12 @@
 
 **English** · [Українська](README.uk.md)
 
-> **3.29 is the final version of the first modification** (transmitter, PCM1808 ADC, receivers). Next comes **4.x
-> “Next Edition”** with a Raspberry Pi Pico bridge between the mixer and the transmitter: a digital AES/EBU input straight
-> from the mixer, minimal latency. 4.x updates are only for a kit with the bridge (3.29 will not take them); the first
-> modification's code is in the [`first-edition`](../../tree/first-edition) branch.
+> **4.00 “Next Edition”** — a kit with a **bridge** (Raspberry Pi Pico) between the mixer and the transmitter: a
+> **digital input** AES/EBU or S/PDIF (coaxial, optical) straight from the mixer, an **analog** one through a PCM1808 ADC,
+> and **USB** from a computer; a 24-bit path, a “Monitor” quality of 48 kHz / 24-bit; the bridge removes the radio hum
+> on the analog input by itself. **What to buy, how to build, schematics and upgrading from 3.x —
+> [Kit 4.x](docs/en/next-edition.md).** The first modification (transmitter without a bridge) —
+> [v3.29](../../releases/tag/v3.29) and the [`first-edition`](../../tree/first-edition) branch.
 
 A transmitter takes the sound from a mixing desk and broadcasts it over encrypted digital radio to receivers with
 headphones. A hard-of-hearing person can sit anywhere in the hall, set their own volume and hear the sermon or the
@@ -15,21 +17,32 @@ The kit was built for the «Відродження» (“Revival”) church. Eve
 fine-pitch soldering. One firmware runs on every board: whether a board is a transmitter or a receiver is stored
 in the board itself.
 
-![Transmitter screens](docs/img/tx-overview.png)
+![Kit 4.x](docs/img/skhema-4x-systema-en.png)
+
+![Transmitter screens](docs/img/tx-overview-en.png)
 
 ![Receiver screens](docs/img/rx-screens.gif)
 
 <p>
 <img src="docs/photos/esp32-4848s040-front.jpg" height="220" alt="Transmitter module"> 
 <img src="docs/photos/esp32-s3-devkit-n16r8.jpg" height="220" alt="Receiver board"> 
-<img src="docs/photos/m75-oled-encoder.jpg" height="220" alt="Display with knob">
+<img src="docs/photos/m75-oled-encoder.jpg" height="220" alt="Display with knob"> 
+<img src="docs/photos/pcm1808.jpg" height="220" alt="PCM1808 ADC">
 </p>
 
 ## Features
 
+**Bridge** (Raspberry Pi Pico / YD-RP2040, 4.x)
+- three inputs: digital AES/EBU or S/PDIF (44.1 / 48 kHz, 24-bit), analog through a PCM1808 (24-bit), USB — a computer
+  sees the bridge as a sound card and can record what goes on air;
+- resampling to the transmitter's clock (32 or 48 kHz) in ~1.5 ms; removes the transmitter's radio hum on the analog
+  input by itself (−81 → −108 dB);
+- updated by the transmitter over the command wire, no computer needed.
+
 **Transmitter** (ESP32-4848S040 module with a 4″ touch screen)
-- line-level audio from the desk, 32 kHz; four quality levels — from “highest” (uncompressed, 12–15 ms latency)
-  to “far” (the most interference-proof);
+- input buttons on Home: **Analog · Digital · USB · Test · Silence**;
+- five quality levels — from “highest” (uncompressed, 12–15 ms latency) to “far” (the most interference-proof), and
+  **“Monitor”** — 48 kHz, 24-bit uncompressed, for listening to how instruments sound;
 - mono or stereo on air;
 - finds a free Wi-Fi channel by itself and leaves a channel that gets congested — receivers follow without a gap;
 - receiver list: who is online, signal, loss, volume; each receiver can be named, muted, switched off,
@@ -69,6 +82,7 @@ comparing a four-digit code.
 
 | | |
 |---|---|
+| [**Kit 4.x: bridge, inputs, schematics, upgrading**](docs/en/next-edition.md) | what to buy, the PCM1808 modification, the transmitter back side (H1), bridge wiring, 5 digital input variants (AES, coaxial, optical), upgrading from 3.x |
 | [Hardware and wiring](docs/en/hardware.md) | what to buy, how to connect, power and antenna requirements |
 | [Installation](docs/en/install.md) | flashing ready-made files (macOS, Windows, Linux), building from source |
 | [User guide](docs/en/user-guide.md) | transmitter, receiver, pairing, updates, memory card |
@@ -80,17 +94,20 @@ comparing a four-digit code.
 
 ## Quick start
 
-1. Download `hearlink-…-flash-kit.zip` from the [latest release](../../releases/latest).
-2. Flash the receiver board and the transmitter module — see [Installation](docs/en/install.md).
-3. Wire everything according to the [schematics](docs/en/hardware.md).
+1. Download `hearlink-4.00-flash-kit.zip` (firmware, the bridge program, writing programs and scripts) and the PDF
+   documentation from the [latest release](../../releases/latest).
+2. Build the bridge and the wiring — [Kit 4.x](docs/en/next-edition.md).
+3. Flash the receivers, the transmitter and the bridge — [Installation](docs/en/install.md).
 4. On the transmitter: “Приймачі / Receivers” → “+ Add”, compare the code on both screens, “Allow”.
+5. Already have a 3.x kit — [Upgrading from 3.x to 4.00](docs/en/next-edition.md#upgrading-from-3x-to-400): the
+   transmitter once by cable, the bridge from `bridge-full.uf2`, the receivers are updated by the transmitter over radio.
 
 ## Updating from a memory card: where to put the file and how to name it
 
 ```
 microSD card (FAT32)
 └── UPDATE/                  ← a folder in the card root, upper-case name
-    └── hearlink-2.34.bin    ← the firmware file from a release
+    └── hearlink-4.00.bin    ← the firmware file from a release
 ```
 
 - **Folder** — `UPDATE` in the root of the card. The transmitter creates it by itself as soon as it sees a card;
@@ -109,11 +126,13 @@ Details: [User guide → Firmware update](docs/en/user-guide.md#firmware-update)
 
 ## Project status
 
-The working version is **2.34**. Bench-tested: one transmitter and two receivers, hours of continuous operation,
-over-the-air updates, sleep and wake-up. Range in a large hall and the acoustic microphone-to-ear latency have not
-been measured yet — see [How it works](docs/en/technical.md#not-verified).
+The working version is **4.00** (bridge 1.02). In use at the church on the owner's kit: transmitter, bridge, two
+receivers; the AES digital input from a Behringer WING mixer (the no-transformer variant) and the analog one through a
+PCM1808. The other digital input variants (transformer, 74HC04, coaxial, optical) are built from schematics but not yet
+tested on hardware. The acoustic microphone-to-ear latency has not been measured yet — see
+[How it works](docs/en/technical.md#not-verified).
 
-Source comments are in Russian; on-screen texts are in Ukrainian and English.
+Source comments are in Ukrainian and Russian; on-screen texts are in Ukrainian and English.
 
 ## License
 
@@ -127,4 +146,5 @@ modules' manufacturers and sellers.
 
 Roboto (Apache 2.0) and Montserrat (SIL OFL 1.1) fonts as bitmap tables; the U8g2 library (BSD-2); the
 Arduino-ESP32 core / ESP-IDF (Apache 2.0, LGPL) including the Helix MP3 decoder; esptool (GPL-2.0) in the flashing
-kit. Details: [NOTICE.md](NOTICE.md).
+kit. Bridge: Raspberry Pi Pico SDK and TinyUSB (BSD-3, MIT), the pico_spdif_rx library (BSD-2); picotool (BSD-3) and
+libusb (LGPL-2.1) in the flashing kit. Details: [NOTICE.md](NOTICE.md).

@@ -82,6 +82,21 @@
 | faint clicks in the headphones when the picture changes | pick-up from the display bus (not radio: sound and packets are not affected) | since 3.11 the bus runs at 20 MHz with weak outputs — the clicks are barely audible. Quieter still — 33–68 Ω resistors in SCL and SDA, wires away from the DAC wires, a separate module ground. To listen: `Y23` (8 s non-stop) |
 | a restart in the middle of an over-the-air update (before 3.06) | task watchdog: the display did not yield the core | update to 3.06 or later (once — switching the receiver to the OLED) |
 
+## Kit 4.x: bridge
+
+| What you see | What to do |
+|---|---|
+| “Digital input”: no signal | the cable and the input circuit variant ([Kit 4.x](next-edition.md#digital-input--variants)); the mixer's digital output is enabled with a source assigned; rate 48 kHz (the bridge takes 44.1 and 48). An audio ground-isolation transformer (XH-M372 etc.) does **not** pass AES. Transmitter port `C`: the AES line says “present 48000 Hz / locking / none” |
+| AES “locking”, “a rate the bridge does not take” | the mixer is at 96 kHz or another rate — set 48 kHz |
+| Analog dull, “only lows” | the two input capacitors of the PCM1808 module are not removed (photo in [Kit 4.x](next-edition.md#what-to-buy-and-modify)) |
+| Analog: 250 Hz hum and harmonics | “Analog input” → a “… remove radio hum” choice (the default). It learns in pauses: after switching on give it a few seconds of silence on the input. 50 Hz ground hum — a ground isolator on the analog input or the balanced mode |
+| Analog: left and right swapped | the module's FMY (FMT) is not on GND: the bridge expects I2S (FMT, MD0, MD1 to GND) |
+| Home says “bridge is silent” | H1 ↔ bridge wires ([table](next-edition.md#bridge-wiring)): TXD → GP5, IO40 ← GP4, IO1 → GP6, IO2 → GP7, GND; bridge power (5V through the diode to VSYS, or USB). The bridge's blue LED: once a second — working, fast — no transmitter clocks |
+| The bridge did not update / “update: FAILED” | transmitter port `C9` — try again; if not — write `bridge-full.uf2` again ([Installation](install.md#bridge-raspberry-pi-pico)) |
+| macOS “froze” after plugging in the Pico | the RPI-RP2 disk hangs macOS 15 — do not open it, write with picotool (`4 Прошить мост.command`) |
+| After upgrading from 3.x the receivers are on the old version | they must be on and online; “Receivers” → “Update” → “Update”, or wait for the automatic update |
+| A 3.x transmitter “does not see” a 4.x file on the card | that is by design: 4.x goes onto a 3.x transmitter once by cable ([Upgrading](next-edition.md#upgrading-from-3x-to-400)) |
+
 ## How to collect information for the developer
 
 1. `?` to the port of the transmitter and of the receiver — version, settings, start reason.

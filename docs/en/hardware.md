@@ -2,6 +2,12 @@
 
 [← back to main page](../../README.md) · [Українська](../uk/hardware.md)
 
+> **Kit 4.x.** The inputs (digital AES/S/PDIF, analog PCM1808, USB) are now on the **bridge** — a Raspberry Pi Pico
+> board between the mixer and the transmitter. What to buy, how to modify the PCM1808 module, wiring schematics, the
+> transmitter back side with connector H1 and the digital input variants — **[Kit 4.x: bridge, inputs,
+> schematics](next-edition.md)**. Below — the modules, receivers, headphones and DACs (unchanged in 4.x) and the
+> PCM1808 wired straight to the transmitter (3.x only).
+
 ## What you need
 
 ### Transmitter (1 pc.)

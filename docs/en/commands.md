@@ -6,15 +6,10 @@ USB port, **115200 baud**, a command is a line terminated by a newline. The firs
 the argument with no space (`c7`, `V12`). Replies are in Ukrainian. A receiver is silent on the port until something
 arrives from the port; after the first command it prints a report every second.
 
-> **The transmitter port and the PCM1808.** The PCM1808 master clock goes out through TXD (IO43) — the very pin the
-> transmitter prints to the port with. Since 2.56 the clock is put on the pin only while the PCM1808 input is actually
-> on air. So:
-> — with **the test sound or a card file** on air the port works fully, the input may stay PCM1808;
-> — with **mixer audio through the PCM1808** on air the transmitter prints nothing (it accepts commands “blind”). To
-> get replies and reports meanwhile, switch the test sound on (main page, «Перевірка» (Test), or `g5`) or switch the
-> input to the built-in ADC (tab «Звук» (Sound) → «Вхід» (Input), or `a0`). With the built-in ADC the transmitter's
-> radio stalls for 0.2 s now and then — it is for debugging only, not for real work.
-> Before 2.56 the port was silent whenever the input was the PCM1808. Flashing over the cable works with either input.
+> **Kit 4.x.** The transmitter's pin 43 (TXD) is now always the port and the bridge command wire: the transmitter
+> prints to the port with any input. (In 3.x, while a PCM1808 wired straight to the transmitter was on air, the port was
+> silent — the ADC clock used the same pin.) `a1` — transmitter input from the bridge (I2S), `a0` — the built-in ADC,
+> for debugging only.
 
 From a computer: `python3 tools/port.py ПОРТ СЕКУНД [command …]` — send commands and show the replies;
 `python3 tools/txlog.py ПОРТ СЕКУНД [second:command …]` — record all output with timestamps and send commands at
@@ -109,6 +104,40 @@ the specified seconds. (`ПОРТ` and `СЕКУНД` are placeholders: the port
 | `Ux<x>,<y>,<ms>` | a touch at a point; a series: `Ux<pause>:<x>,<y>,<ms>;<x>,<y>,<ms>;…` |
 | `Uk`, `Uq` | what has been typed on the keyboard / what is on the card screen |
 | `ud` | print every touch of the sensor |
+
+### The bridge from the transmitter (4.x)
+
+| Command | Action |
+|---|---|
+| `C` | bridge status: what is selected and what plays, AES (rate, errors), status frames, bridge program version and CRC, update progress |
+| `C1` / `C2` / `C7` | bridge input: digital (AES/S/PDIF) / analog (PCM1808) / USB (computer) — like the screen buttons |
+| `C3` … `C6` | bridge test signal instead of the input through the whole path: `C3` off, `C4` 1 kHz tone −12 dB, `C5` pink noise −20 dB, `C6` sweep 20 Hz → 16 kHz |
+| `C8` | bridge log (up to 512 records) |
+| `C9` | update the bridge program now (normally the transmitter does it itself when the CRC differs) |
+| `C10` / `C11` | analog input: stereo / balanced (mono from the channel difference) |
+| `C12` / `C13` | radio hum on the analog input: remove / keep |
+| `q0` … `q4` | sound quality: highest / standard / speech / long range / **monitor** (48 kHz, 24-bit; bridge input only) |
+| `H` | 4848S040 module: check pins IO1, IO2, IO40 (25 s: touch with a wire from GND — the transmitter names the pin) |
+
+## Bridge
+
+The bridge's own USB port (Pi Pico) prints a status line once a second. A command is **one letter without a line end**
+(`HL_DTR=1 HL_NOLF=1 python3 tools/timedcmd.py PORT SECONDS file 1:c`). An input chosen from the port is held for a
+minute, then the bridge follows the transmitter again.
+
+| Letter | Action |
+|---|---|
+| `?` or `h` | list of letters and the version |
+| `a` / `p` / `w` / `u` / `m` | input: AES / PCM1808 / USB / as the transmitter says / silence |
+| `t` | test signal in turn (tone, pink noise, sweep) |
+| `d` | analog input balanced ↔ stereo (until restart) |
+| `r` | radio hum: remove ↔ keep — opposite to the transmitter's setting (until restart) |
+| `c` | simultaneous capture of both inputs: 1024 raw frames of AES and PCM1808 from the same moment (`@@CAP…` lines) |
+| `g` | what is on the AES input: 1 ms poll of pin 15 |
+| `k` | are the pins alive: PCM1808 clocks and data, transmitter clocks, AES |
+| `j` | bridge log |
+| `l` | into the bootloader (waits for a program from the transmitter) |
+| `b` | into USB writing mode without a disk (for picotool) |
 
 ## Receiver
 

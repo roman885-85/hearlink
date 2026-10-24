@@ -8,13 +8,15 @@ cd "$(dirname "$0")/.."
 B=build/hearlink-s3
 [ -f $B/hearlink.ino.bin ] || { echo "сначала собрать: ./build.sh hearlink s3"; exit 1; }
 VER=$(sed -n 's/^#define FW_VERSION "\(.*\)".*/\1/p' hearlink/config.h)
-strings -a $B/hearlink.ino.bin | grep -q "HEARLINK-FW:$VER" || { echo "в build/ лежит не версия $VER — пересобрать"; exit 1; }
+strings -a $B/hearlink.ino.bin | grep -q "HEARLINK-NE:$VER" || { echo "в build/ лежит не версия $VER — пересобрать"; exit 1; }   # метка 4.x (upd.h)
+[ -f bridge/build/bridge-full.uf2 ] || { echo "сначала собрать мост: bridge/build.sh"; exit 1; }
+PT=$HOME/Library/hearlink-rp2040/picotool-2.3.1-mac/picotool
 A=$HOME/Library/Arduino15/packages/esp32
 [ -d "$HOME/Library/Arduino15-hearlink/packages/esp32" ] && A=$HOME/Library/Arduino15-hearlink/packages/esp32   # ядро проекта (см. build.sh)
 E=$(ls -d $A/tools/esptool_py/*/ | tail -1)
 K=kit
 rm -rf $K
-mkdir -p $K/firmware $K/tools "$K/на карту/UPDATE"
+mkdir -p $K/firmware $K/tools $K/bridge "$K/на карту/UPDATE"
 cp $B/hearlink.ino.bin $K/firmware/hearlink.bin
 cp $B/hearlink.ino.bootloader.bin $K/firmware/bootloader.bin
 cp $B/hearlink.ino.partitions.bin $K/firmware/partitions.bin
@@ -24,10 +26,17 @@ cp $B/hearlink.ino.bin "$K/на карту/UPDATE/hearlink-$VER.bin"
 cp "$E/esptool" $K/tools/esptool
 [ -f "$E/LICENSE" ] && cp "$E/LICENSE" $K/tools/esptool-LICENSE
 cp tools/port.py $K/tools/port.py
+# мост (Pi Pico): перша прошивка — завантажувач + програма одним файлом; далі міст оновлює передавач сам
+cp bridge/build/bridge-full.uf2 $K/bridge/bridge-full.uf2
+if [ -x "$PT/picotool" ]; then   # picotool (BSD-3) із libusb (LGPL-2.1) — для Mac, де диск RPI-RP2 краще не чіпати
+  mkdir -p $K/tools/picotool
+  cp "$PT/picotool" "$PT/libusb-1.0.0.dylib" $K/tools/picotool/
+fi
 {
   echo "прошивка набора: версия $VER, собрана $(date '+%Y-%m-%d %H:%M')"
   echo "контрольные суммы SHA-256:"
   (cd $K/firmware && shasum -a 256 *.bin)
+  (cd $K/bridge && shasum -a 256 *.uf2)
 } > $K/firmware/ВЕРСИЯ.txt
 
 cat > $K/tools/lib.sh <<'LIB'
@@ -103,6 +112,20 @@ echo "Слушаю $PORT восемь секунд (и спрашиваю у п�
 python3 tools/port.py "$PORT" 8 "?" 2>&1 | cut -c1-200
 done_msg "строка «версія …, ПЕРЕДАВАЧ» или «ПРИЙМАЧ» — это плата набора; пусто — не она (или приёмник спит)."
 S
+cat > "$K/4 Прошить мост.command" <<'S'
+#!/bin/sh
+cd "$(dirname "$0")"
+PT=./tools/picotool/picotool
+xattr -dr com.apple.quarantine ./tools/picotool 2>/dev/null
+chmod +x "$PT" 2>/dev/null
+echo "МОСТ (Raspberry Pi Pico / YD-RP2040): первая прошивка, файл bridge/bridge-full.uf2"
+echo "Подключите мост кабелем USB к Mac. Если в нём уже есть программа моста — она сама перейдёт в режим записи."
+echo "Если мост новый (пустой): держите кнопку BOOT, подключите кабель, отпустите BOOT."
+echo "Диск RPI-RP2, если появится, НЕ открывать и не копировать на него ничего (на macOS 15 это вешает систему)."
+printf "Готово? (Enter — записать, Ctrl+C — отмена) "; read x
+"$PT" load -f -v -x bridge/bridge-full.uf2 || { echo; echo "НЕ ВЫШЛО: см. «ПРОЧТИ.md», раздел «Мост»."; exit 1; }
+echo; echo "ГОТОВО: мост прошит. Дальше его программу обновляет передатчик сам. Окно можно закрыть."
+S
 chmod +x "$K"/*.command $K/tools/esptool
 
 cat > $K/ПРОЧТИ.md <<DOC
@@ -118,9 +141,12 @@ cat > $K/ПРОЧТИ.md <<DOC
 | \`1 Прошить приёмник.command\` | новая плата приёмника или приёмник, который перестал запускаться |
 | \`2 Прошить передатчик.command\` | новый модуль передатчика или передатчик, который перестал запускаться |
 | \`3 Что подключено.command\` | узнать, что за плата на порту и какая в ней версия |
+| \`4 Прошить мост.command\` | первая прошивка моста (Raspberry Pi Pico / YD-RP2040), файл \`bridge/bridge-full.uf2\` |
 | \`на карту/UPDATE/hearlink-$VER.bin\` | файл для обычного обновления через карту памяти |
 | \`firmware/\` | сама прошивка по частям (загрузчик, разметка, прошивка, звуки передатчика) |
 | \`tools/esptool\` | программа заливки (macOS) |
+| \`bridge/bridge-full.uf2\` | программа моста с загрузчиком — для первой прошивки Pico |
+| \`tools/picotool/\` | программа записи в Pico (macOS; picotool — BSD-3, libusb — LGPL-2.1) |
 
 Сценарии \`.command\` запускаются двойным щелчком на Mac. При первом запуске macOS может спросить разрешение —
 правой кнопкой → «Открыть».
@@ -144,6 +170,23 @@ cat > $K/ПРОЧТИ.md <<DOC
 
 1. Модуль ESP32-4848S040 подключить к Mac, запустить \`2 Прошить передатчик.command\`, на вопрос о звуках — «д».
 2. Сценарий сам назначит плате роль передатчика с экраном. Приёмники к новому передатчику добавляются заново.
+
+## Мост (Raspberry Pi Pico / YD-RP2040)
+
+Программу моста нужно записать один раз — дальше её обновляет передатчик сам (по проводу команд, ~15 с).
+
+- **Mac:** \`4 Прошить мост.command\`. Новый (пустой) Pico — держать кнопку **BOOT**, подключить кабель, отпустить.
+  Диск RPI-RP2 на macOS 15 не открывать — это может повесить систему; picotool пишет без диска.
+- **Windows / Linux:** держать **BOOT**, подключить кабель — появится диск **RPI-RP2**; скопировать на него
+  \`bridge/bridge-full.uf2\`. Pico перезапустится сам, диск исчезнет — это нормально.
+- Проверка: светодиод моста мигает раз в секунду; на передатчике команда порта \`C\` показывает версию и CRC
+  программы моста.
+
+## Переход с 3.x на 4.x
+
+Передатчик 3.x файлы 4.x с карты не берёт (другая метка внутри). Поэтому: (1) собрать и подключить мост, прошить его
+сценарием 4; (2) передатчик — сценарием 2 (кабелем; настройки, ключ набора и приёмники сохраняются); (3) приёмники
+передатчик 4.x обновит по радио сам. Подробно — документация, раздел «Набір 4.x».
 
 ## Восстановление
 

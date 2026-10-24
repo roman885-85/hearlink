@@ -1,5 +1,62 @@
 # Changelog / Історія версій
 
+## 4.00 “Next Edition” — 2026-10-24 (bridge 1.02)
+- EN: **a new modification of the kit: a bridge between the mixer and the transmitter** — a Raspberry Pi Pico /
+  YD-RP2040 board with three inputs: **digital** AES/EBU or S/PDIF (XLR, coaxial RCA, optical TOSLINK; 44.1 / 48 kHz,
+  24-bit), **analog** through a PCM1808 ADC (48.8 kHz, 24-bit) and **USB** (the computer sees a sound card and can
+  record what goes on air). Buttons on Home and Sound: Analog · Digital · USB · Test · Silence. The transmitter carries
+  the bridge program and updates the bridge itself (by CRC, ~15 s); bridge log (`C8`), USR button and RGB LED,
+  test signals (`C3`…`C6`). Full description, schematics and upgrading: `docs/en/next-edition.md`.
+- UK: **нова модифікація набору: міст між пультом і передавачем** — плата Raspberry Pi Pico / YD-RP2040 із трьома
+  входами: **цифровий** AES/EBU або S/PDIF (XLR, коаксіальний RCA, оптичний TOSLINK; 44,1 / 48 кГц, 24 біти),
+  **аналоговий** через АЦП PCM1808 (48,8 кГц, 24 біти) і **USB** (комп'ютер бачить звукову карту й може записувати те,
+  що йде в ефір). Кнопки на головній і «Звук»: Аналоговий · Цифровий · USB · Перевірка · Тиша. Передавач везе програму
+  моста й оновлює його сам (за CRC, ~15 с); журнал моста (`C8`), кнопка USR і кольоровий світлодіод, перевірочні сигнали
+  (`C3`…`C6`). Повний опис, схеми й перехід: `docs/uk/next-edition.md`.
+
+- EN: **24-bit path and true silence** (the owner: “at a low level the digital input has a background hiss and a little
+  crackle”; “for its complete removal take exactly 24 bit / 48 kHz without downconversion”). The bridge and the
+  transmitter input carry 24 bits up to the gain; no dither, rounding instead of truncation — digital silence on the
+  mixer is exact zeros on air. The receiver never sends its DAC pure zeros (PCM5102 auto-mute click at sound onset).
+- UK: **тракт 24 біти й справжня тиша** (власник: «при низком уровне звука на цифре слышно фоновое шипение и немного
+  треска»; «для полного устранения нужно именно такой формат брать — 24 бита 48 кГц без перекодирования на понижение»).
+  Міст і вхід передавача — 24 біти до підсилення; без дизера, округлення замість відкидання — цифрова тиша пульта в ефірі
+  точні нулі. Приймач не дає ЦАП «одних нулів» (клацання автоглушення PCM5102 на початку звуку).
+
+- EN: **“Monitor” quality** — 48 kHz, 24-bit uncompressed, for listening to how instruments sound (the owner: “48 kHz
+  is needed for monitoring instruments in future, where sound as close to the source as possible matters”); each
+  packet carries an ADPCM copy of the previous pair, so a lost packet is not a gap. Port `q4`.
+- UK: **якість «Монітор»** — 48 кГц, 24 біти без стиснення, для прослуховування інструментів (власник: «48 кГц нужно для
+  будущего использования проекта для мониторинга звучания инструментов»); у кожному пакеті — ADPCM-копія попередньої
+  пари, загублений пакет не дає дірки. Порт `q4`.
+
+- EN: **analog input**: the radio hum of the transmitter is learned in pauses and subtracted by the bridge (250 Hz
+  −81 → −108 dB on the device, music untouched; switch in the “Analog input” window, `C12`/`C13`); stereo or balanced
+  (`C10`/`C11`); PCM1808 in I2S with left/right in place; PCM1808 at 48.8 kHz instead of 32.5. Required module change:
+  remove its two input capacitors (they made a ~280 Hz low-pass with the input divider — the owner: “the analog sound
+  became cleaner and louder”).
+- UK: **аналоговий вхід**: гул радіо передавача міст вивчає в паузах і віднімає (на приладі 250 Гц −81 → −108 дБ,
+  музика без змін; вимикач у вікні «Аналоговий вхід», `C12`/`C13`); стерео або симетричний (`C10`/`C11`); PCM1808 в I2S,
+  лівий і правий на місці; PCM1808 на 48,8 кГц замість 32,5. Обов'язкова переробка модуля: зняти два вхідні
+  конденсатори (з дільником на вході вони давали ФНЧ ~280 Гц — власник: «звук с аналога стал чище и громче»).
+
+- EN: reliability: receivers no longer get lost after a channel hop while asleep; settings for receivers are delivered
+  in order and confirmed (repeated up to 20 times); a manual channel change is announced (no 2.5 s gap); no dropouts
+  once a minute from a false “bridge silent”; the bridge survives a transmitter reset; the transmitter's cipher stage is
+  faster (297 → 185 µs per frame); equal-size source buttons.
+- UK: надійність: приймачі не губляться після переходу каналу уві сні; налаштування приймачам доходять по порядку й з
+  підтвердженням (повтор до 20 разів); ручна зміна каналу з оголошенням (без 2,5 с тиші); без провалів раз на хвилину
+  через хибне «міст мовчить»; міст переживає перезапуск передавача; шифр передавача швидший (297 → 185 мкс на кадр);
+  однакові кнопки входів.
+
+- EN: **upgrading from 3.x**: 4.x firmware carries the “HEARLINK-NE” tag, a 3.x transmitter does not take it from the
+  card — flash the transmitter once by cable, flash the bridge from `bridge-full.uf2`; the receivers are updated by the
+  transmitter over radio. The flashing kit now contains the bridge file, picotool for macOS and the “4 Прошить мост”
+  script.
+- UK: **перехід із 3.x**: прошивки 4.x мають мітку «HEARLINK-NE», передавач 3.x з картки їх не бере — передавач один раз
+  кабелем, міст — файлом `bridge-full.uf2`; приймачі передавач оновить по радіо сам. У наборі для прошивання тепер файл
+  моста, picotool для macOS і сценарій «4 Прошить мост».
+
 ## 3.29 — 2026-10-20 (includes 3.17–3.28, which were not released / містить 3.17–3.28, які не випускались)
 - EN: **the final version of the first modification** (transmitter, PCM1808 ADC, receivers). Next: 4.x “Next Edition”
   with a Raspberry Pi Pico bridge (digital AES/EBU input, minimal latency). 4.x firmware carries a different tag and is

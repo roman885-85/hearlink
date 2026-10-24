@@ -501,6 +501,11 @@ int main() {
   frame(false, 0, 0);
   save("05f-zvuk-analog-z-gulom");
   modal = M_NONE;
+  needFull = true;
+  frame(false, 0, 0);
+  tap(125, 369);   // «Якість звуку» — список з «Монітором»
+  save("05m-zvuk-yakist-monitor");
+  modal = M_NONE;
   view.val[P_INPUT] = 0;
   needFull = true;
   frame(false, 0, 0);

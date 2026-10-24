@@ -11,18 +11,34 @@ At the bottom there are six tabs, at the top — the page title, the power-off b
 ![Home](../img/tx-01-golovna.png) ![Sound](../img/tx-03-zvuk.png)
 
 ### «Головна» (Home)
-- **«З пульта» (Mixer) / «Перевірка» (Test) / «Тиша» (Mute)** — what goes on air: the sound from the input, the
-  test sound, or silence (packets are sent, there is no sound in them — the receivers do not fall asleep).
+- **«Аналоговий вхід» (Analog input) · «Цифровий вхід» (Digital input) · «USB вхід» (USB input) · «Перевірка»
+  (Test) · «Тиша» (Mute)** (4.x) — what goes on air: the mixer line out through the bridge ADC, the mixer digital out
+  (AES/EBU or S/PDIF), sound from a computer over the bridge USB, the test sound, or silence (packets are sent, there
+  is no sound in them — the receivers do not fall asleep). The lamp on a button means this input is playing now. If
+  the chosen input has nothing (e.g. the AES cable is not plugged in), an explanation appears under the buttons.
 - **«Рівень входу» (Input level)** — in dB, with a peak mark and a hint («Тихо» (Quiet), «Гучно, але ще чисто»
   (Loud but still clean), «Перевантаження — зменшіть рівень на пульті» (Overload — reduce the level on the mixer)).
 - Tiles **«Канал» (Channel)**, **«Набір» (Kit)**, **«Приймачі» (Receivers)** (how many are online out of all),
   **«Запис на картку» (Recording to card)**.
 
 ### «Звук» (Sound)
-The input spectrum; **«Підсилення входу» (Input gain)** (−12…+24 dB); **«Вхід» (Input)** (built-in ADC or PCM1808);
+The input spectrum; **«Підсилення входу» (Input gain)** (−12…+24 dB); **«Аналоговий вхід» (Analog input)** (4.x, see
+below); the row of input buttons as on Home; **«Ефір» (Air)** mono/stereo; **«Якість звуку» (Sound quality)**;
 **«Який звук» (Which sound)** in test mode (tone, voice, voice and music, music, music with an announcement every
-N seconds, left/right channel check) with a choice of tune and volumes; **«Якість звуку» (Sound quality)**;
-**«Ефір» (Air)** mono/stereo.
+N seconds, left/right channel check) with a choice of tune and volumes.
+
+**Analog input** (4.x) — how the bridge takes the PCM1808 input, four choices:
+- **Stereo, remove radio hum** (default) — left and right as they are; the 250 Hz hum from the transmitter's own radio is
+  learned by the bridge in pauses and subtracted (on the device −81 → −108 dB), the music is untouched;
+- **Balanced, remove radio hum** — mono from the channel difference: for a balanced mixer output (XLR: 2 → left,
+  3 → right, 1 → ground); ground hum is the same in both wires and cancels;
+- **Stereo as is / Balanced as is** — the same without the hum removal.
+
+![Analog input](../img/tx-en-3b-analog-input.png) ![Sound quality](../img/tx-en-12-quality.png)
+
+**Sound quality**: highest (uncompressed, 2 ms frame), standard, speech, long range — as before; **Monitor** (4.x) —
+48 kHz, 24-bit uncompressed, for listening to how instruments sound (bridge input only; every packet carries a
+compressed copy of the previous one, so a single lost packet leaves no gap).
 
 **«Еквалайзер» (Equalizer)** (a button on the spectrum tile, since 2.45) — the input equalizer: it shapes the sound
 from the mixer once for all receivers. Five bands (bass 125 Hz, 400 Hz, 1 kHz, 2.5 kHz, treble 6 kHz), each

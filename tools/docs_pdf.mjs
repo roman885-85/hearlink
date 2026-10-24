@@ -27,11 +27,11 @@ if (!CHROME) { console.error('нет браузера Chrome — PDF не сде
 // части по порядку чтения: имя файла → подпись
 const PARTS = {
   uk: { book: 'Документація набору (українською)', toc: 'Зміст', parts: [
-    ['user-guide.md', 'Користування'], ['hardware.md', 'Обладнання та схеми'], ['install.md', 'Встановлення'],
+    ['next-edition.md', 'Набір 4.x: міст, входи, схеми, перехід'], ['user-guide.md', 'Користування'], ['hardware.md', 'Обладнання та схеми'], ['install.md', 'Встановлення'],
     ['commands.md', 'Команди порту'], ['technical.md', 'Технічний опис'], ['troubleshooting.md', 'Несправності'],
     ['development.md', 'Розробка'] ] },
   en: { book: 'Kit documentation (English)', toc: 'Contents', parts: [
-    ['user-guide.md', 'Usage'], ['hardware.md', 'Hardware and schematics'], ['install.md', 'Installation'],
+    ['next-edition.md', 'Kit 4.x: bridge, inputs, schematics, upgrading'], ['user-guide.md', 'Usage'], ['hardware.md', 'Hardware and schematics'], ['install.md', 'Installation'],
     ['commands.md', 'Serial commands'], ['technical.md', 'Technical description'], ['troubleshooting.md', 'Troubleshooting'],
     ['development.md', 'Development'] ] },
 };

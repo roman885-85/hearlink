@@ -2,8 +2,10 @@
 
 [← back to main page](../../README.md) · [Українська](../uk/install.md)
 
-There is one firmware for all boards. A freshly flashed board is a **receiver**; two serial commands turn it into a
-transmitter.
+There is one firmware for the transmitter and the receivers. A freshly flashed board is a **receiver**; two serial
+commands turn it into a transmitter. Kit 4.x also has the **bridge** (Raspberry Pi Pico / YD-RP2040) with its own
+program: it is written once from `bridge-full.uf2`, after that the transmitter updates the bridge itself. Upgrading a
+3.x kit — [Kit 4.x → Upgrading](next-edition.md#upgrading-from-3x-to-400).
 
 ## What you will need
 
@@ -21,8 +23,10 @@ In the archive:
 | `firmware/hearlink.bin` | `0x10000` | firmware |
 | `firmware/assets.bin` | `0x310000` | transmitter test sounds (voice, music) — the receiver does not need them |
 | `на карту/UPDATE/hearlink-<version>.bin` | — | file for updating via the memory card (the folder name `на карту` is Russian for "onto the card") |
+| `bridge/bridge-full.uf2` | — | bridge program with its bootloader — first flashing of the Pico |
 | `tools/esptool` | — | flashing program for macOS |
-| `1 Прошить приёмник.command` … | — | scripts for macOS (double-click); the name is Russian for "1 Flash the receiver" |
+| `tools/picotool/` | — | Pico writing program for macOS (picotool, BSD-3; libusb, LGPL-2.1) |
+| `1 Прошить приёмник.command` … `4 Прошить мост.command` | — | scripts for macOS (double-click); the names are Russian for "1 Flash the receiver" … "4 Flash the bridge" |
 | `firmware/ВЕРСИЯ.txt` | — | version and SHA-256 checksums (`ВЕРСИЯ` is Russian for "VERSION") |
 
 ## The flashing program — esptool
@@ -77,6 +81,27 @@ b1
 `t` — "you are a transmitter", `b1` — "board with a display"; the board restarts after each. Back: `r` (receiver),
 `b0` (plain board). From macOS/Linux, `python3 tools/port.py ПОРТ 6 t` does the same.
 
+## Bridge (Raspberry Pi Pico)
+
+Write it once — after that the transmitter updates the bridge program itself (over the command wire, ~15 s, progress
+on screen).
+
+**macOS:** `4 Прошить мост.command`. A new (empty) Pico: hold the **BOOT** button, plug the cable in, release. If an
+**RPI-RP2** disk appears, do not copy anything onto it: on macOS 15 that can hang the system; picotool writes without
+the disk. The same from the command line:
+
+```
+tools/picotool/picotool load -f -v -x bridge/bridge-full.uf2
+```
+
+**Windows, Linux:** hold **BOOT**, plug the cable in — an **RPI-RP2** disk appears; copy `bridge/bridge-full.uf2` onto
+it. The Pico restarts by itself and the disk disappears. (Or picotool for your system —
+<https://github.com/raspberrypi/pico-sdk-tools/releases>, same command.)
+
+Check: the bridge's blue LED blinks once a second; on the transmitter port the `C` command shows “bridge build CRC-32 …
+(as built in)”. The bridge's own USB port (`/dev/cu.usbmodem…` / `COMx`) prints its status once a second; commands are
+single letters, `?` lists them ([Commands → Bridge](commands.md#bridge)).
+
 ## If flashing does not work
 
 - Put the board into flashing mode manually: hold **BOOT**, briefly press **RESET** (or apply power), release
@@ -127,7 +152,18 @@ SPEED=230400 ./build.sh hearlink s3 /dev/cu.usbserial-XX  # the same for the tra
 Test sounds: put your own `assets-src/golos.wav` (voice), `muzyka.mp3`, `muzyka2.mp3`… and the titles in
 `assets-src/nazvy.txt`, then run `python3 tools/make_sounds.py` and `tools/flash_assets.sh ПОРТ`.
 
-The flashing kit (what is published in the releases) is assembled by `tools/make_kit.sh`.
+The flashing kit (what is published in the releases) is assembled by `tools/make_kit.sh` (build both the transmitter
+and the bridge first).
+
+### The bridge from source
+
+1. The toolchain (Arm compiler, Pico SDK 2.1, picotool) is installed by `bridge/setup-rp2040.sh` into
+   `~/Library/hearlink-rp2040`.
+2. `bridge/build.sh` — checks on the computer (resampling, hum removal), then the build: `bridge/build/bridge-full.uf2`
+   (first flashing) and `hearlink/bridge_fw.h` — the bridge image inside the transmitter firmware. So **after changing
+   the bridge, rebuild the transmitter too**: it is what delivers the new program to the bridge.
+3. A trial bridge program in RAM, flash untouched: `cmake -S bridge -B bridge/build -DBRIDGE_RAM_CRC=<CRC in flash>`,
+   `ninja -C bridge/build bridge_ram`, `picotool load -x bridge/build/bridge_ram.uf2 -f`.
 
 ### After changing on-screen texts
 

@@ -21,6 +21,27 @@ receiver ──(once every 2 s: information about itself)──► transmitter �
 - The audio rate is 32,000 samples per second, 16 bit. The audio is cut into chunks of 64 samples (2 ms).
 - The protocol version is 4 (`PROTO_VER`); packets with another version are discarded.
 
+## Bridge (4.x)
+
+A Raspberry Pi Pico board (RP2040, 200 MHz) between the mixer and the transmitter; source in `bridge/`.
+
+- **Inputs.** AES/EBU or S/PDIF on pin GP15, the `pico_spdif_rx` library (PIO0), 44.1 / 48 kHz, 24-bit. PCM1808 — the
+  bridge drives all three clocks with integer dividers of 200 MHz: MCLK 12.5 MHz (PWM), BCK 3.125 MHz, LRCK 48 828 Hz
+  (256 fs), PIO1; the I2S format (FMT to ground) is recognised by the bridge itself (data one bit late, left channel
+  while LRCK = 0). USB — a USB Audio Class 2 sound card (48 kHz, 16-bit) and a “What goes on air” recording (32 kHz).
+- **Resampling** (`asrc.c`): from the input rate to the transmitter clock — 32 kHz (64 taps) or 48 kHz in “Monitor”
+  (32 taps); cut-off min(0.48·fout, 0.458·fin); 24-bit samples are multiplied with two 32-bit multiplications (upper
+  16 bits and the low byte). A regulator keeps 16–24 frames in reserve; bridge latency ~1–1.6 ms.
+- **Radio hum** (`hum.h`): after resampling the hum from the transmitter's packets repeats exactly with its frames; a
+  16 ms template learns with the weight E0/(E0+E) by the cycle energy (E0 = −76 dB) — music does not get into it — and
+  is subtracted.
+- **Link to the transmitter.** The bridge is an I2S slave: BCK/LRCK come from the transmitter (IO1, IO2), audio goes to
+  IO40; bits 7…4 of every word carry the bridge status frames (COBS + CRC). Commands — UART 115 200 from the
+  transmitter's pin 43 (BP_SET once a second: input, balanced mode, hum, 48 kHz, test signal).
+- **Updates.** The bridge flash holds a bootloader (28 KB, never rewritten) and the program; the transmitter carries the
+  program image in its firmware (`hearlink/bridge_fw.h`) and, if the bridge CRC differs, puts it into the bootloader and
+  writes the program over UART (~15 s). A failure mid-write leaves the bridge in the bootloader waiting for the next try.
+
 ## Transmitter
 
 ### Design
