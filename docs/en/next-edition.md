@@ -50,7 +50,15 @@ The receivers are the same: same board, same firmware (one for all boards), same
 
 ## The bridge board: Raspberry Pi Pico / YD-RP2040
 
+<img src="../photos/yd-rp2040.jpg" width="420" alt="YD-RP2040 board">
+
+![Which pins to connect — on the board photo](../img/mist-yd-rp2040-foto-en.png)
+
 ![Bridge pins](../img/mist-pico-vyvody-en.png)
+
+**Mind the YD-RP2040 labels:** pin 39 (VSYS on a Pico) is labelled **“Vin”** on it, pin 40 (VBUS) **“Vout”** (that is
+5 V from USB — feed nothing into it); in place of 3V3_EN and ADC_VREF it brings out GP23 and GP29. All other labels are
+GP numbers, as on a Pico.
 
 **What it is.** The Raspberry Pi Pico is a small board (51 × 21 mm) with an RP2040 microcontroller (two cores,
 programmable I/O blocks — PIO), 2 MB of flash, a USB connector and 40 pins along the edges (2.54 mm pitch — solder wires
@@ -108,7 +116,7 @@ Numbers in brackets are Pico pin numbers (the YD-RP2040 has the same layout).
 | L1 = IO40 (upper row, 3rd, next to GND) | GP4 (6) | audio and bridge status → transmitter |
 | TXD = IO43 (lower row, 2nd from the left) | GP5 (7) | commands → bridge (UART 115 200) |
 | GND (lower row, 4th) | GND (8) | ground |
-| 5V (lower row, 1st) | through diode D1 → VSYS (39) | bridge power |
+| 5V (lower row, 1st) | through diode D1 → VSYS (39; “Vin” on the YD-RP2040) | bridge power |
 
 **PCM1808 ↔ bridge**
 
@@ -119,7 +127,7 @@ Numbers in brackets are Pico pin numbers (the YD-RP2040 has the same layout).
 | LRC | GP2 (4) | |
 | OUT | GP3 (5) | |
 | 3.3V | 3V3 OUT (36) | |
-| +5V | VSYS (39) | ADC analog section |
+| +5V | VSYS (39; “Vin” on the YD-RP2040) | ADC analog section |
 | GND | GND (3) | |
 | FMY, MD1, MD0 | GND | |
 

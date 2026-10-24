@@ -27,6 +27,7 @@ in the board itself.
 <img src="docs/photos/esp32-4848s040-front.jpg" height="220" alt="Transmitter module"> 
 <img src="docs/photos/esp32-s3-devkit-n16r8.jpg" height="220" alt="Receiver board"> 
 <img src="docs/photos/m75-oled-encoder.jpg" height="220" alt="Display with knob"> 
+<img src="docs/photos/yd-rp2040.jpg" height="220" alt="YD-RP2040 bridge"> 
 <img src="docs/photos/pcm1808.jpg" height="220" alt="PCM1808 ADC">
 </p>
 

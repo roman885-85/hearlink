@@ -148,7 +148,7 @@ def wiring(lang):
     block(760, 120, 290, 620, tr('bridge', lang), 'Pi Pico / YD-RP2040')
     block(1200, 120, 280, 330, tr('tx_block', lang), tr('tx_block_sub', lang))
     rows = [('SCK', 'GP0 (1)', VIO, tr('mclk', lang)), ('BCK', 'GP1 (2)', ORG, ''), ('LRC', 'GP2 (4)', ORG, ''),
-            ('OUT', 'GP3 (5)', ORG, ''), ('3.3V', '3V3 OUT (36)', RED, ''), ('+5V', 'VSYS (39)', RED, ''),
+            ('OUT', 'GP3 (5)', ORG, ''), ('3.3V', '3V3 OUT (36)', RED, ''), ('+5V', 'VSYS / Vin (39)', RED, ''),
             ('GND', 'GND (3)', BLK, '')]
     for i, (a, b, c, lab) in enumerate(rows):
         y = 170 + i * 44
@@ -181,7 +181,7 @@ def wiring(lang):
     line([(1124, y5), (1050, y5)], RED, 2.5)
     text(1137, y5 - 18, tr('diode', lang), 11.5, 'middle', RED)
     text(1137, y5 + 30, tr('diode_sub', lang), 11, 'middle', '#555')
-    pin(1050, y5, 'VSYS (39)', 'r')
+    pin(1050, y5, 'VSYS / Vin (39)', 'r')
     pin(1200, y5, '5V · ' + lo + ' 1', 'l')
     # передавач
     text(1335, 490, tr('radio', lang), 13, 'middle', BLU, True)

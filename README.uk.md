@@ -25,6 +25,7 @@
 <img src="docs/photos/esp32-4848s040-front.jpg" height="220" alt="Модуль передавача"> 
 <img src="docs/photos/esp32-s3-devkit-n16r8.jpg" height="220" alt="Плата приймача"> 
 <img src="docs/photos/m75-oled-encoder.jpg" height="220" alt="Екран із ручкою"> 
+<img src="docs/photos/yd-rp2040.jpg" height="220" alt="Міст YD-RP2040"> 
 <img src="docs/photos/pcm1808.jpg" height="220" alt="АЦП PCM1808">
 </p>
 

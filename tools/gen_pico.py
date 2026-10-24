@@ -12,7 +12,7 @@ INK, RED, GRN, VIO, ORG, BLU, AUD, GRY = (20, 20, 20), (200, 30, 30), (0, 130, 6
 
 LEFT = ['GP0', 'GP1', 'GND', 'GP2', 'GP3', 'GP4', 'GP5', 'GND', 'GP6', 'GP7', 'GP8', 'GP9', 'GND', 'GP10', 'GP11',
         'GP12', 'GP13', 'GND', 'GP14', 'GP15']                       # ніжки 1…20 згори вниз
-RIGHT = ['VBUS', 'VSYS', 'GND', '3V3_EN', '3V3(OUT)', 'ADC_VREF', 'GP28', 'AGND', 'GP27', 'GP26', 'RUN', 'GP22', 'GND',
+RIGHT = ['VBUS · Vout', 'VSYS · Vin', 'GND', '3V3_EN · 23', '3V3(OUT)', 'ADC_VREF · 29', 'GP28', 'AGND', 'GP27', 'GP26', 'RUN', 'GP22', 'GND',
          'GP21', 'GP20', 'GP19', 'GP18', 'GND', 'GP17', 'GP16']      # ніжки 40…21 згори вниз
 USE = {   # ніжка: (колір, uk, en)
     1: (VIO, 'PCM1808 SCK — головний такт 12,5 МГц', 'PCM1808 SCK — 12.5 MHz master clock'),
@@ -27,7 +27,7 @@ USE = {   # ніжка: (колір, uk, en)
     10: (ORG, '← передавач IO2 (L2): LRCK', '← transmitter IO2 (L2): LRCK'),
     18: (INK, 'GND схеми цифрового входу', 'digital input circuit GND'),
     20: (GRN, '← цифровий вхід AES / S/PDIF', '← digital input AES / S/PDIF'),
-    39: (RED, 'VSYS ← 5V передавача через D1; → PCM1808 +5V', 'VSYS ← transmitter 5V via D1; → PCM1808 +5V'),
+    39: (RED, 'VSYS (на YD — Vin) ← 5V передавача через D1; → PCM1808 +5V', 'VSYS (YD: Vin) ← transmitter 5V via D1; → PCM1808 +5V'),
     36: (RED, '3V3 → PCM1808 3.3V, схема цифрового входу', '3V3 → PCM1808 3.3V, digital input circuit'),
 }
 
@@ -39,8 +39,8 @@ def draw(lang):
     d = ImageDraw.Draw(im)
     d.text((W // 2, 40), ('Міст: Raspberry Pi Pico / YD-RP2040 — виводи' if lang == 'uk' else
                           'Bridge: Raspberry Pi Pico / YD-RP2040 — pins'), font=F(36, True), fill=INK, anchor='mm')
-    d.text((W // 2, 84), ('вигляд згори, USB угорі; у кружечках — номери ніжок; кольором — зайняті мостом' if lang == 'uk' else
-                          'top view, USB at the top; numbers in circles are pin numbers; coloured — used by the bridge'),
+    d.text((W // 2, 84), ('вигляд згори, USB угорі; у кружечках — номери ніжок; кольором — зайняті мостом; після «·» — напис на YD-RP2040' if lang == 'uk' else
+                          'top view, USB at the top; numbers in circles are pin numbers; coloured — used by the bridge; after “·” — the YD-RP2040 label'),
            font=F(23), fill=(90, 90, 90), anchor='mm')
     bx0, bx1, by0, by1 = 690, 1210, 150, 1170
     d.rounded_rectangle((bx0, by0, bx1, by1), 24, fill=(30, 110, 60), outline=(10, 60, 30), width=4)
